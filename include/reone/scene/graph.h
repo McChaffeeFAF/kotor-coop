@@ -1,0 +1,452 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/scene/render/pipeline.h"
+
+#include "fogproperties.h"
+#include "node/camera.h"
+#include "node/dummy.h"
+#include "node/emitter.h"
+#include "node/grass.h"
+#include "node/light.h"
+#include "node/mesh.h"
+#include "node/model.h"
+#include "node/sound.h"
+#include "node/trigger.h"
+#include "node/walkmesh.h"
+#include "user.h"
+
+namespace reone {
+
+namespace graphics {
+
+struct GraphicsOptions;
+struct GraphicsServices;
+
+class Walkmesh;
+
+} // namespace graphics
+
+namespace audio {
+
+struct AudioServices;
+
+}
+
+namespace resource {
+
+struct ResourceServices;
+
+}
+
+namespace scene {
+
+static constexpr float kElevationTestZ = 1024.0f;
+
+struct Collision;
+
+class IAnimationEventListener;
+class IRenderPass;
+class IRenderPipelineFactory;
+
+class ISceneGraph {
+public:
+    virtual ~ISceneGraph() = default;
+
+    virtual void update(float dt) = 0;
+
+    /**
+     * The two halves of update(). updateModelRoots advances model animation
+     * (and every node parented to a model: attachments, emitters). It is
+     * the half gameplay depends on - creatures and doors wait for animations
+     * to finish - so the game runs it once per fixed simulation tick.
+     * updatePresentation does the rest (grass, sounds, culling, lighting,
+     * render lists) and runs once per rendered frame. update() is both.
+     */
+    virtual void updateModelRoots(float dt) = 0;
+    virtual void updatePresentation(float dt) = 0;
+    virtual graphics::Texture &render(const glm::ivec2 &dim) = 0;
+
+    /** The opaque depth of the last render() as a texture, when the pipeline keeps one. */
+    virtual graphics::Texture *sceneDepth() { return nullptr; }
+
+    /**
+     * Reflections: render the six probe faces from `position` (at size
+     * `dim`) into the pipeline's probe, then restore the active camera.
+     * Rendering only.
+     */
+    virtual void captureReflectionProbe(const glm::vec3 &position, const glm::ivec2 &dim) {}
+
+    virtual void clear() = 0;
+
+    virtual bool testElevation(const glm::vec3 &position, Collision &outCollision) const = 0;
+    virtual bool testLineOfSight(const glm::vec3 &origin, const glm::vec3 &dest, Collision &outCollision) const = 0;
+    virtual bool testWalk(const glm::vec3 &origin, const glm::vec3 &dest, const IUser *excludeUser, Collision &outCollision) const = 0;
+
+    /** maxDistance: metres from the camera; 0 keeps the default range. */
+    virtual ModelSceneNode *pickModelAt(int x, int y, IUser *except = nullptr, float maxDistance = 0.0f) const = 0;
+    virtual std::optional<std::reference_wrapper<ModelSceneNode>> pickModelRay(const glm::vec3 &origin, const glm::vec3 &dir) const = 0;
+
+    virtual const std::string &name() const = 0;
+    virtual std::optional<std::reference_wrapper<CameraSceneNode>> camera() = 0;
+
+    virtual void setAmbientLightColor(glm::vec3 color) = 0;
+
+    /**
+     * Area wind power for wind-affected emitters: 0 none, 1 weak, 2 strong
+     * (ARE WindPower). Presentation only.
+     */
+    virtual void setWindPower(float power) { _windPower = power; }
+    virtual float windPower() const { return _windPower; }
+    virtual bool hasShadowLight() const = 0;
+    virtual bool isShadowLightDirectional() const = 0;
+
+    virtual bool isFogEnabled() const = 0;
+    virtual void setFog(FogProperties fog) = 0;
+
+    virtual void setWalkableSurfaces(std::set<uint32_t> surfaces) = 0;
+    virtual void setWalkcheckSurfaces(std::set<uint32_t> surfaces) = 0;
+    virtual void setLineOfSightSurfaces(std::set<uint32_t> surfaces) = 0;
+
+    virtual void setActiveCamera(CameraSceneNode *camera) = 0;
+    virtual void setUpdateRoots(bool update) = 0;
+
+    virtual void setRenderAABB(bool render) = 0;
+    virtual void setRenderWalkmeshes(bool render) = 0;
+    virtual void setRenderTriggers(bool render) = 0;
+
+    // Roots
+
+    virtual void addRoot(std::shared_ptr<ModelSceneNode> node) = 0;
+    virtual void addRoot(std::shared_ptr<WalkmeshSceneNode> node) = 0;
+    virtual void addRoot(std::shared_ptr<TriggerSceneNode> node) = 0;
+    virtual void addRoot(std::shared_ptr<GrassSceneNode> node) = 0;
+    virtual void addRoot(std::shared_ptr<SoundSceneNode> node) = 0;
+
+    virtual void removeRoot(ModelSceneNode &node) = 0;
+    virtual void removeRoot(WalkmeshSceneNode &node) = 0;
+    virtual void removeRoot(TriggerSceneNode &node) = 0;
+    virtual void removeRoot(GrassSceneNode &node) = 0;
+    virtual void removeRoot(SoundSceneNode &node) = 0;
+
+    // END Roots
+
+    // Factory methods
+
+    /**
+     * Resource services that nodes created from now on resolve their textures
+     * through; null restores the graph's own. A GUI stage showing models from
+     * a second install (the K2 main-menu lineup) scopes its K2 nodes with it.
+     */
+    virtual void setNodeResources(resource::ResourceServices *resourceSvc) {}
+
+    virtual std::shared_ptr<CameraSceneNode> newCamera() = 0;
+    virtual std::shared_ptr<ModelSceneNode> newModel(graphics::Model &model, ModelUsage usage) = 0;
+    virtual std::shared_ptr<WalkmeshSceneNode> newWalkmesh(graphics::Walkmesh &walkmesh) = 0;
+    virtual std::shared_ptr<TriggerSceneNode> newTrigger(std::vector<glm::vec3> geometry) = 0;
+    virtual std::shared_ptr<SoundSceneNode> newSound() = 0;
+    virtual std::shared_ptr<DummySceneNode> newDummy(graphics::ModelNode &modelNode) = 0;
+    virtual std::shared_ptr<MeshSceneNode> newMesh(ModelSceneNode &model, graphics::ModelNode &modelNode) = 0;
+    virtual std::shared_ptr<LightSceneNode> newLight(ModelSceneNode &model, graphics::ModelNode &modelNode) = 0;
+    virtual std::shared_ptr<EmitterSceneNode> newEmitter(graphics::ModelNode &modelNode) = 0;
+    virtual std::shared_ptr<ParticleSceneNode> newParticle(EmitterSceneNode &emitter) = 0;
+    virtual std::shared_ptr<GrassSceneNode> newGrass(GrassProperties properties, graphics::ModelNode &aabbNode) = 0;
+    virtual std::shared_ptr<GrassClusterSceneNode> newGrassCluster(GrassSceneNode &grass) = 0;
+
+    // END Factory methods
+
+protected:
+    float _windPower {0.0f};
+};
+
+/** Order transparent meshes for drawing: ascending MDL transparency hint, stable. */
+void sortByTransparencyHint(std::vector<MeshSceneNode *> &meshes);
+
+class SceneGraph : public ISceneGraph, boost::noncopyable {
+public:
+    SceneGraph(
+        std::string name,
+        IRenderPipelineFactory &renderPipelineFactory,
+        graphics::GraphicsOptions &graphicsOpt,
+        graphics::GraphicsServices &graphicsSvc,
+        audio::AudioServices &audioSvc,
+        resource::ResourceServices &resourceSvc) :
+        _name(std::move(name)),
+        _renderPipelineFactory(renderPipelineFactory),
+        _graphicsOpt(graphicsOpt),
+        _graphicsSvc(graphicsSvc),
+        _audioSvc(audioSvc),
+        _resourceSvc(resourceSvc) {
+    }
+
+    void update(float dt) override;
+
+    /**
+     * Choose the few lights that light each dynamic model (see
+     * objectlights.h). Runs every frame from update; public for tests.
+     * Presentation only: reads light and model state, draws no random numbers.
+     */
+    void updateObjectLighting(float dt);
+    void updateModelRoots(float dt) override;
+    void updatePresentation(float dt) override;
+    graphics::Texture &render(const glm::ivec2 &dim) override;
+    graphics::Texture *sceneDepth() override { return _renderPipeline ? _renderPipeline->sceneDepth() : nullptr; }
+    void captureReflectionProbe(const glm::vec3 &position, const glm::ivec2 &dim) override;
+
+    void renderShadows(IRenderPass &pass);
+    void renderOpaque(IRenderPass &pass);
+    void renderTransparent(IRenderPass &pass);
+    void renderGlow(IRenderPass &pass);
+    void renderLensFlares(IRenderPass &pass);
+
+    const std::string &name() const override {
+        return _name;
+    }
+
+    std::optional<std::reference_wrapper<CameraSceneNode>> camera() override {
+        if (!_activeCamera) {
+            return std::nullopt;
+        }
+        return *_activeCamera;
+    }
+
+    void setActiveCamera(CameraSceneNode *camera) override { _activeCamera = camera; }
+    void setUpdateRoots(bool update) override { _updateRoots = update; }
+
+    void setRenderAABB(bool render) override { _renderAABB = render; }
+    void setRenderWalkmeshes(bool render) override { _renderWalkmeshes = render; }
+    void setRenderTriggers(bool render) override { _renderTriggers = render; }
+
+    // Roots
+
+    void clear() override;
+
+    void addRoot(std::shared_ptr<ModelSceneNode> node) override;
+    void addRoot(std::shared_ptr<WalkmeshSceneNode> node) override;
+    void addRoot(std::shared_ptr<TriggerSceneNode> node) override;
+    void addRoot(std::shared_ptr<GrassSceneNode> node) override;
+    void addRoot(std::shared_ptr<SoundSceneNode> node) override;
+
+    void removeRoot(ModelSceneNode &node) override;
+    void removeRoot(WalkmeshSceneNode &node) override;
+    void removeRoot(TriggerSceneNode &node) override;
+    void removeRoot(GrassSceneNode &node) override;
+    void removeRoot(SoundSceneNode &node) override;
+
+    // END Roots
+
+    // Lighting
+
+    const glm::vec3 &ambientLightColor() const { return _ambientLightColor; }
+
+    void setAmbientLightColor(glm::vec3 color) override { _ambientLightColor = std::move(color); }
+
+    // END Lighting
+
+    // Fog
+
+    bool isFogEnabled() const override {
+        return _fog.enabled;
+    }
+
+    float fogNear() const {
+        return _fog.nearPlane;
+    }
+
+    float fogFar() const {
+        return _fog.farPlane;
+    }
+
+    const glm::vec3 &fogColor() const {
+        return _fog.color;
+    }
+
+    void setFog(FogProperties fog) override {
+        _fog = std::move(fog);
+    }
+
+    // END Fog
+
+    // Shadows
+
+    // Off by option means the frame has no shadow light at all, so the pass and
+    // the uniforms both fall away together rather than a pass rendering into a
+    // term nothing applies. Selection still runs, so turning shadows off does
+    // not otherwise perturb the scene. Out of line because this header only
+    // forward-declares GraphicsOptions.
+    bool hasShadowLight() const override;
+    bool isShadowLightDirectional() const override { return _shadowLight->isDirectional(); }
+
+    glm::vec3 shadowLightPosition() const { return _shadowLight->origin(); }
+    float shadowStrength() const { return _shadowStrength; }
+    float shadowRadius() const { return _shadowLight->radius(); }
+
+    // END Shadows
+
+    // Collision detection and object picking
+
+    bool testElevation(const glm::vec3 &position, Collision &outCollision) const override;
+    bool testLineOfSight(const glm::vec3 &origin, const glm::vec3 &dest, Collision &outCollision) const override;
+    bool testWalk(const glm::vec3 &origin, const glm::vec3 &dest, const IUser *excludeUser, Collision &outCollision) const override;
+
+    ModelSceneNode *pickModelAt(int x, int y, IUser *except = nullptr, float maxDistance = 0.0f) const override;
+    std::optional<std::reference_wrapper<ModelSceneNode>> pickModelRay(const glm::vec3 &origin, const glm::vec3 &dir) const override;
+
+    void setWalkableSurfaces(std::set<uint32_t> surfaces) override { _walkableSurfaces = std::move(surfaces); }
+    void setWalkcheckSurfaces(std::set<uint32_t> surfaces) override { _walkcheckSurfaces = std::move(surfaces); }
+    void setLineOfSightSurfaces(std::set<uint32_t> surfaces) override { _lineOfSightSurfaces = std::move(surfaces); }
+
+    // END Collision detection and object picking
+
+    // Factory methods
+
+    std::shared_ptr<CameraSceneNode> newCamera() override;
+    void setNodeResources(resource::ResourceServices *resourceSvc) override { _nodeResourceSvc = resourceSvc; }
+    std::shared_ptr<ModelSceneNode> newModel(graphics::Model &model, ModelUsage usage) override;
+    std::shared_ptr<WalkmeshSceneNode> newWalkmesh(graphics::Walkmesh &walkmesh) override;
+    std::shared_ptr<TriggerSceneNode> newTrigger(std::vector<glm::vec3> geometry) override;
+    std::shared_ptr<SoundSceneNode> newSound() override;
+
+    std::shared_ptr<DummySceneNode> newDummy(graphics::ModelNode &modelNode) override;
+    std::shared_ptr<MeshSceneNode> newMesh(ModelSceneNode &model, graphics::ModelNode &modelNode) override;
+    std::shared_ptr<LightSceneNode> newLight(ModelSceneNode &model, graphics::ModelNode &modelNode) override;
+
+    std::shared_ptr<EmitterSceneNode> newEmitter(graphics::ModelNode &modelNode) override;
+    std::shared_ptr<ParticleSceneNode> newParticle(EmitterSceneNode &emitter) override;
+
+    std::shared_ptr<GrassSceneNode> newGrass(GrassProperties properties, graphics::ModelNode &aabbNode) override;
+    std::shared_ptr<GrassClusterSceneNode> newGrassCluster(GrassSceneNode &grass) override;
+
+    // END Factory methods
+
+private:
+    std::string _name;
+    IRenderPipelineFactory &_renderPipelineFactory;
+    graphics::GraphicsOptions &_graphicsOpt;
+    graphics::GraphicsServices &_graphicsSvc;
+    audio::AudioServices &_audioSvc;
+    resource::ResourceServices &_resourceSvc;
+    resource::ResourceServices *_nodeResourceSvc {nullptr};
+
+    std::unique_ptr<IRenderPipeline> _renderPipeline;
+    /** The options the pipeline's render targets were made for (renderPipelineKey). */
+    std::string _renderPipelineKey;
+    std::shared_ptr<CameraSceneNode> _probeCamera;
+    /** The last presentation step (seconds), for eye adaptation. */
+    float _presentationTime {0.0f};
+    float _trailFrameTime {0.0f};
+
+    bool _updateRoots {true};
+
+    bool _renderAABB {false};
+    bool _renderWalkmeshes {false};
+    bool _renderTriggers {false};
+
+    std::set<std::shared_ptr<SceneNode>> _nodes;
+
+    CameraSceneNode *_activeCamera {nullptr};
+    std::vector<LightSceneNode *> _flareLights;
+
+    // Roots
+
+    std::list<std::shared_ptr<ModelSceneNode>> _modelRoots;
+    std::list<std::shared_ptr<WalkmeshSceneNode>> _walkmeshRoots;
+    std::list<std::shared_ptr<TriggerSceneNode>> _triggerRoots;
+    std::list<std::shared_ptr<GrassSceneNode>> _grassRoots;
+    std::list<std::shared_ptr<SoundSceneNode>> _soundRoots;
+
+    // END Roots
+
+    // Leafs
+
+    std::vector<MeshSceneNode *> _opaqueMeshes;
+    std::vector<MeshSceneNode *> _transparentMeshes;
+    std::vector<MeshSceneNode *> _glowMeshes;
+    std::vector<MeshSceneNode *> _shadowMeshes;
+    std::vector<LightSceneNode *> _lights;
+    std::vector<EmitterSceneNode *> _emitters;
+
+    std::vector<std::pair<SceneNode *, std::vector<SceneNode *>>> _opaqueLeafs;
+    std::vector<std::pair<SceneNode *, std::vector<SceneNode *>>> _transparentLeafs;
+
+    // END Leafs
+
+    // Lighting
+
+    glm::vec3 _ambientLightColor {0.5f};
+
+    std::vector<LightSceneNode *> _activeLights;
+
+    // END Lighting
+
+    // Shadows
+
+    bool _shadowActive {false};
+    float _shadowStrength {0.0f};
+
+    LightSceneNode *_shadowLight {nullptr};
+
+    glm::mat4 _shadowLightSpace[graphics::kNumShadowLightSpace] {glm::mat4(1.0f)};
+    glm::vec4 _shadowCascadeFarPlanes {glm::vec4(0.0f)};
+
+    // END Shadows
+
+    // Fog
+
+    FogProperties _fog;
+
+    // END Fog
+
+    // Surfaces
+
+    std::set<uint32_t> _walkableSurfaces;
+    std::set<uint32_t> _walkcheckSurfaces;
+    std::set<uint32_t> _lineOfSightSurfaces;
+
+    // END Surfaces
+
+    void cullRoots();
+
+    void refresh();
+    void refreshFromNode(SceneNode &node);
+
+    void updateLighting();
+    void updateShadowLight(float dt);
+    void updateFlareLights();
+    void updateSounds();
+
+    void prepareOpaqueLeafs();
+    void prepareTransparentLeafs();
+
+    void computeLightSpaceMatrices();
+
+    std::vector<LightSceneNode *> computeClosestLights(int count, const std::function<bool(const LightSceneNode &, float)> &pred) const;
+
+    template <class T, class... Params>
+    std::shared_ptr<T> newSceneNode(Params... params) {
+        auto node = std::make_shared<T>(params..., *this, _graphicsSvc, _audioSvc,
+                                        _nodeResourceSvc ? *_nodeResourceSvc : _resourceSvc);
+        _nodes.insert(node);
+        return node;
+    }
+};
+
+} // namespace scene
+
+} // namespace reone

@@ -1,0 +1,1 @@
+# asan suppressions for third-party code only. Every entry needs a comment: library, symptom, why it is not ours.

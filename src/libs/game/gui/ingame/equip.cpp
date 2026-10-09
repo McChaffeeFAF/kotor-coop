@@ -1,0 +1,498 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/game/gui/ingame/equip.h"
+
+#include "reone/resource/provider/textures.h"
+#include "reone/resource/strings.h"
+
+using namespace reone::audio;
+
+using namespace reone::graphics;
+using namespace reone::gui;
+using namespace reone::resource;
+
+namespace reone {
+
+namespace game {
+
+static constexpr int kStrRefNone = 363;
+static constexpr int kStrRefBlockedByTwoHandedMainHand = 42344;
+static constexpr char kNoneItemTag[] = "[none]";
+static constexpr char kEquippedItemTag[] = "[equipped]";
+static constexpr char kEquippedItemSuffix[] = " (equipped)";
+
+static std::unordered_map<Equipment::Slot, std::string> g_slotNames = {
+    {Equipment::Slot::Implant, "IMPLANT"},
+    {Equipment::Slot::Head, "HEAD"},
+    {Equipment::Slot::Hands, "HANDS"},
+    {Equipment::Slot::ArmL, "ARM_L"},
+    {Equipment::Slot::Body, "BODY"},
+    {Equipment::Slot::ArmR, "ARM_R"},
+    {Equipment::Slot::WeapL, "WEAP_L"},
+    {Equipment::Slot::Belt, "BELT"},
+    {Equipment::Slot::WeapR, "WEAP_R"},
+    {Equipment::Slot::WeapL2, "WEAP_L2"},
+    {Equipment::Slot::WeapR2, "WEAP_R2"}};
+
+static std::unordered_map<Equipment::Slot, int32_t> g_slotStrRefs = {
+    {Equipment::Slot::Implant, 31388},
+    {Equipment::Slot::Head, 31375},
+    {Equipment::Slot::Hands, 31383},
+    {Equipment::Slot::ArmL, 31376},
+    {Equipment::Slot::Body, 31380},
+    {Equipment::Slot::ArmR, 31377},
+    {Equipment::Slot::WeapL, 31378},
+    {Equipment::Slot::Belt, 31382},
+    {Equipment::Slot::WeapR, 31379},
+    {Equipment::Slot::WeapL2, 31378},
+    {Equipment::Slot::WeapR2, 31379}};
+
+static int getInventorySlot(Equipment::Slot slot);
+
+static void enableBorderFillTint(const std::shared_ptr<Control> &control) {
+    if (!control) {
+        return;
+    }
+    control->setTintBorderFill(true);
+}
+
+static void tintK2PanelFill(const std::shared_ptr<ListBox> &listBox, const glm::vec3 &baseColor) {
+    if (!listBox) {
+        return;
+    }
+    listBox->setBorderColor(baseColor);
+    listBox->setTintBorderFill(true);
+}
+
+void Equipment::onGUILoaded() {
+    loadBackground(BackgroundType::Menu);
+    if (isTSL()) {
+        // On a wide screen the slots stay on their configuration art: the
+        // cluster moves as one picture (design note p3_menus).
+        for (auto tag : {"LBL_BACK1", "LBL_INV_HEAD", "LBL_INV_IMPLANT", "LBL_INV_HANDS", "LBL_INV_ARM_L",
+                         "LBL_INV_BODY", "LBL_INV_ARM_R", "LBL_INV_BELT", "LBL_INV_WEAP_L", "LBL_INV_WEAP_R",
+                         "LBL_INV_WEAP_L2", "LBL_INV_WEAP_R2", "BTN_INV_HEAD", "BTN_INV_IMPLANT", "BTN_INV_HANDS",
+                         "BTN_INV_ARM_L", "BTN_INV_BODY", "BTN_INV_ARM_R", "BTN_INV_BELT", "BTN_INV_WEAP_L",
+                         "BTN_INV_WEAP_R", "BTN_INV_WEAP_L2", "BTN_INV_WEAP_R2", "LBL_DEF_BACK", "LBL_DEF",
+                         "LBL_DEF_TEXT", "LBL_ATKL", "LBL_ATKR", "LBL_TOHITL", "LBL_TOHITR", "LBL_TOHIT",
+                         "LBL_DAMAGE", "LBL_ATTACKMOD", "LBL_DAMTEXT"}) {
+            _gui->setControlGroup(tag, "slots");
+        }
+        _gui->refreshLayout();
+    }
+    bindControls();
+
+    if (_controls.LBL_BAR1)
+        _lblBar.push_back(_controls.LBL_BAR1);
+    if (_controls.LBL_BAR2)
+        _lblBar.push_back(_controls.LBL_BAR2);
+    if (_controls.LBL_BAR3)
+        _lblBar.push_back(_controls.LBL_BAR3);
+    if (_controls.LBL_BAR4)
+        _lblBar.push_back(_controls.LBL_BAR4);
+    if (_controls.LBL_BAR5)
+        _lblBar.push_back(_controls.LBL_BAR5);
+
+    for (auto &slotName : g_slotNames) {
+        if ((slotName.first == Slot::WeapL2 || slotName.first == Slot::WeapR2) && !isTSL())
+            continue;
+        _lblInv[slotName.first] = findControl<Label>("LBL_INV_" + slotName.second);
+        if (_lblInv[slotName.first]) {
+            _lblInv[slotName.first]->setSharpenBorderFillAlpha(true);
+        }
+        _btnInv[slotName.first] = findControl<Button>("BTN_INV_" + slotName.second);
+    }
+
+    if (_controls.BTN_CHANGE1) {
+        _controls.BTN_CHANGE1->setSelectable(false);
+    }
+    if (_controls.BTN_CHANGE2) {
+        _controls.BTN_CHANGE2->setSelectable(false);
+    }
+    if (isTSL()) {
+        useK2ShellTitle(_controls.LBL_TITLE);
+        fillK2SectionStrip(_controls.LBL_BAR1, _controls.LBL_BAR2);
+        for (auto &button : {_controls.BTN_BACK, _controls.BTN_EQUIP, _controls.BTN_SWAPWEAPONS}) {
+            enableK2ButtonBodyFill(button);
+        }
+    }
+    // _controls.btnCharLeft->setVisible(false);
+    // _controls.btnCharRight->setVisible(false);
+    _controls.LB_DESC->setVisible(false);
+    _controls.LB_DESC->setProtoMatchContent(true);
+    _controls.LBL_CANTEQUIP->setVisible(false);
+    tintK2LoadoutOverlay();
+    updateK2LoadoutOverlayVisibility(true);
+
+    configureItemsListBox();
+
+    _controls.BTN_EQUIP->setOnClick([this]() {
+        if (_selectedSlot == Slot::None) {
+            if (_onExit) _onExit();
+        } else {
+            confirmSelectedCandidate();
+        }
+    });
+    _controls.BTN_BACK->setOnClick([this]() {
+        if (_selectedSlot == Slot::None) {
+            if (_onExit) _onExit();
+        } else {
+            selectSlot(Slot::None);
+        }
+    });
+
+    for (auto &slotButton : _btnInv) {
+        auto slot = slotButton.first;
+        slotButton.second->setOnClick([this, slot]() {
+            _view = _backing ? _backing->readEquipment(getInventorySlot(slot)) : EquipmentView {};
+            if (!_view.slotAvailable) {
+                _controls.LBL_CANTEQUIP->setTextMessage(_strings.getText(kStrRefBlockedByTwoHandedMainHand));
+                _controls.LBL_CANTEQUIP->setVisible(true);
+                return;
+            }
+
+            selectSlot(slot);
+        });
+        slotButton.second->setOnSelectionChanged([this, slot](bool selected) {
+            if (!selected)
+                return;
+
+            activateSlot(slot);
+
+            std::string slotDesc;
+
+            auto maybeStrRef = g_slotStrRefs.find(slot);
+            if (maybeStrRef != g_slotStrRefs.end()) {
+                slotDesc = _strings.getText(maybeStrRef->second);
+            }
+
+            _controls.LBL_SLOTNAME->setTextMessage(slotDesc);
+        });
+    }
+}
+
+void Equipment::configureItemsListBox() {
+    _controls.LB_ITEMS->setItemsInteractive(false);
+    _controls.LB_ITEMS->setSelectionMode(ListBox::SelectionMode::OnClick);
+    _controls.LB_ITEMS->setRenderItemIconsForButtonProto(true);
+    // See InventoryMenu: K1's baked slot strip has a fractional period in
+    // authored pixels, so the rows are repainted over it and this is a free
+    // density knob. K2's equipment list uses its tighter two-pixel gap.
+    _controls.LB_ITEMS->setPadding(isTSL() ? 2 : 8);
+    useBakedItemSlotArt(*_controls.LB_ITEMS);
+    _controls.LB_ITEMS->setOnItemClick([this](const std::string &item) {
+        onItemsListBoxItemClick(item);
+    });
+    _controls.LB_ITEMS->setOnItemDoubleClick([this](const std::string &item) {
+        confirmSelectedCandidate();
+    });
+
+    auto &protoItem = _controls.LB_ITEMS->protoItem();
+
+    if (isTSL()) {
+        enableK2ButtonBodyFill(protoItem);
+        protoItem.setBorderFill("uibit_fill_2wt");
+        protoItem.setHilightFill("uibit_fill_2wt");
+        protoItem.setTintBorderFill(true);
+        tintK2PanelFill(_controls.LB_ITEMS, _baseColor);
+        tintK2PanelFill(_controls.LB_DESC, _baseColor);
+    } else {
+        protoItem.setBorderColor(_baseColor);
+        protoItem.setHilightColor(_hilightColor);
+    }
+}
+
+void Equipment::clearCandidateDescription() {
+    _selectedItemIdx = -1;
+    _controls.LB_DESC->clearItems();
+}
+
+void Equipment::updateCandidateDescription() {
+    if (_selectedSlot == Slot::None) {
+        clearCandidateDescription();
+        return;
+    }
+
+    int selectedItemIdx = _controls.LB_ITEMS->selectedItemIndex();
+    if (selectedItemIdx == _selectedItemIdx)
+        return;
+
+    _selectedItemIdx = selectedItemIdx;
+    _controls.LB_DESC->clearItems();
+
+    if (selectedItemIdx < 0 || selectedItemIdx >= _controls.LB_ITEMS->getItemCount())
+        return;
+
+    if (selectedItemIdx < static_cast<int>(_listedItems.size()))
+        _controls.LB_DESC->addTextLinesAsItems(_listedItems[selectedItemIdx].description);
+}
+
+static int getInventorySlot(Equipment::Slot slot) {
+    switch (slot) {
+    case Equipment::Slot::Implant:
+        return InventorySlots::implant;
+    case Equipment::Slot::Head:
+        return InventorySlots::head;
+    case Equipment::Slot::Hands:
+        return InventorySlots::hands;
+    case Equipment::Slot::ArmL:
+        return InventorySlots::leftArm;
+    case Equipment::Slot::Body:
+        return InventorySlots::body;
+    case Equipment::Slot::ArmR:
+        return InventorySlots::rightArm;
+    case Equipment::Slot::WeapL:
+        return InventorySlots::leftWeapon;
+    case Equipment::Slot::Belt:
+        return InventorySlots::belt;
+    case Equipment::Slot::WeapR:
+        return InventorySlots::rightWeapon;
+    case Equipment::Slot::WeapL2:
+        return InventorySlots::leftWeapon2;
+    case Equipment::Slot::WeapR2:
+        return InventorySlots::rightWeapon2;
+    default:
+        throw std::invalid_argument("Equipment: invalid slot: " + std::to_string(static_cast<int>(slot)));
+    }
+}
+
+void Equipment::confirmSelectedCandidate() {
+    int selectedItemIdx = _controls.LB_ITEMS->selectedItemIndex();
+    if (selectedItemIdx < 0 || selectedItemIdx >= _controls.LB_ITEMS->getItemCount())
+        return;
+
+    confirmCandidateItem(_controls.LB_ITEMS->getItemAt(selectedItemIdx).tag);
+}
+
+void Equipment::confirmCandidateItem(const std::string &item) {
+    if (_selectedSlot == Slot::None || !_backing || _awaitingRevision) return;
+    if (item == kEquippedItemTag) { selectSlot(Slot::None); return; }
+    auto index = _controls.LB_ITEMS->selectedItemIndex();
+    if (index < 0 || index >= static_cast<int>(_listedItems.size()) || !_listedItems[index].valid) return;
+    _awaitingRevision = _view.revision;
+    _backing->equip(_view.revision, _listedItems[index].handle, getInventorySlot(_selectedSlot));
+    receiveEquipmentResult();
+}
+
+void Equipment::receiveEquipmentResult() {
+    if (!_backing || !_awaitingRevision) return;
+    auto result = _backing->equipmentResult();
+    if (!result || result->revision != *_awaitingRevision) return;
+    _awaitingRevision.reset();
+    updateEquipment();
+    if (result->outcome != EquipmentRequestOutcome::Rejected) selectSlot(Slot::None);
+    else activateSlot(_selectedSlot);
+}
+
+void Equipment::setBacking(std::shared_ptr<IEquipmentMenuBacking> backing) {
+    _backing = std::move(backing);
+    _view = {};
+    _listedItems.clear();
+    _awaitingRevision.reset();
+    if (_gui) update();
+}
+
+void Equipment::onItemsListBoxItemClick(const std::string &item) {
+    updateCandidateDescription();
+}
+
+void Equipment::update() {
+    // A fresh presentation session must not react to the previous session's result.
+    _awaitingRevision.reset();
+    updateEquipment();
+    updatePortraits();
+    selectSlot(Slot::None);
+    if (!isTSL()) _controls.LBL_VITALITY->setTextMessage(_view.subject.vitality);
+    _controls.LBL_DEF->setTextMessage(_view.subject.defense);
+}
+
+void Equipment::update(float dt) {
+    PresentationGUI::update(dt);
+    receiveEquipmentResult();
+    updateCandidateDescription();
+}
+
+void Equipment::openItems() {
+    update();
+    selectSlot(Slot::Body);
+}
+
+void Equipment::updatePortraits() {
+    if (isTSL()) return;
+    _controls.LBL_PORTRAIT->setBorderFill(_view.subject.portraits[0]);
+    _controls.BTN_CHANGE1->setBorderFill(_view.subject.portraits[1]);
+    _controls.BTN_CHANGE2->setBorderFill(_view.subject.portraits[2]);
+}
+
+void Equipment::selectSlot(Slot slot) {
+    bool noneSelected = slot == Slot::None;
+
+    for (auto &lbl : _lblInv) {
+        lbl.second->setVisible(noneSelected);
+    }
+    for (auto &btn : _btnInv) {
+        btn.second->setVisible(noneSelected);
+    }
+
+    _controls.LB_DESC->setVisible(!noneSelected);
+    _controls.LBL_SLOTNAME->setVisible(noneSelected);
+    updateK2LoadoutOverlayVisibility(noneSelected);
+
+    if (!isTSL()) {
+        _controls.LBL_PORT_BORD->setVisible(noneSelected);
+        _controls.LBL_PORTRAIT->setVisible(noneSelected);
+        _controls.LBL_TXTBAR->setVisible(noneSelected);
+    }
+    _selectedSlot = slot;
+
+    activateSlot(slot);
+    if (noneSelected) {
+        clearCandidateDescription();
+    }
+}
+
+void Equipment::tintK2LoadoutOverlay() {
+    if (!isTSL())
+        return;
+
+    // Preserve the muted K2 panel colours authored in equip_p.gui.
+    enableBorderFillTint(_controls.LBL_BACK1);
+    enableBorderFillTint(_controls.LBL_DEF_BACK);
+}
+
+void Equipment::updateK2LoadoutOverlayVisibility(bool visible) {
+    if (!isTSL())
+        return;
+
+    auto setVisible = [visible](auto &control) {
+        if (control) {
+            control->setVisible(visible);
+        }
+    };
+
+    // K2's normal loadout/stat art overlaps the candidate description panel.
+    setVisible(_controls.BTN_SWAPWEAPONS);
+    setVisible(_controls.LBL_ATKL);
+    setVisible(_controls.LBL_ATKR);
+    setVisible(_controls.LBL_ATTACKMOD);
+    setVisible(_controls.LBL_ATTACK_INFO);
+    setVisible(_controls.LBL_BACK1);
+    setVisible(_controls.LBL_DAMAGE);
+    setVisible(_controls.LBL_DAMTEXT);
+    setVisible(_controls.LBL_DEF);
+    setVisible(_controls.LBL_DEF_BACK);
+    setVisible(_controls.LBL_DEF_INFO);
+    setVisible(_controls.LBL_DEF_TEXT);
+    setVisible(_controls.LBL_SELECTTITLE);
+    setVisible(_controls.LBL_TOHIT);
+    setVisible(_controls.LBL_TOHITL);
+    setVisible(_controls.LBL_TOHITR);
+}
+
+void Equipment::activateSlot(Slot slot) {
+    _activeSlot = slot;
+    _controls.LB_ITEMS->setItemsInteractive(_selectedSlot != Slot::None);
+    _controls.LBL_CANTEQUIP->setTextMessage("");
+    _controls.LBL_CANTEQUIP->setVisible(false);
+    clearCandidateDescription();
+    updateItems();
+    updateCandidateDescription();
+}
+
+void Equipment::updateEquipment() {
+    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : getInventorySlot(_activeSlot)) : EquipmentView {};
+    for (auto &[slot, label] : _lblInv) {
+        auto equipped = _view.equipment.find(getInventorySlot(slot));
+        label->setBorderFill(equipped == _view.equipment.end() ? getEmptySlotIcon(slot) : equipped->second);
+    }
+    _controls.LBL_ATKR->setTextMessage(_view.mainDamage);
+    _controls.LBL_ATKL->setTextMessage(_view.offDamage);
+    _controls.LBL_TOHITL->setTextMessage(_view.offAttack);
+    _controls.LBL_TOHITR->setTextMessage(_view.mainAttack);
+}
+
+std::shared_ptr<Texture> Equipment::getEmptySlotIcon(Slot slot) const {
+    std::string resRef;
+    switch (slot) {
+    case Slot::Implant:
+        resRef = "iimplant";
+        break;
+    case Slot::Head:
+        resRef = "ihead";
+        break;
+    case Slot::Hands:
+        resRef = "ihands";
+        break;
+    case Slot::ArmL:
+        resRef = "iforearm_l";
+        break;
+    case Slot::Body:
+        resRef = "iarmor";
+        break;
+    case Slot::ArmR:
+        resRef = "iforearm_r";
+        break;
+    case Slot::WeapL:
+    case Slot::WeapL2:
+        resRef = "iweap_l";
+        break;
+    case Slot::Belt:
+        resRef = "ibelt";
+        break;
+    case Slot::WeapR:
+    case Slot::WeapR2:
+        resRef = "iweap_r";
+        break;
+    default:
+        return nullptr;
+    }
+
+    return _presentation.textures.get(resRef, TextureUsage::GUI);
+}
+
+void Equipment::updateItems() {
+    _controls.LB_ITEMS->clearItems();
+    clearCandidateDescription();
+    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : getInventorySlot(_activeSlot)) : EquipmentView {};
+    _listedItems.clear();
+    if (_activeSlot != Slot::None) {
+        MenuItemView none;
+        none.name = _strings.getText(kStrRefNone);
+        none.icon = _presentation.textures.get("inone", TextureUsage::GUI);
+        _listedItems.push_back(std::move(none));
+    }
+    if (_view.slotAvailable) _listedItems.insert(_listedItems.end(), _view.items.begin(), _view.items.end());
+    bool equipped = false;
+    for (const auto &item : _listedItems) {
+        ListBox::Item row;
+        row.tag = item.handle == 0 ? kNoneItemTag : (item.equipped ? kEquippedItemTag : std::to_string(item.handle));
+        row.text = item.name + (item.equipped ? kEquippedItemSuffix : "");
+        row.iconTexture = item.icon;
+        row.iconFrame = itemFrameTexture(item.stackSize);
+        row.invalid = !item.valid;
+        if (item.stackSize > 1) row.iconText = std::to_string(item.stackSize);
+        _controls.LB_ITEMS->addItem(std::move(row));
+        equipped = equipped || item.equipped;
+    }
+    if (_selectedSlot != Slot::None && _view.slotAvailable)
+        _controls.LB_ITEMS->setSelectedItemIndex(equipped ? 1 : 0);
+}
+
+} // namespace game
+
+} // namespace reone

@@ -1,0 +1,8 @@
+# Deployed to Linux: keep LF endings even in a Windows checkout.
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.conf text eol=lf
+*.py text eol=lf
+.env.example text eol=lf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf

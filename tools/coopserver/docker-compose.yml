@@ -1,0 +1,50 @@
+# One-step deploy of the co-op online service on a small Linux server
+# (design note coop_online, "Deploy"):
+#
+#   cp .env.example .env    # set PUBLIC_HOST, EXTERNAL_IP and TURN_SECRET
+#   docker compose up -d --build
+#
+# signal  the join-code / signalling service (TCP 27200)
+# turn    coturn: STUN and the TURN relay fallback (UDP/TCP 3478, UDP 49160-49200)
+#
+# Nothing is stored: neither container has a volume for data.
+services:
+  signal:
+    build: .
+    image: kotor-coop/coopserver:1
+    restart: unless-stopped
+    environment:
+      COOP_LISTEN: "0.0.0.0:27200"
+      COOP_STUN_URLS: "${PUBLIC_HOST}:3478"
+      COOP_TURN_URL: "${PUBLIC_HOST}:3478"
+      COOP_TURN_SECRET: "${TURN_SECRET}"
+      COOP_REALM: "${TURN_REALM:-kotor-coop}"
+      COOP_CODE_TTL: "${CODE_TTL:-43200}"
+      COOP_MAX_SESSIONS: "${MAX_SESSIONS:-200}"
+    ports:
+      - "27200:27200/tcp"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 128m
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+
+  turn:
+    image: coturn/coturn:4.6.2
+    restart: unless-stopped
+    # A relay needs its whole UDP port range reachable at the public address;
+    # host networking avoids a second NAT inside Docker.
+    network_mode: host
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command:
+      - "-c"
+      - "/etc/coturn/turnserver.conf"
+      - "--static-auth-secret=${TURN_SECRET}"
+      - "--realm=${TURN_REALM:-kotor-coop}"
+      - "--external-ip=${EXTERNAL_IP}"
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}

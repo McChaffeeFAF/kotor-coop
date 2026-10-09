@@ -1,0 +1,362 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <algorithm>
+
+#include "reone/graphics/di/services.h"
+#include "reone/graphics/options.h"
+#include "reone/input/event.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/parser/gff/gui.h"
+
+#include "control.h"
+
+namespace reone {
+
+namespace scene {
+
+class ISceneGraphs;
+
+} // namespace scene
+
+namespace gui {
+
+constexpr int kDefaultResolutionX = 640;
+constexpr int kDefaultResolutionY = 480;
+
+class IGUIEventListener {
+public:
+    virtual ~IGUIEventListener() = default;
+
+    virtual void onClick(const std::string &control) = 0;
+    virtual void onSelectionChanged(const std::string &control, bool selected) = 0;
+};
+
+class IGUI {
+public:
+    enum class ScalingMode {
+        Center,
+        CenterHorizontal,
+        PositionRelativeToCenter,
+        /** Uniformly scales a control around the authored and screen centres. */
+        ScaledRelativeToCenter,
+        /** Uniformly fits the authored layout, centred horizontally and anchored to the top. */
+        ScaledTopCenter,
+        /** Uniformly fits the authored layout in the screen. The game-GUI default. */
+        Scaled,
+        /**
+         * Fills the screen as K2's widescreen build does: the authored
+         * layout stretches to the screen on each axis, while controls that
+         * keep their aspect (portraits, icons, logos) take the limiting-axis
+         * size, centred on their stretched place. Text and frame slices
+         * follow the limiting axis. At the authored aspect it is Scaled.
+         */
+        Widescreen
+    };
+
+    enum class ControlCoordinates {
+        Authored,
+        Screen
+    };
+
+    virtual ~IGUI() = default;
+
+    virtual void load(const resource::Gff &gui) = 0;
+
+    virtual bool handle(const input::Event &event) = 0;
+    virtual void update(float dt) = 0;
+    virtual void render() = 0;
+
+    virtual void clearSelection() = 0;
+
+    virtual Control &rootControl() = 0;
+
+    virtual const glm::ivec2 &rootOffset() const = 0;
+    virtual const glm::ivec2 &controlOffset() const = 0;
+
+    /**
+     * The uniform factor the authored layout is drawn at, or 1 for a mode
+     * that does not scale.
+     *
+     * Anything drawn into a control's rect from outside the control tree -
+     * the map inside its minimap frame, its markers - is in the same pixel
+     * space as the layout and has to follow it.
+     */
+    virtual float scale() const = 0;
+
+    /** Independent presentation dials owned by the live graphics options. */
+    virtual float textScale() const = 0;
+    virtual float textLayoutScale(float horizontalScale, float verticalScale) const {
+        // Glyphs always follow the limiting resolution axis. Text may move
+        // with viewport-relative controls, but it must never inherit their
+        // non-uniform geometry or fall back to its authored pixel size.
+        return std::min(horizontalScale, verticalScale);
+    }
+    virtual float borderScale() const = 0;
+    virtual float listScale() const { return 1.0f; }
+    virtual bool tintBorderFills() const = 0;
+
+    /** Whether scene-backed controls may render their 3D content. */
+    virtual bool sceneRenderEnabled() const { return true; }
+
+    virtual void setEventListener(IGUIEventListener &listener) = 0;
+    virtual void setResolution(int x, int y) = 0;
+    virtual void setScaling(ScalingMode scaling) = 0;
+    virtual void setTextScale(float scale) = 0;
+    virtual void setTintBorderFills(bool tint) = 0;
+    virtual void setControlScaling(const std::string &tag, ScalingMode scaling) = 0;
+    /** Widescreen mode: whether a control keeps its aspect, overriding the default rule. */
+    virtual void setControlKeepsAspect(const std::string &tag, bool keep) {}
+    /**
+     * Widescreen mode: controls of one group move as one picture - scaled
+     * uniformly about the group's centre, which takes its stretched place -
+     * so a cluster drawn to line up (item slots on their art, a portrait and
+     * its gauges) stays lined up.
+     */
+    virtual void setControlGroup(const std::string &tag, const std::string &group) {}
+    virtual void setDefaultHilightColor(glm::vec3 color) = 0;
+    virtual void setBackground(std::shared_ptr<graphics::Texture> texture) = 0;
+
+    /** Reapplies the layout after authored geometry or the resolution changed. */
+    virtual void refreshLayout() {}
+
+    virtual std::unique_ptr<Control> newControl(ControlType type, std::string tag) = 0;
+    virtual void addControlToFront(std::shared_ptr<Control> control, ControlCoordinates coordinates) = 0;
+    virtual void addControlToBack(std::shared_ptr<Control> control, ControlCoordinates coordinates) = 0;
+
+    virtual std::shared_ptr<Control> findControl(const std::string &tag) const = 0;
+};
+
+class GUI : public IGUI, boost::noncopyable {
+public:
+    GUI(
+        graphics::GraphicsOptions &options,
+        scene::ISceneGraphs &sceneGraphs,
+        graphics::GraphicsServices &graphicsSvc,
+        resource::ResourceServices &resourceSvc) :
+        _options(options),
+        _sceneGraphs(sceneGraphs),
+        _graphicsSvc(graphicsSvc),
+        _resourceSvc(resourceSvc) {
+
+    }
+
+    /** Derived from the current resolution, which can change at runtime. */
+    glm::ivec2 screenCenter() const {
+        return {_options.width / 2, _options.height / 2};
+    }
+
+    void load(const resource::Gff &gui) override;
+
+    bool handle(const input::Event &event) override;
+    void update(float dt) override;
+    void render() override;
+
+    void clearSelection() override;
+
+    Control &rootControl() override {
+        return *_rootControl;
+    }
+
+    const glm::ivec2 &rootOffset() const override {
+        return _rootOffset;
+    }
+
+    const glm::ivec2 &controlOffset() const override {
+        return _controlOffset;
+    }
+
+    float scale() const override {
+        switch (_scaling) {
+        case ScalingMode::Scaled:
+        case ScalingMode::ScaledTopCenter:
+        case ScalingMode::PositionRelativeToCenter:
+        case ScalingMode::ScaledRelativeToCenter:
+        case ScalingMode::Widescreen:
+            return scaledFactor();
+        default:
+            return 1.0f;
+        }
+    }
+
+    void setEventListener(IGUIEventListener &listener) override {
+        _eventListener = &listener;
+    }
+
+    void setResolution(int x, int y) override {
+        _resolutionX = x;
+        _resolutionY = y;
+    }
+
+    void setScaling(ScalingMode scaling) override {
+        _scaling = scaling;
+    }
+
+    void setTextScale(float scale) override {
+        _textScale = scale;
+    }
+
+    void setTintBorderFills(bool tint) override {
+        _tintBorderFills = tint;
+    }
+
+    float textScale() const override {
+        return _textScale.value_or(_options.guiTextScale);
+    }
+
+    float textLayoutScale(float horizontalScale, float verticalScale) const override {
+        return IGUI::textLayoutScale(horizontalScale, verticalScale);
+    }
+
+    float borderScale() const override {
+        return _options.guiBorderScale;
+    }
+
+    float listScale() const override {
+        return _options.guiListScale;
+    }
+
+    bool tintBorderFills() const override {
+        return _tintBorderFills;
+    }
+
+    bool sceneRenderEnabled() const override {
+        return _options.sceneRender;
+    }
+
+    void setControlScaling(const std::string &tag, ScalingMode scaling) override {
+        _scalingByControlTag[tag] = scaling;
+    }
+
+    void setControlKeepsAspect(const std::string &tag, bool keep) override {
+        _keepsAspectByControlTag[tag] = keep;
+    }
+
+    void setControlGroup(const std::string &tag, const std::string &group) override {
+        _groupByControlTag[tag] = group;
+    }
+
+    /** Widescreen mode's default rule for a control, before any per-tag override. */
+    bool keepsAspect(const Control &control) const;
+
+    void setDefaultHilightColor(glm::vec3 color) override {
+        _hasDefaultHilightColor = true;
+        _defaultHilightColor = color;
+    }
+
+    void setBackground(std::shared_ptr<graphics::Texture> texture) override;
+
+    void refreshLayout() override {
+        applyLayout();
+    }
+
+    std::unique_ptr<Control> newControl(ControlType type, std::string tag) override;
+
+    void addControlToFront(std::shared_ptr<Control> control, ControlCoordinates coordinates) override;
+    void addControlToBack(std::shared_ptr<Control> control, ControlCoordinates coordinates) override;
+
+    std::shared_ptr<Control> findControl(const std::string &tag) const override;
+
+private:
+    graphics::GraphicsOptions &_options;
+
+    IGUIEventListener *_eventListener {nullptr};
+
+    int _resolutionX {kDefaultResolutionX};
+    int _resolutionY {kDefaultResolutionY};
+    ScalingMode _scaling {ScalingMode::Center};
+    std::optional<float> _textScale;
+    bool _tintBorderFills {false};
+    glm::ivec2 _rootOffset {0};
+    glm::ivec2 _controlOffset {0};
+    std::shared_ptr<graphics::Texture> _background;
+    std::unordered_map<std::string, ScalingMode> _scalingByControlTag;
+    std::unordered_map<std::string, bool> _keepsAspectByControlTag;
+    std::unordered_map<std::string, std::string> _groupByControlTag;
+    bool _leftMouseDown {false};
+    // The control the left button went down on; it receives drags.
+    Control *_pressedControl {nullptr};
+
+    // Controls
+
+    std::vector<std::shared_ptr<Control>> _controls;
+    std::unordered_map<std::string, std::reference_wrapper<Control>> _tagToControl;
+    std::unordered_map<std::string, std::vector<std::reference_wrapper<Control>>> _controlTagToChildren;
+
+    std::optional<std::reference_wrapper<Control>> _rootControl;
+    std::optional<std::reference_wrapper<Control>> _selection;
+
+    // END Controls
+
+    // Services
+
+    scene::ISceneGraphs &_sceneGraphs;
+    graphics::GraphicsServices &_graphicsSvc;
+    resource::ResourceServices &_resourceSvc;
+
+    // END Services
+
+    // GUI Colors
+
+    bool _hasDefaultHilightColor {false};
+    glm::vec3 _defaultHilightColor {0.0f};
+
+    // END GUI Colors
+
+    void loadControl(const resource::generated::GUI_CONTROLS &gui);
+
+    void onClick(const std::string &control) {
+        if (_eventListener) {
+            _eventListener->onClick(control);
+        }
+    }
+
+    void onSelectionChanged(const std::string &control, bool selected) {
+        if (_eventListener) {
+            _eventListener->onSelectionChanged(control, selected);
+        }
+    }
+
+    void positionRelativeToCenter(Control &control);
+    void scaleRelativeToCenter(Control &control);
+    void layoutWidescreen(Control &control);
+    void applyControlLayout(Control &control);
+    void applyLayout();
+    ScalingMode controlScaling(const Control &control) const;
+    glm::ivec2 renderOffset(const Control &control) const;
+    glm::ivec2 controlCoordinates(const Control &control, int screenX, int screenY) const;
+    float scaledFactor() const;
+    void updateSelection(int screenX, int screenY);
+
+    void renderBackground(scene::IRenderPass &pass);
+
+    std::optional<std::reference_wrapper<Control>> findControlAt(int x, int y,
+                                                                 const std::function<bool(const Control &)> &test) const;
+
+    // User input
+
+    virtual bool handleKeyDown(input::KeyCode key);
+    virtual bool handleKeyUp(input::KeyCode key);
+
+    // END User input
+};
+
+} // namespace gui
+
+} // namespace reone

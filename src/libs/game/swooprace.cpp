@@ -1,0 +1,351 @@
+/*
+ * Copyright (c) 2020-2026 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/game/swooprace.h"
+
+#include "reone/audio/di/services.h"
+#include "reone/audio/mixer.h"
+#include "reone/game/di/services.h"
+#include "reone/game/game.h"
+#include "reone/game/object/camera/firstperson.h"
+#include "reone/graphics/animation.h"
+#include "reone/graphics/model.h"
+#include "reone/graphics/types.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/provider/audioclips.h"
+#include "reone/resource/provider/models.h"
+#include "reone/scene/di/services.h"
+#include "reone/scene/graph.h"
+#include "reone/scene/graphs.h"
+#include "reone/scene/node/camera.h"
+#include "reone/scene/node/model.h"
+#include "reone/scene/node/modelnode.h"
+
+using namespace reone::audio;
+using namespace reone::graphics;
+using namespace reone::scene;
+
+namespace reone {
+
+namespace game {
+
+namespace {
+
+constexpr float kDefaultCameraFovDegrees = 75.0f;
+
+// Chase placement used only when no player model carries a "camerahook".
+constexpr float kFallbackChaseDistance = 6.5f;
+constexpr float kFallbackChaseHeight = 2.8f;
+
+} // namespace
+
+std::shared_ptr<ModelSceneNode> SwoopRace::loadModel(const std::string &resRef) {
+    if (resRef.empty()) {
+        return nullptr;
+    }
+    auto model = _services.resource.models.get(resRef);
+    if (!model) {
+        return nullptr;
+    }
+    auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
+    auto node = sceneGraph.newModel(*model, ModelUsage::Placeable);
+    // Minigame actors are placed by transform far from any room; the culling
+    // that assumes objects stay near their rooms does not apply to them.
+    node->setCullingEnabled(false);
+    node->setDrawDistance(std::numeric_limits<float>::max());
+    return node;
+}
+
+bool SwoopRace::start(MiniGameSession &session,
+                      const MinigameSpec &spec,
+                      const std::vector<glm::vec3> &obstaclePositions,
+                      FirstPersonCamera *camera) {
+    stop();
+    _session = &session;
+    _camera = camera;
+    _actors.assign(session.actors().size(), ActorModels());
+    auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
+
+    size_t obstacleIndex = 0;
+    for (size_t i = 0; i < session.actors().size(); ++i) {
+        const auto &actor = session.actors()[i];
+        auto &slot = _actors[i];
+        std::vector<std::string> models;
+        if (actor.kind == MiniGameActorKind::Obstacle) {
+            models.push_back(actor.name);
+        } else {
+            for (const auto &model : actor.models) {
+                models.push_back(model.resRef);
+            }
+        }
+        for (const auto &resRef : models) {
+            auto node = loadModel(resRef);
+            if (!node) {
+                continue;
+            }
+            if (slot.nodes.empty()) {
+                sceneGraph.addRoot(node);
+            } else {
+                slot.nodes.front()->addChild(*node);
+            }
+            if (actor.kind == MiniGameActorKind::Player && !_cameraHook) {
+                if (auto hook = node->getNodeByName("camerahook")) {
+                    _cameraHook = hook;
+                }
+            }
+            slot.nodes.push_back(std::move(node));
+        }
+        if (actor.kind == MiniGameActorKind::Obstacle && !slot.nodes.empty()) {
+            glm::vec3 position = obstacleIndex < obstaclePositions.size() ? obstaclePositions[obstacleIndex] : actor.position;
+            slot.nodes.front()->setLocalTransform(glm::translate(position));
+            slot.nodes.front()->playAnimation("ready", nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+        }
+        if (actor.kind == MiniGameActorKind::Obstacle) {
+            ++obstacleIndex;
+        }
+    }
+
+    _steerLeft = _steerRight = _fireKey = _fireButton = false;
+    _active = true;
+    float nearClip = spec.nearClip > 0.0f ? spec.nearClip : kDefaultClipPlaneNear;
+    float farClip = spec.farClip > 0.0f ? spec.farClip : kDefaultClipPlaneFar;
+    setCameraProjection(spec.cameraViewAngle > 0.0f ? spec.cameraViewAngle : kDefaultCameraFovDegrees, nearClip, farClip);
+    placeActors();
+    updateCamera();
+    return true;
+}
+
+void SwoopRace::releaseActor(ActorModels &models) {
+    if (models.removed) {
+        return;
+    }
+    models.removed = true;
+    auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
+    for (auto &node : models.nodes) {
+        _animator.forget(*node);
+    }
+    if (!models.nodes.empty()) {
+        models.nodes.front()->removeAllChildren();
+        sceneGraph.removeRoot(*models.nodes.front());
+    }
+    models.nodes.clear();
+}
+
+void SwoopRace::stop() {
+    if (_camera) {
+        setCameraProjection(kDefaultCameraFovDegrees, kDefaultClipPlaneNear, kDefaultClipPlaneFar);
+    }
+    for (auto &actor : _actors) {
+        releaseActor(actor);
+    }
+    _actors.clear();
+    _animator.clear();
+    _cameraHook = nullptr;
+    _camera = nullptr;
+    _session = nullptr;
+    _active = false;
+}
+
+size_t SwoopRace::modelCount() const {
+    size_t count = 0;
+    for (const auto &actor : _actors) {
+        count += actor.nodes.size();
+    }
+    return count;
+}
+
+void SwoopRace::placeActors() {
+    if (!_session) {
+        return;
+    }
+    const auto &actors = _session->actors();
+    for (size_t i = 0; i < actors.size() && i < _actors.size(); ++i) {
+        const auto &actor = actors[i];
+        auto &slot = _actors[i];
+        if (slot.nodes.empty() || actor.kind == MiniGameActorKind::Obstacle) {
+            continue;
+        }
+        glm::mat4 transform = actor.hook;
+        if (actor.kind == MiniGameActorKind::Player) {
+            transform *= glm::translate(_session->offset());
+        }
+        slot.nodes.front()->setLocalTransform(transform);
+    }
+}
+
+void SwoopRace::update(float dt) {
+    if (!_active || !_session) {
+        return;
+    }
+    publishInput();
+    for (auto &actor : _actors) {
+        if (actor.removed || actor.removeAfter < 0.0f) {
+            continue;
+        }
+        actor.removeAfter -= dt;
+        if (actor.removeAfter <= 0.0f) {
+            releaseActor(actor);
+        }
+    }
+    _animator.update(dt);
+    placeActors();
+    updateCamera();
+}
+
+void SwoopRace::updateCamera() {
+    if (!_camera || !_session || _actors.empty() || _actors.front().nodes.empty()) {
+        return;
+    }
+    glm::mat4 eye;
+    if (_cameraHook) {
+        eye = _cameraHook->absoluteTransform();
+    } else {
+        // Behind and above the bike, looking down the course.
+        const auto &root = _actors.front().nodes.front()->absoluteTransform();
+        glm::vec3 bike(root[3]);
+        glm::vec3 forward(glm::normalize(glm::vec3(root[1])));
+        glm::vec3 position = bike - forward * kFallbackChaseDistance + glm::vec3(0.0f, 0.0f, kFallbackChaseHeight);
+        glm::quat orientation(glm::quatLookAt(glm::normalize(bike + forward * 10.0f - position), glm::vec3(0.0f, 0.0f, 1.0f)));
+        eye = glm::translate(position) * glm::mat4_cast(orientation);
+    }
+    _camera->cameraSceneNode()->setLocalTransform(eye);
+}
+
+void SwoopRace::setCameraProjection(float fovDegrees, float nearClip, float farClip) {
+    if (!_camera) {
+        return;
+    }
+    const auto &graphicsOpts = _game.options().graphics;
+    float aspect = graphicsOpts.height > 0 ? graphicsOpts.width / static_cast<float>(graphicsOpts.height) : 1.0f;
+    _camera->cameraSceneNode()->setPerspectiveProjection(glm::radians(fovDegrees), aspect, nearClip, farClip);
+}
+
+void SwoopRace::playMiniGameAnimation(const MiniGameActor &actor,
+                                      const std::string &name,
+                                      bool looping,
+                                      bool queue,
+                                      bool overlay) {
+    if (!_session) {
+        return;
+    }
+    size_t index = static_cast<size_t>(&actor - _session->actors().data());
+    if (index >= _actors.size()) {
+        return;
+    }
+    for (auto &node : _actors[index].nodes) {
+        _animator.play(*node, name, looping, queue, overlay);
+    }
+}
+
+void SwoopRace::removeMiniGameAnimation(const MiniGameActor &actor, const std::string &name) {
+    if (!_session) {
+        return;
+    }
+    size_t index = static_cast<size_t>(&actor - _session->actors().data());
+    if (index >= _actors.size()) {
+        return;
+    }
+    for (auto &node : _actors[index].nodes) {
+        _animator.remove(*node, name);
+    }
+}
+
+void SwoopRace::playMiniGameSound(const std::string &resRef, const glm::vec3 &position) {
+    auto clip = _services.resource.audioClips.get(resRef);
+    if (!clip) {
+        return;
+    }
+    _services.audio.mixer.play(std::move(clip), AudioType::Sound);
+}
+
+void SwoopRace::onMiniGameActorDied(const MiniGameActor &actor) {
+    if (!_session || actor.kind == MiniGameActorKind::Player) {
+        return;
+    }
+    size_t index = static_cast<size_t>(&actor - _session->actors().data());
+    if (index >= _actors.size()) {
+        return;
+    }
+    auto &slot = _actors[index];
+    // Each model plays its "die" and leaves when it ends; one without leaves now.
+    float longest = 0.0f;
+    for (auto &node : slot.nodes) {
+        if (auto die = node->model().getAnimation("die")) {
+            _animator.play(*node, "die", false, false, false);
+            longest = glm::max(longest, die->length());
+        }
+    }
+    slot.removeAfter = longest;
+    if (longest <= 0.0f) {
+        releaseActor(slot);
+    }
+}
+
+void SwoopRace::publishInput() {
+    auto &input = _game.miniGameInput();
+    // Keyboard and mouse state only; the harness autopilot writes the seam
+    // directly and leaves these false.
+    if (_steerLeft || _steerRight) {
+        input.steer = (_steerRight ? 1.0f : 0.0f) - (_steerLeft ? 1.0f : 0.0f);
+    }
+}
+
+bool SwoopRace::handle(const input::Event &event) {
+    auto &in = _game.miniGameInput();
+    switch (event.type) {
+    case input::EventType::KeyDown:
+    case input::EventType::KeyUp: {
+        bool down = event.type == input::EventType::KeyDown;
+        switch (event.key.code) {
+        case input::KeyCode::Left:
+        case input::KeyCode::A:
+            _steerLeft = down;
+            break;
+        case input::KeyCode::Right:
+        case input::KeyCode::D:
+            _steerRight = down;
+            break;
+        case input::KeyCode::Space:
+        case input::KeyCode::Up:
+        case input::KeyCode::W:
+            _fireKey = down;
+            in.fire = _fireKey || _fireButton;
+            return true;
+        case input::KeyCode::Escape:
+            return true;
+        default:
+            return false;
+        }
+        in.steer = (_steerRight ? 1.0f : 0.0f) - (_steerLeft ? 1.0f : 0.0f);
+        return true;
+    }
+    case input::EventType::MouseButtonDown:
+    case input::EventType::MouseButtonUp:
+        if (event.button.button != input::MouseButton::Left) {
+            return false;
+        }
+        _fireButton = event.button.pressed;
+        in.fire = _fireKey || _fireButton;
+        return true;
+    default:
+        return false;
+    }
+}
+
+} // namespace game
+
+} // namespace reone

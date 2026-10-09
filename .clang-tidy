@@ -1,0 +1,33 @@
+# Curated set: checks that find real bugs, not style. tools/cloud/tidy.sh runs
+# exactly this. Add a check here only after triaging what it reports.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-exception-escape,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-narrowing-conversions,
+  -bugprone-reserved-identifier,
+  -bugprone-macro-parentheses,
+  -bugprone-branch-clone,
+  -bugprone-unchecked-optional-access,
+  performance-*,
+  -performance-avoid-endl,
+  -performance-enum-size,
+  -performance-no-int-to-ptr,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-narrowing-conversions,
+  modernize-use-override,
+  modernize-use-nullptr
+WarningsAsErrors: ''
+HeaderFilterRegex: '(include/reone|src/libs)/.*'
+CheckOptions:
+  - key: cppcoreguidelines-narrowing-conversions.IgnoreConversionFromTypes
+    value: 'size_t;ptrdiff_t;size_type;difference_type'
+  - key: cppcoreguidelines-narrowing-conversions.WarnOnIntegerNarrowingConversion
+    value: 'false'
+  - key: cppcoreguidelines-narrowing-conversions.WarnOnFloatingPointNarrowingConversion
+    value: 'false'
+  - key: cppcoreguidelines-pro-type-member-init.UseAssignment
+    value: 'true'

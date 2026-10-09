@@ -1,0 +1,34 @@
+const int NUM_SSAO_SAMPLES = 64;
+
+layout(std140) uniform ScreenEffect {
+    mat4 uProjection;
+    mat4 uProjectionInv;
+    mat4 uScreenProjection;
+    vec4 uSSAOSamples[NUM_SSAO_SAMPLES];
+    vec2 uScreenResolution;
+    vec2 uScreenResolutionRcp;
+    vec2 uBlurDirection;
+    float uClipNear;
+    float uClipFar;
+    float uSSAOSampleRadius;
+    float uSSAOBias;
+    float uSSRBias;
+    float uSSRPixelStride;
+    float uSSRMaxSteps;
+    float uSharpenAmount;
+    float uBloomLevels;
+    vec4 uBloomParams;
+    vec4 uTAAParams;
+    vec4 uAOParams;
+    mat4 uReprojection;
+    vec4 uToneParams;
+    vec4 uExposureParams;
+    vec4 uExposureRange;
+    vec4 uGIParams;
+    vec4 uSSRParams;
+    mat4 uSSRViewInv;
+    vec4 uDOFParams;
+    vec4 uMotionParams;
+    vec4 uLensFlags;
+    vec4 uLensParams;
+};

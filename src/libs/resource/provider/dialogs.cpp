@@ -1,0 +1,152 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/resource/provider/dialogs.h"
+
+#include "reone/resource/provider/gffs.h"
+#include "reone/resource/strings.h"
+
+namespace reone {
+
+namespace resource {
+
+std::shared_ptr<Dialog> Dialogs::doGet(std::string resRef) {
+    auto dlg = _gffs.get(resRef, ResType::Dlg);
+    if (!dlg) {
+        return nullptr;
+    }
+    auto dlgParsed = resource::generated::parseDLG(*dlg);
+    auto dialog = loadDialog(dlgParsed);
+    dialog->resRef = ResRef(std::move(resRef)).value();
+    return dialog;
+}
+
+std::unique_ptr<Dialog> Dialogs::loadDialog(const resource::generated::DLG &dlg) {
+    auto dialog = std::make_unique<Dialog>();
+
+    dialog->skippable = dlg.Skippable;
+    dialog->cameraModel = dlg.CameraModel;
+    dialog->endScript = dlg.EndConversation;
+    dialog->abortScript = dlg.EndConverAbort;
+    dialog->animatedCutscene = dlg.AnimatedCut;
+    dialog->conversationType = static_cast<ConversationType>(dlg.ConversationType);
+    dialog->computerType = static_cast<ComputerType>(dlg.ComputerType);
+    dialog->unequipItems = dlg.UnequipItems != 0;
+    dialog->unequipHItem = dlg.UnequipHItem != 0;
+    dialog->oldHitCheck = dlg.OldHitCheck != 0;
+    dialog->delayEntry = dlg.DelayEntry;
+    dialog->delayReply = dlg.DelayReply;
+    dialog->ambientTrack = boost::to_lower_copy(dlg.AmbientTrack);
+
+    for (auto &entry : dlg.EntryList) {
+        dialog->entries.push_back(getEntryReply(entry));
+    }
+    for (auto &reply : dlg.ReplyList) {
+        dialog->replies.push_back(getEntryReply(reply));
+    }
+    for (auto &entry : dlg.StartingList) {
+        dialog->startEntries.push_back(getEntryReplyLink(entry));
+    }
+    for (auto &stunt : dlg.StuntList) {
+        dialog->stunts.push_back(getStunt(stunt));
+    }
+
+    return dialog;
+}
+
+Dialog::EntryReplyLink Dialogs::getEntryReplyLink(const resource::generated::DLG_EntryReplyList_EntriesRepliesList &dlg) const {
+    Dialog::EntryReplyLink link;
+    link.index = dlg.Index;
+    link.active = dlg.Active;
+    link.active2 = dlg.Active2;
+    link.notActive = dlg.Not != 0;
+    link.notActive2 = dlg.Not2 != 0;
+    link.logic = dlg.Logic;
+    link.params.ints = {dlg.Param1, dlg.Param2, dlg.Param3, dlg.Param4, dlg.Param5};
+    link.params.str = dlg.ParamStrA;
+    link.params2.ints = {dlg.Param1b, dlg.Param2b, dlg.Param3b, dlg.Param4b, dlg.Param5b};
+    link.params2.str = dlg.ParamStrB;
+
+    return link;
+}
+
+Dialog::EntryReply Dialogs::getEntryReply(const resource::generated::DLG_EntryReplyList &dlg) const {
+    int strRef = dlg.Text.first;
+
+    Dialog::EntryReply entry;
+    entry.speaker = dlg.Speaker;
+    entry.text = strRef == -1 ? "" : _strings.getText(strRef);
+    entry.voResRef = dlg.VO_ResRef;
+    entry.script = dlg.Script;
+    entry.script2 = dlg.Script2;
+    entry.sound = dlg.Sound;
+    entry.listener = dlg.Listener;
+    entry.quest = dlg.Quest;
+    entry.questEntry = dlg.QuestEntry;
+    entry.plotIndex = dlg.PlotIndex;
+    entry.plotXPPercentage = dlg.PlotXPPercentage;
+    entry.actionParams.ints = {dlg.ActionParam1, dlg.ActionParam2, dlg.ActionParam3, dlg.ActionParam4, dlg.ActionParam5};
+    entry.actionParams.str = dlg.ActionParamStrA;
+    entry.actionParams2.ints = {dlg.ActionParam1b, dlg.ActionParam2b, dlg.ActionParam3b, dlg.ActionParam4b, dlg.ActionParam5b};
+    entry.actionParams2.str = dlg.ActionParamStrB;
+    entry.delay = dlg.Delay;
+    entry.waitFlags = dlg.WaitFlags;
+    entry.cameraId = dlg.CameraID;
+    entry.cameraAngle = dlg.CameraAngle;
+    entry.cameraAnimation = dlg.CameraAnimation;
+    entry.camFieldOfView = dlg.CamFieldOfView;
+    entry.fadeType = dlg.FadeType;
+    entry.fadeColor = dlg.FadeColor;
+    entry.fadeDelay = dlg.FadeDelay;
+    entry.fadeLength = dlg.FadeLength;
+    entry.camVidEffect = dlg.CamVidEffect;
+    entry.camHeightOffset = dlg.CamHeightOffset;
+    entry.tarHeightOffset = dlg.TarHeightOffset;
+
+    boost::to_lower(entry.speaker);
+    boost::to_lower(entry.listener);
+
+    for (auto &link : dlg.RepliesList) {
+        entry.replies.push_back(getEntryReplyLink(link));
+    }
+    for (auto &link : dlg.EntriesList) {
+        entry.entries.push_back(getEntryReplyLink(link));
+    }
+    for (auto &anim : dlg.AnimList) {
+        entry.animations.push_back(getParticipantAnimation(anim));
+    }
+
+    return entry;
+}
+
+Dialog::Stunt Dialogs::getStunt(const resource::generated::DLG_StuntList &dlg) const {
+    Dialog::Stunt stunt;
+    stunt.participant = boost::to_lower_copy(dlg.Participant);
+    stunt.stuntModel = boost::to_lower_copy(dlg.StuntModel);
+    return stunt;
+}
+
+Dialog::ParticipantAnimation Dialogs::getParticipantAnimation(const resource::generated::DLG_EntryReplyList_AnimList &dlg) const {
+    Dialog::ParticipantAnimation anim;
+    anim.participant = boost::to_lower_copy(dlg.Participant);
+    anim.animation = dlg.Animation;
+    return anim;
+}
+
+} // namespace resource
+
+} // namespace reone

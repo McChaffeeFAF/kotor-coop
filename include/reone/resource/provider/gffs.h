@@ -1,0 +1,74 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/system/cache.h"
+
+#include "../gff.h"
+#include "../id.h"
+#include "../types.h"
+
+namespace reone {
+
+namespace resource {
+
+class IResources;
+
+class IGffs {
+public:
+    virtual ~IGffs() = default;
+
+    virtual void clear() = 0;
+
+    virtual std::shared_ptr<Gff> get(const std::string &resRef, ResType type) = 0;
+};
+
+class Gffs : public IGffs, boost::noncopyable {
+public:
+    Gffs(IResources &resources) :
+        _resources(resources) {
+    }
+
+    void clear() override {
+        _cache.clear();
+        _k2Cache.clear();
+    }
+
+    std::shared_ptr<Gff> get(const std::string &resRef, ResType type) override;
+
+    /**
+     * K2's GFF resources (item templates for the K2 systems merge's
+     * crafting). A name with the "k2:" prefix is read from this set only;
+     * null makes such names resolve to nothing.
+     */
+    void setK2Resources(IResources *resources) {
+        _k2Resources = resources;
+        _k2Cache.clear();
+    }
+
+private:
+    IResources &_resources;
+    IResources *_k2Resources {nullptr};
+
+    Cache<ResourceId, Gff> _cache;
+    Cache<ResourceId, Gff> _k2Cache;
+};
+
+} // namespace resource
+
+} // namespace reone

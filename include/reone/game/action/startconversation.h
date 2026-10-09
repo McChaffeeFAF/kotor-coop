@@ -1,0 +1,94 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/resource/types.h"
+
+#include "../action.h"
+#include "../globalfade.h"
+
+namespace reone {
+
+namespace game {
+
+class StartConversationAction : public Action {
+public:
+    StartConversationAction(Game &game,
+                            ServicesView &services,
+                            std::shared_ptr<Object> objectToConverse,
+                            std::string dialogResRef,
+                            bool privateConversation = false,
+                            resource::ConversationType conversationType = resource::ConversationType::Cinematic,
+                            bool ignoreStartRange = false,
+                            std::vector<std::string> namesToIgnore = {},
+                            bool useLeader = false,
+                            int barkX = -1,
+                            int barkY = -1,
+                            bool dontClearAllActions = false) :
+        Action(game, services, ActionType::StartConversation),
+        _objectToConverse(std::move(objectToConverse)),
+        _dialogResRef(std::move(dialogResRef)),
+        _privateConversation(privateConversation),
+        _conversationType(conversationType),
+        _ignoreStartRange(ignoreStartRange),
+        _namesToIgnore(std::move(namesToIgnore)),
+        _useLeader(useLeader),
+        _barkX(barkX),
+        _barkY(barkY),
+        _dontClearAllActions(dontClearAllActions) {
+        requireRuntimeObject(_objectToConverse);
+    }
+
+    static bool classof(Action *from) {
+        return from->type() == ActionType::StartConversation;
+    }
+
+    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+    void cancel(std::shared_ptr<Action> self, Object &actor) override;
+    void admit();
+
+    /** A player's click-to-talk: yields its admission to a scripted request. */
+    void setPlayerOrder(bool playerOrder) { _playerOrder = playerOrder; }
+
+    std::optional<SavedActionRecord> saveFacingState() const override;
+
+    bool isStartRangeIgnored() const { return _ignoreStartRange; }
+
+    const std::string &dialogResRef() const { return _dialogResRef; }
+    const std::shared_ptr<Object> &target() const { return _objectToConverse; }
+    bool isPrivateConversation() const { return _privateConversation; }
+
+private:
+    std::shared_ptr<Object> _objectToConverse;
+    std::string _dialogResRef;
+    bool _privateConversation;
+    resource::ConversationType _conversationType;
+    bool _ignoreStartRange;
+    std::vector<std::string> _namesToIgnore;
+    bool _useLeader;
+    int _barkX;
+    int _barkY;
+    bool _dontClearAllActions;
+    bool _admitted {false};
+    bool _playerOrder {false};
+    GlobalFade::DialogTicket _fadeDialog;
+};
+
+} // namespace game
+
+} // namespace reone

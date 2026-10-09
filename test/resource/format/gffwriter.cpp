@@ -1,0 +1,426 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include <gtest/gtest.h>
+
+#include <cstring>
+
+#include "reone/resource/format/gffreader.h"
+#include "reone/resource/format/gffwriter.h"
+#include "reone/resource/gff.h"
+#include "reone/system/binarywriter.h"
+#include "reone/system/exception/validation.h"
+#include "reone/system/stream/memoryinput.h"
+#include "reone/system/stream/memoryoutput.h"
+#include "reone/system/stringbuilder.h"
+
+#include "../../checkutil.h"
+
+using namespace reone;
+using namespace reone::resource;
+
+TEST(GffWriter, should_write_gff) {
+    // given
+
+    auto expectedOutput = StringBuilder()
+                              // header
+                              .append("RES V3.2")
+                              .append("\x38\x00\x00\x00", 4) // offset to structs
+                              .append("\x04\x00\x00\x00", 4) // number of structs
+                              .append("\x68\x00\x00\x00", 4) // offset to fields
+                              .append("\x13\x00\x00\x00", 4) // number of fields
+                              .append("\x4c\x01\x00\x00", 4) // offset to labels
+                              .append("\x13\x00\x00\x00", 4) // number of labels
+                              .append("\x7c\x02\x00\x00", 4) // offset to field data
+                              .append("\x67\x00\x00\x00", 4) // size of field data
+                              .append("\xe3\x02\x00\x00", 4) // offset to field indices
+                              .append("\x40\x00\x00\x00", 4) // size of field indices
+                              .append("\x23\x03\x00\x00", 4) // offset to list indices
+                              .append("\x0c\x00\x00\x00", 4) // size of list indices
+                              // structs
+                              .append("\xff\xff\xff\xff", 4) // 0: type
+                              .append("\x00\x00\x00\x00", 4) // 0: data offset
+                              .append("\x10\x00\x00\x00", 4) // 0: field count
+                              .append("\x01\x00\x00\x00", 4) // 1: type
+                              .append("\x10\x00\x00\x00", 4) // 1: data offset
+                              .append("\x01\x00\x00\x00", 4) // 1: field count
+                              .append("\x02\x00\x00\x00", 4) // 2: type
+                              .append("\x11\x00\x00\x00", 4) // 2: data offset
+                              .append("\x01\x00\x00\x00", 4) // 2: field count
+                              .append("\x03\x00\x00\x00", 4) // 3: type
+                              .append("\x12\x00\x00\x00", 4) // 3: data offset
+                              .append("\x01\x00\x00\x00", 4) // 3: field count
+                              // fields
+                              .append("\x00\x00\x00\x00", 4) // 0: type
+                              .append("\x00\x00\x00\x00", 4) // 0: label index
+                              .append("\x00\x00\x00\x00", 4) // 0: data
+                              .append("\x05\x00\x00\x00", 4) // 1: type
+                              .append("\x01\x00\x00\x00", 4) // 1: label index
+                              .append("\x01\x00\x00\x00", 4) // 1: data
+                              .append("\x04\x00\x00\x00", 4) // 2: type
+                              .append("\x02\x00\x00\x00", 4) // 2: label index
+                              .append("\x02\x00\x00\x00", 4) // 2: data
+                              .append("\x07\x00\x00\x00", 4) // 3: type
+                              .append("\x03\x00\x00\x00", 4) // 3: label index
+                              .append("\x00\x00\x00\x00", 4) // 3: data
+                              .append("\x06\x00\x00\x00", 4) // 4: type
+                              .append("\x04\x00\x00\x00", 4) // 4: label index
+                              .append("\x08\x00\x00\x00", 4) // 4: data
+                              .append("\x08\x00\x00\x00", 4) // 5: type
+                              .append("\x05\x00\x00\x00", 4) // 5: label index
+                              .append("\x00\x00\x80\x3f", 4) // 5: data
+                              .append("\x09\x00\x00\x00", 4) // 6: type
+                              .append("\x06\x00\x00\x00", 4) // 6: label index
+                              .append("\x10\x00\x00\x00", 4) // 6: data
+                              .append("\x0a\x00\x00\x00", 4) // 7: type
+                              .append("\x07\x00\x00\x00", 4) // 7: label index
+                              .append("\x18\x00\x00\x00", 4) // 7: data
+                              .append("\x0b\x00\x00\x00", 4) // 8: type
+                              .append("\x08\x00\x00\x00", 4) // 8: label index
+                              .append("\x20\x00\x00\x00", 4) // 8: data
+                              .append("\x0c\x00\x00\x00", 4) // 9: type
+                              .append("\x09\x00\x00\x00", 4) // 9: label index
+                              .append("\x25\x00\x00\x00", 4) // 9: data
+                              .append("\x0d\x00\x00\x00", 4) // 10: type
+                              .append("\x0a\x00\x00\x00", 4) // 10: label index
+                              .append("\x3d\x00\x00\x00", 4) // 10: data
+                              .append("\x10\x00\x00\x00", 4) // 11: type
+                              .append("\x0b\x00\x00\x00", 4) // 11: label index
+                              .append("\x43\x00\x00\x00", 4) // 11: data
+                              .append("\x11\x00\x00\x00", 4) // 12: type
+                              .append("\x0c\x00\x00\x00", 4) // 12: label index
+                              .append("\x53\x00\x00\x00", 4) // 12: data
+                              .append("\x12\x00\x00\x00", 4) // 13: type
+                              .append("\x0d\x00\x00\x00", 4) // 13: label index
+                              .append("\x5f\x00\x00\x00", 4) // 13: data
+                              .append("\x0e\x00\x00\x00", 4) // 14: type
+                              .append("\x0e\x00\x00\x00", 4) // 14: label index
+                              .append("\x01\x00\x00\x00", 4) // 14: data
+                              .append("\x0f\x00\x00\x00", 4) // 15: type
+                              .append("\x0f\x00\x00\x00", 4) // 15: label index
+                              .append("\x00\x00\x00\x00", 4) // 15: data
+                              .append("\x01\x00\x00\x00", 4) // 16: type
+                              .append("\x10\x00\x00\x00", 4) // 16: label index
+                              .append("\x01\x00\x00\x00", 4) // 16: data
+                              .append("\x02\x00\x00\x00", 4) // 17: type
+                              .append("\x11\x00\x00\x00", 4) // 17: label index
+                              .append("\x02\x00\x00\x00", 4) // 17: data
+                              .append("\x03\x00\x00\x00", 4) // 18: type
+                              .append("\x12\x00\x00\x00", 4) // 18: label index
+                              .append("\x03\x00\x00\x00", 4) // 18: data
+                              // labels
+                              .append("Byte\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Int\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Uint\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Int64\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Uint64\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Float\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Double\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("CExoString\x00\x00\x00\x00\x00\x00", 16)
+                              .append("ResRef\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("CExoLocString\x00\x00\x00", 16)
+                              .append("Void\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Orientation\x00\x00\x00\x00\x00", 16)
+                              .append("Vector\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("StrRef\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Struct\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("List\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00", 16)
+                              .append("Struct1Char\x00\x00\x00\x00\x00", 16)
+                              .append("Struct2Word\x00\x00\x00\x00\x00", 16)
+                              .append("Struct3Short\x00\x00\x00\x00", 16)
+                              // field data
+                              .append("\x03\x00\x00\x00\x00\x00\x00\x00", 8)
+                              .append("\x04\x00\x00\x00\x00\x00\x00\x00", 8)
+                              .append("\x00\x00\x00\x00\x00\x00\xf0\x3f", 8)
+                              .append("\x04\x00\x00\x00John", 8)
+                              .append("\x04Jane", 5)
+                              .append("\x14\x00\x00\x00\xff\xff\xff\xff\x01\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00Jill", 24)
+                              .append("\x02\x00\x00\x00\xff\xff", 6)
+                              .append("\x00\x00\x80\x3f\x00\x00\x80\x3f\x00\x00\x80\x3f\x00\x00\x80\x3f", 16)
+                              .append("\x00\x00\x80\x3f\x00\x00\x80\x3f\x00\x00\x80\x3f", 12)
+                              .append("\x04\x00\x00\x00\x01\x00\x00\x00", 8)
+                              // field indices
+                              .append("\x00\x00\x00\x00", 4)
+                              .append("\x01\x00\x00\x00", 4)
+                              .append("\x02\x00\x00\x00", 4)
+                              .append("\x03\x00\x00\x00", 4)
+                              .append("\x04\x00\x00\x00", 4)
+                              .append("\x05\x00\x00\x00", 4)
+                              .append("\x06\x00\x00\x00", 4)
+                              .append("\x07\x00\x00\x00", 4)
+                              .append("\x08\x00\x00\x00", 4)
+                              .append("\x09\x00\x00\x00", 4)
+                              .append("\x0a\x00\x00\x00", 4)
+                              .append("\x0b\x00\x00\x00", 4)
+                              .append("\x0c\x00\x00\x00", 4)
+                              .append("\x0d\x00\x00\x00", 4)
+                              .append("\x0e\x00\x00\x00", 4)
+                              .append("\x0f\x00\x00\x00", 4)
+                              // list indices
+                              .append("\x02\x00\x00\x00", 4)
+                              .append("\x02\x00\x00\x00", 4)
+                              .append("\x03\x00\x00\x00", 4)
+                              .string();
+
+    auto root = std::make_shared<Gff>(
+        0xffffffff,
+        std::vector<Gff::Field> {
+            Gff::Field::newByte("Byte", 0),
+            Gff::Field::newInt("Int", 1),
+            Gff::Field::newDword("Uint", 2),
+            Gff::Field::newInt64("Int64", 3),
+            Gff::Field::newDword64("Uint64", 4),
+            Gff::Field::newFloat("Float", 1.0f),
+            Gff::Field::newDouble("Double", 1.0),
+            Gff::Field::newCExoString("CExoString", "John"),
+            Gff::Field::newResRef("ResRef", "Jane"),
+            Gff::Field::newCExoLocString("CExoLocString", -1, "Jill"),
+            Gff::Field::newVoid("Void", ByteBuffer {static_cast<char>(0xff), static_cast<char>(0xff)}),
+            Gff::Field::newOrientation("Orientation", glm::quat(1.0f, 1.0f, 1.0f, 1.0f)),
+            Gff::Field::newVector("Vector", glm::vec3(1.0f, 1.0f, 1.0f)),
+            Gff::Field::newStrRef("StrRef", 1),
+            Gff::Field::newStruct(
+                "Struct",
+                std::make_shared<Gff>(1, std::vector<Gff::Field> {Gff::Field::newChar("Struct1Char", 1)})),
+            Gff::Field::newList(
+                "List",
+                std::vector<std::shared_ptr<Gff>> {
+                    std::make_shared<Gff>(2, std::vector<Gff::Field> {Gff::Field::newWord("Struct2Word", 2)}),
+                    std::make_shared<Gff>(3, std::vector<Gff::Field> {Gff::Field::newShort("Struct3Short", 3)})})});
+
+    auto bytes = ByteBuffer();
+    auto stream = MemoryOutputStream(bytes);
+    auto writer = GffWriter(ResType::Res, *root);
+
+    // when
+
+    writer.save(stream);
+
+    // then
+
+    auto actualOutput = std::string(&bytes[0], bytes.size());
+    EXPECT_EQ(expectedOutput, actualOutput) << notEqualMessage(expectedOutput, actualOutput);
+}
+
+namespace {
+
+std::shared_ptr<Gff> readGff(ByteBuffer bytes) {
+    MemoryInputStream stream(bytes);
+    GffReader reader(stream);
+    reader.load();
+    return reader.root();
+}
+
+std::string firstEight(const ByteBuffer &bytes) {
+    return std::string(bytes.begin(), bytes.begin() + 8);
+}
+
+const Gff::Field &field(const Gff &gff, std::string_view label) {
+    auto found = std::find_if(
+        gff.fields().begin(),
+        gff.fields().end(),
+        [label](const auto &candidate) { return candidate.label == label; });
+    if (found == gff.fields().end()) {
+        throw std::logic_error("missing GFF field: " + std::string(label));
+    }
+    return *found;
+}
+
+} // namespace
+
+TEST(GffWriter, writes_explicit_save_facing_signatures_independent_of_resource_type) {
+    Gff root(0, {});
+    const std::vector<std::string> signatures {
+        "IFO ", "GVT ", "PT  ", "NFO ", "FAC ", "ARE ", "GIT ", "UTC "};
+
+    for (const auto &signature : signatures) {
+        auto encoded = GffWriter(GffFileFormat::v32(signature), root).toBytes();
+        EXPECT_EQ(signature + "V3.2", firstEight(encoded));
+        auto decoded = readGff(encoded);
+        ASSERT_TRUE(decoded->signature());
+        EXPECT_EQ(signature + "V3.2", *decoded->signature());
+    }
+}
+
+TEST(GffWriter, rejects_invalid_explicit_format) {
+    EXPECT_THROW(GffFileFormat::v32("GVT"), ValidationException);
+    EXPECT_THROW(GffFileFormat::v32(std::string("GV\0T", 4)), ValidationException);
+    EXPECT_THROW(GffFileFormat("GVT ", "3.2"), ValidationException);
+    EXPECT_THROW(GffFileFormat("GVT ", "V4.0"), ValidationException);
+    Gff root(0, {});
+    EXPECT_THROW(GffWriter(ResType::Txt, root), ValidationException);
+}
+
+TEST(GffWriter, round_trips_primitives_nested_structures_empty_values_and_64_bit_fields) {
+    auto nested = std::make_shared<Gff>(7, std::vector<Gff::Field> {
+        Gff::Field::newCExoString("Nested", "value")});
+    Gff root(0, std::vector<Gff::Field> {
+        Gff::Field::newByte("Byte", 255),
+        Gff::Field::newChar("Char", -1),
+        Gff::Field::newWord("Word", 65535),
+        Gff::Field::newShort("Short", -123),
+        Gff::Field::newDword("Dword", 0xfedcba98),
+        Gff::Field::newInt("Int", -123456),
+        Gff::Field::newDword64("Dword64", 0xfedcba9876543210ull),
+        Gff::Field::newInt64("Int64", -0x1234567890ll),
+        Gff::Field::newFloat("Float", 1.25f),
+        Gff::Field::newDouble("Double", -2.5),
+        Gff::Field::newCExoString("EmptyString", ""),
+        Gff::Field::newResRef("EmptyResRef", ""),
+        Gff::Field::newVoid("Void", ByteBuffer {'a', '\0', 'b'}),
+        Gff::Field::newVoid("EmptyVoid", {}),
+        Gff::Field::newStruct("Struct", nested),
+        Gff::Field::newList("EmptyList", {}),
+        Gff::Field::newList("List", {std::make_shared<Gff>(8, std::vector<Gff::Field> {
+                                               Gff::Field::newInt("Value", 42)})})});
+
+    auto decoded = readGff(GffWriter(GffFileFormat::v32("GVT "), root).toBytes());
+
+    ASSERT_EQ(17u, decoded->fields().size());
+    EXPECT_EQ(255u, field(*decoded, "Byte").uintValue);
+    EXPECT_EQ(-1, field(*decoded, "Char").intValue);
+    EXPECT_EQ(65535u, field(*decoded, "Word").uintValue);
+    EXPECT_EQ(-123, field(*decoded, "Short").intValue);
+    EXPECT_EQ(0xfedcba98u, field(*decoded, "Dword").uintValue);
+    EXPECT_EQ(-123456, field(*decoded, "Int").intValue);
+    EXPECT_EQ(0xfedcba9876543210ull, field(*decoded, "Dword64").uint64Value);
+    EXPECT_EQ(-0x1234567890ll, field(*decoded, "Int64").int64Value);
+    EXPECT_FLOAT_EQ(1.25f, field(*decoded, "Float").floatValue);
+    EXPECT_DOUBLE_EQ(-2.5, field(*decoded, "Double").doubleValue);
+    EXPECT_TRUE(field(*decoded, "EmptyString").strValue.empty());
+    EXPECT_TRUE(field(*decoded, "EmptyResRef").strValue.empty());
+    EXPECT_EQ((ByteBuffer {'a', '\0', 'b'}), field(*decoded, "Void").data);
+    EXPECT_TRUE(field(*decoded, "EmptyVoid").data.empty());
+    ASSERT_EQ(1u, field(*decoded, "Struct").children.size());
+    EXPECT_EQ("value", field(*decoded, "Struct").children[0]->getString("Nested"));
+    EXPECT_TRUE(field(*decoded, "EmptyList").children.empty());
+    ASSERT_EQ(1u, field(*decoded, "List").children.size());
+    EXPECT_EQ(42, field(*decoded, "List").children[0]->getInt("Value"));
+}
+
+TEST(GffWriter, round_trips_floating_point_fields_bit_for_bit) {
+    auto floatFromBits = [](uint32_t bits) {
+        float v;
+        memcpy(&v, &bits, sizeof v);
+        return v;
+    };
+    auto doubleFromBits = [](uint64_t bits) {
+        double v;
+        memcpy(&v, &bits, sizeof v);
+        return v;
+    };
+    // Negative zero, a denormal, an infinity and a NaN with a payload: values
+    // a value-converting round trip would lose.
+    const uint32_t floatBits[] = {0x80000000u, 0x00000001u, 0x7f800000u, 0x7fc01234u, 0xff7fffffu};
+    const uint64_t doubleBits[] = {0x8000000000000000ull, 1ull, 0xfff0000000000000ull, 0x7ff8000000001234ull};
+
+    std::vector<Gff::Field> fields;
+    for (size_t i = 0; i < std::size(floatBits); ++i) {
+        fields.push_back(Gff::Field::newFloat("F" + std::to_string(i), floatFromBits(floatBits[i])));
+    }
+    for (size_t i = 0; i < std::size(doubleBits); ++i) {
+        fields.push_back(Gff::Field::newDouble("D" + std::to_string(i), doubleFromBits(doubleBits[i])));
+    }
+    Gff root(0, fields);
+
+    auto decoded = readGff(GffWriter(GffFileFormat::v32("GVT "), root).toBytes());
+
+    for (size_t i = 0; i < std::size(floatBits); ++i) {
+        float value = field(*decoded, "F" + std::to_string(i)).floatValue;
+        uint32_t bits;
+        memcpy(&bits, &value, sizeof bits);
+        EXPECT_EQ(floatBits[i], bits) << i;
+    }
+    for (size_t i = 0; i < std::size(doubleBits); ++i) {
+        double value = field(*decoded, "D" + std::to_string(i)).doubleValue;
+        uint64_t bits;
+        memcpy(&bits, &value, sizeof bits);
+        EXPECT_EQ(doubleBits[i], bits) << i;
+    }
+}
+
+TEST(GffWriter, round_trips_lossless_localized_substrings) {
+    Gff root(0, std::vector<Gff::Field> {
+        Gff::Field::newCExoLocString("None", -1, std::vector<Gff::LocSubstring> {}),
+        Gff::Field::newCExoLocString("One", -1, std::vector<Gff::LocSubstring> {{0, "English male"}}),
+        Gff::Field::newCExoLocString("Languages", -1, std::vector<Gff::LocSubstring> {
+                                                       {0, "English"}, {2, "French"}}),
+        Gff::Field::newCExoLocString("Gender", -1, std::vector<Gff::LocSubstring> {
+                                                    {0, "Male"}, {1, "Female"}}),
+        Gff::Field::newCExoLocString("StrRef", 1234, std::vector<Gff::LocSubstring> {
+                                                     {5, "German female override"}}),
+        Gff::Field::newCExoLocString("NoStrRef", -1, std::vector<Gff::LocSubstring> {
+                                                     {4, "Italian male override"}})});
+
+    auto decoded = readGff(GffWriter(GffFileFormat::v32("DLG "), root).toBytes());
+
+    EXPECT_TRUE(field(*decoded, "None").locSubstrings.empty());
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{0, "English male"}}),
+              field(*decoded, "One").locSubstrings);
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{0, "English"}, {2, "French"}}),
+              field(*decoded, "Languages").locSubstrings);
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{0, "Male"}, {1, "Female"}}),
+              field(*decoded, "Gender").locSubstrings);
+    EXPECT_EQ(1234, field(*decoded, "StrRef").intValue);
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{5, "German female override"}}),
+              field(*decoded, "StrRef").locSubstrings);
+    EXPECT_EQ(-1, field(*decoded, "NoStrRef").intValue);
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{4, "Italian male override"}}),
+              field(*decoded, "NoStrRef").locSubstrings);
+}
+
+TEST(GffWriter, localized_substring_order_is_deterministic) {
+    Gff first(0, {Gff::Field::newCExoLocString(
+                     "Text", -1, std::vector<Gff::LocSubstring> {{4, "four"}, {0, "zero"}, {1, "one"}})});
+    Gff second(0, {Gff::Field::newCExoLocString(
+                      "Text", -1, std::vector<Gff::LocSubstring> {{1, "one"}, {4, "four"}, {0, "zero"}})});
+
+    auto firstBytes = GffWriter(GffFileFormat::v32("GVT "), first).toBytes();
+    auto secondBytes = GffWriter(GffFileFormat::v32("GVT "), second).toBytes();
+
+    EXPECT_EQ(firstBytes, secondBytes);
+    auto decoded = readGff(firstBytes);
+    EXPECT_EQ((std::vector<Gff::LocSubstring> {{0, "zero"}, {1, "one"}, {4, "four"}}),
+              field(*decoded, "Text").locSubstrings);
+}
+
+TEST(GffWriter, repeated_writes_are_identical) {
+    Gff root(0, {Gff::Field::newInt("Value", 7)});
+    GffWriter writer(GffFileFormat::v32("NFO "), root);
+    EXPECT_EQ(writer.toBytes(), writer.toBytes());
+}
+
+TEST(GffWriter, rejects_values_that_would_truncate_or_corrupt_output) {
+    Gff longLabel(0, {Gff::Field::newInt(std::string(17, 'x'), 1)});
+    EXPECT_THROW(GffWriter(GffFileFormat::v32("GVT "), longLabel).toBytes(), ValidationException);
+
+    Gff longResRef(0, {Gff::Field::newResRef("Ref", std::string(256, 'x'))});
+    EXPECT_THROW(GffWriter(GffFileFormat::v32("GVT "), longResRef).toBytes(), ValidationException);
+
+    Gff duplicateLoc(0, {Gff::Field::newCExoLocString(
+                            "Text", -1, std::vector<Gff::LocSubstring> {{0, "first"}, {0, "second"}})});
+    EXPECT_THROW(GffWriter(GffFileFormat::v32("GVT "), duplicateLoc).toBytes(), ValidationException);
+
+    Gff malformedStruct(0, {Gff::Field::newStruct("Child", nullptr)});
+    EXPECT_THROW(GffWriter(GffFileFormat::v32("GVT "), malformedStruct).toBytes(), ValidationException);
+
+    Gff::Field unsupported;
+    unsupported.label = "Unknown";
+    unsupported.type = static_cast<Gff::FieldType>(999);
+    Gff invalidType(0, {unsupported});
+    EXPECT_THROW(GffWriter(GffFileFormat::v32("GVT "), invalidType).toBytes(), ValidationException);
+}

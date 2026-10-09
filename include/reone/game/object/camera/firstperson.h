@@ -1,0 +1,85 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/input/event.h"
+
+#include "../camera.h"
+
+namespace reone {
+
+namespace game {
+
+class FirstPersonCamera : public Camera {
+public:
+    FirstPersonCamera(
+        uint32_t id,
+        float fovy,
+        std::string sceneName,
+        Game &game,
+        ServicesView &services) :
+        Camera(
+            id,
+            std::move(sceneName),
+            game,
+            services),
+        _fovy(fovy) {
+    }
+
+    void load();
+
+    bool handle(const input::Event &event) override;
+    void update(float dt) override;
+    void stopMovement() override;
+
+    void setPosition(const glm::vec3 &position);
+    void setFacing(float facing);
+    void setLookAt(const glm::vec3 &target);
+
+    const glm::vec3 &position() const { return _position; }
+    float pitch() const { return _pitch; }
+
+private:
+    enum class MovementDirection {
+        None,
+        Right,
+        Left,
+        Forward,
+        Back,
+        Up,
+        Down
+    };
+
+    float _fovy;
+
+    glm::vec3 _position {0.0f};
+    float _pitch {0.0f};
+    float _multiplier {1.0f};
+    MovementDirection _moveDir {MovementDirection::None};
+
+    bool handleMouseMotion(const input::MouseMotionEvent &event);
+    bool handleKeyDown(const input::KeyEvent &event);
+    bool handleKeyUp(const input::KeyEvent &event);
+
+    void updateSceneNode();
+    float projectionFovy() const override;
+};
+
+} // namespace game
+
+} // namespace reone

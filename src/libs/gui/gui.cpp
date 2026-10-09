@@ -1,0 +1,558 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/gui/gui.h"
+
+#include "reone/graphics/context.h"
+#include "reone/graphics/mesh.h"
+#include "reone/graphics/meshregistry.h"
+#include "reone/graphics/shaderregistry.h"
+#include "reone/graphics/texture.h"
+#include "reone/graphics/uniforms.h"
+#include "reone/gui/control/button.h"
+#include "reone/gui/control/iconchain.h"
+#include "reone/gui/control/imagebutton.h"
+#include "reone/gui/control/label.h"
+#include "reone/gui/control/listbox.h"
+#include "reone/gui/control/panel.h"
+#include "reone/gui/control/progressbar.h"
+#include "reone/gui/control/scrollbar.h"
+#include "reone/gui/control/slider.h"
+#include "reone/gui/control/togglebutton.h"
+#include "reone/resource/exception/notfound.h"
+#include "reone/resource/gff.h"
+#include "reone/resource/parser/gff/gui.h"
+#include "reone/resource/provider/gffs.h"
+#include "reone/resource/provider/textures.h"
+#include "reone/resource/resources.h"
+#include "reone/scene/render/pass/pbr.h"
+#include "reone/scene/render/pass/retro.h"
+#include "reone/system/exception/validation.h"
+#include "reone/system/logutil.h"
+
+using namespace reone::graphics;
+using namespace reone::resource;
+using namespace reone::scene;
+
+namespace reone {
+
+namespace gui {
+
+void GUI::load(const Gff &gui) {
+    auto guiParsed = resource::generated::parseGUI(gui);
+    auto type = Control::getType(guiParsed);
+    auto tag = Control::getTag(guiParsed);
+    auto rootControl = newControl(type, tag);
+    rootControl->load(guiParsed);
+
+    _tagToControl.insert({tag, *rootControl});
+    _rootControl = *rootControl;
+    _controls.push_back(std::move(rootControl));
+
+    for (auto &controlStruct : guiParsed.CONTROLS) {
+        loadControl(controlStruct);
+    }
+    for (auto &[tag, children] : _controlTagToChildren) {
+        auto maybeParent = _tagToControl.find(tag);
+        if (maybeParent == _tagToControl.end()) {
+            throw ValidationException("Parent control not found: " + tag);
+        }
+        auto &parent = maybeParent->second.get();
+        for (auto &child : children) {
+            parent.addChildToBack(child);
+        }
+    }
+
+    applyLayout();
+}
+
+float GUI::scaledFactor() const {
+    // KVP's retail draw-stream scaler uses the limiting axis: content is as
+    // large as possible without cropping or changing its authored aspect.
+    //
+    // Background artwork is a separate cover layer drawn by renderBackground,
+    // so it does not enter this factor: composite GUIs such as the in-game tab
+    // strip and its active tab must share one coordinate space regardless of
+    // whether either of them carries a backdrop.
+    return std::min(
+               _options.width / static_cast<float>(_resolutionX),
+               _options.height / static_cast<float>(_resolutionY)) *
+           _options.guiScale;
+}
+
+void GUI::loadControl(const resource::generated::GUI_CONTROLS &gui) {
+    auto type = Control::getType(gui);
+    auto tag = Control::getTag(gui);
+    auto parentTag = Control::getParent(gui);
+    debug(str(boost::format("Loading control: type=%s, tag='%s', parent='%s'") % static_cast<int>(type) % tag % parentTag),
+          LogChannel::GUI);
+
+    auto control = newControl(type, tag);
+    if (!control) {
+        return;
+    }
+    control->load(gui);
+    if (_hasDefaultHilightColor) {
+        control->setHilightColor(_defaultHilightColor);
+    }
+
+    _tagToControl.insert({tag, *control});
+    _controlTagToChildren[parentTag].push_back(*control);
+    _controls.push_back(std::move(control));
+}
+
+void GUI::positionRelativeToCenter(Control &control) {
+    // Anchored controls - HUD icons, portraits, the minimap - scale like
+    // everything else, uniformly and aspect-preserved, while keeping their
+    // authored screen-edge attachment: the inset from the anchored edge
+    // scales with the same factor as the control itself. Before this they
+    // kept their native 800x600-era pixel sizes on any screen.
+    float s = scaledFactor();
+    Control::Extent extent(control.authoredExtent());
+    bool anchorRight = extent.left >= 0.5f * _resolutionX;
+    bool anchorBottom = extent.top >= 0.5f * _resolutionY;
+    int left = static_cast<int>(extent.left * s);
+    int top = static_cast<int>(extent.top * s);
+    if (anchorRight) {
+        left = _options.width - static_cast<int>((_resolutionX - extent.left) * s);
+    }
+    if (anchorBottom) {
+        top = _options.height - static_cast<int>((_resolutionY - extent.top) * s);
+    }
+    extent.left = left;
+    extent.top = top;
+    extent.width = static_cast<int>(extent.width * s);
+    extent.height = static_cast<int>(extent.height * s);
+    control.setScale(s * textScale());
+    control.setExtent(std::move(extent));
+}
+
+void GUI::scaleRelativeToCenter(Control &control) {
+    float s = scaledFactor();
+    Control::Extent extent(control.authoredExtent());
+    extent.left = screenCenter().x + static_cast<int>((extent.left - _resolutionX / 2) * s);
+    extent.top = screenCenter().y + static_cast<int>((extent.top - _resolutionY / 2) * s);
+    extent.width = static_cast<int>(extent.width * s);
+    extent.height = static_cast<int>(extent.height * s);
+    control.setPresentationScale(s);
+    control.setExtent(std::move(extent));
+}
+
+bool GUI::keepsAspect(const Control &control) const {
+    auto overridden = _keepsAspectByControlTag.find(control.tag());
+    if (overridden != _keepsAspectByControlTag.end()) {
+        return overridden->second;
+    }
+    const auto &extent = control.authoredExtent();
+    if (extent.width <= 0 || extent.height <= 0) {
+        return false;
+    }
+    // A vertical track (the alignment bar) is a picture of a bar.
+    if (control.controlType() == ControlType::Slider) {
+        return extent.height > extent.width;
+    }
+    // Small, roughly square or tall controls are pictures - portraits, item
+    // and menu icons, portrait frames, vertical gauges - whether their image
+    // is authored or set later. Wider or larger controls are frames, strips,
+    // lists, buttons and text, whose slices and text stretch cleanly.
+    static constexpr int kMaxPictureSize = 160;
+    float aspect = extent.width / static_cast<float>(extent.height);
+    return std::max(extent.width, extent.height) <= kMaxPictureSize && aspect >= 0.25f && aspect <= 1.67f;
+}
+
+void GUI::layoutWidescreen(Control &control) {
+    float sx = _options.width / static_cast<float>(_resolutionX);
+    float sy = _options.height / static_cast<float>(_resolutionY);
+    float s = std::min(sx, sy);
+    const auto &authored = control.authoredExtent();
+    auto group = _groupByControlTag.find(control.tag());
+    if (&control != &_rootControl->get() && group != _groupByControlTag.end()) {
+        // The group's authored bounds, from every member.
+        int left = authored.left, top = authored.top;
+        int right = authored.left + authored.width, bottom = authored.top + authored.height;
+        for (const auto &other : _controls) {
+            auto it = _groupByControlTag.find(other->tag());
+            if (it == _groupByControlTag.end() || it->second != group->second) {
+                continue;
+            }
+            const auto &e = other->authoredExtent();
+            left = std::min(left, e.left);
+            top = std::min(top, e.top);
+            right = std::max(right, e.left + e.width);
+            bottom = std::max(bottom, e.top + e.height);
+        }
+        float groupX = 0.5f * (left + right);
+        float groupY = 0.5f * (top + bottom);
+        control.setExtent({static_cast<int>(groupX * sx + (authored.left - groupX) * s),
+                           static_cast<int>(groupY * sy + (authored.top - groupY) * s),
+                           static_cast<int>(authored.width * s),
+                           static_cast<int>(authored.height * s)});
+        control.setPresentationScale(s);
+        return;
+    }
+    if (&control == &_rootControl->get() || !keepsAspect(control)) {
+        control.stretch(sx, sy);
+        return;
+    }
+    float centerX = (authored.left + 0.5f * authored.width) * sx;
+    float centerY = (authored.top + 0.5f * authored.height) * sy;
+    int width = static_cast<int>(authored.width * s);
+    int height = static_cast<int>(authored.height * s);
+    control.setExtent({static_cast<int>(centerX - 0.5f * width), static_cast<int>(centerY - 0.5f * height), width, height});
+    control.setPresentationScale(s);
+}
+
+void GUI::applyControlLayout(Control &control) {
+    switch (controlScaling(control)) {
+    case ScalingMode::Widescreen:
+        layoutWidescreen(control);
+        break;
+    case ScalingMode::PositionRelativeToCenter:
+        if (&control != &_rootControl->get()) {
+            positionRelativeToCenter(control);
+        }
+        break;
+    case ScalingMode::ScaledRelativeToCenter:
+        if (&control != &_rootControl->get()) {
+            scaleRelativeToCenter(control);
+        }
+        break;
+    case ScalingMode::Scaled:
+    case ScalingMode::ScaledTopCenter: {
+        float factor = scaledFactor();
+        control.stretch(factor, factor);
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+void GUI::applyLayout() {
+    if (!_rootControl) {
+        return;
+    }
+
+    _rootOffset = {0, 0};
+
+    if (_scaling == ScalingMode::Center) {
+        _rootOffset = {
+            screenCenter().x - _resolutionX / 2,
+            screenCenter().y - _resolutionY / 2};
+    } else if (_scaling == ScalingMode::CenterHorizontal) {
+        _rootOffset.x = screenCenter().x - _resolutionX / 2;
+    } else if (_scaling == ScalingMode::Scaled || _scaling == ScalingMode::ScaledTopCenter) {
+        float factor = scaledFactor();
+        int scaledWidth = static_cast<int>(_resolutionX * factor);
+        int scaledHeight = static_cast<int>(_resolutionY * factor);
+        _rootOffset.x = (_options.width - scaledWidth) / 2;
+        if (_scaling == ScalingMode::Scaled) {
+            _rootOffset.y = (_options.height - scaledHeight) / 2;
+        }
+    }
+
+    for (auto &control : _controls) {
+        applyControlLayout(*control);
+    }
+
+    const Control::Extent &rootExtent = _rootControl->get().extent();
+    _controlOffset = _rootOffset + glm::ivec2(rootExtent.left, rootExtent.top);
+}
+
+GUI::ScalingMode GUI::controlScaling(const Control &control) const {
+    auto maybeScaling = _scalingByControlTag.find(control.tag());
+    return maybeScaling != _scalingByControlTag.end() ? maybeScaling->second : _scaling;
+}
+
+glm::ivec2 GUI::renderOffset(const Control &control) const {
+    switch (controlScaling(control)) {
+    case ScalingMode::PositionRelativeToCenter:
+    case ScalingMode::ScaledRelativeToCenter:
+        return {0, 0};
+    default:
+        return &control == &_rootControl->get() ? _rootOffset : _controlOffset;
+    }
+}
+
+glm::ivec2 GUI::controlCoordinates(const Control &control, int screenX, int screenY) const {
+    auto offset = renderOffset(control);
+    return {screenX - offset.x, screenY - offset.y};
+}
+
+void GUI::setBackground(std::shared_ptr<graphics::Texture> texture) {
+    _background = std::move(texture);
+}
+
+bool GUI::handle(const input::Event &event) {
+    switch (event.type) {
+    case input::EventType::KeyDown:
+        return handleKeyDown(event.key.code);
+
+    case input::EventType::KeyUp:
+        return handleKeyUp(event.key.code);
+
+    case input::EventType::MouseMotion: {
+        updateSelection(event.motion.x, event.motion.y);
+        if (_selection) {
+            auto ctrlCoords = controlCoordinates(_selection->get(), event.motion.x, event.motion.y);
+            _selection->get().handleMouseMotion(ctrlCoords.x, ctrlCoords.y);
+        }
+        if (_leftMouseDown && _pressedControl) {
+            auto ctrlCoords = controlCoordinates(*_pressedControl, event.motion.x, event.motion.y);
+            if (_pressedControl->handleMouseDrag(ctrlCoords.x, ctrlCoords.y)) {
+                return true;
+            }
+        }
+        break;
+    }
+    case input::EventType::MouseButtonDown:
+        if (event.button.button == input::MouseButton::Left) {
+            _leftMouseDown = true;
+            auto control = findControlAt(
+                event.button.x, event.button.y,
+                [](const auto &control) { return control.isSelectable(); });
+            // Only sliders take drags; other controls keep click-on-release.
+            _pressedControl = control && control->get().controlType() == ControlType::Slider ? &control->get() : nullptr;
+            if (_pressedControl) {
+                auto ctrlCoords = controlCoordinates(*_pressedControl, event.button.x, event.button.y);
+                if (_pressedControl->handleMouseDrag(ctrlCoords.x, ctrlCoords.y)) {
+                    return true;
+                }
+            }
+        }
+        break;
+    case input::EventType::MouseButtonUp:
+        if (_leftMouseDown && event.button.button == input::MouseButton::Left) {
+            _leftMouseDown = false;
+            _pressedControl = nullptr;
+            auto control = findControlAt(
+                event.button.x, event.button.y,
+                [](const auto &control) { return control.isSelectable(); });
+            if (control) {
+                debug("Control clicked: " + control->get().tag(), LogChannel::GUI);
+                onClick(control->get().tag());
+                auto ctrlCoords = controlCoordinates(control->get(), event.button.x, event.button.y);
+                return control->get().handleClick(ctrlCoords.x, ctrlCoords.y, event.button.clicks);
+            }
+        }
+        break;
+
+    case input::EventType::MouseWheel:
+        if (_selection && _selection->get().handleMouseWheel(event.wheel.x, event.wheel.y))
+            return true;
+        break;
+    }
+
+    return false;
+}
+
+bool GUI::handleKeyDown(input::KeyCode key) {
+    return false;
+}
+
+bool GUI::handleKeyUp(input::KeyCode key) {
+    return false;
+}
+
+void GUI::updateSelection(int screenX, int screenY) {
+    auto control = findControlAt(
+        screenX, screenY,
+        [](const auto &control) { return control.isSelectable(); });
+    if ((!_selection && !control) ||
+        (_selection && control && _selection->get().id() == control->get().id())) {
+        return;
+    }
+    if (_selection) {
+        _selection->get().setSelected(false);
+        onSelectionChanged(_selection->get().tag(), false);
+    }
+    _selection = control;
+    if (control) {
+        control->get().setSelected(true);
+        onSelectionChanged(control->get().tag(), true);
+    }
+}
+
+std::optional<std::reference_wrapper<Control>> GUI::findControlAt(int x, int y,
+                                                                  const std::function<bool(const Control &)> &test) const {
+    if (!_rootControl) {
+        return std::nullopt;
+    }
+    std::stack<std::reference_wrapper<Control>> controls;
+    controls.push(*_rootControl);
+    while (!controls.empty()) {
+        auto &control = controls.top().get();
+        controls.pop();
+        auto ctrlCoords = controlCoordinates(control, x, y);
+        if (control.isVisible() && !control.isDisabled() &&
+            control.extent().contains(ctrlCoords.x, ctrlCoords.y) &&
+            test(control)) {
+            return control;
+        }
+        for (auto &child : control.children()) {
+            controls.push(child);
+        }
+    }
+    return std::nullopt;
+}
+
+void GUI::update(float dt) {
+    if (!_rootControl) {
+        return;
+    }
+    _rootControl->get().update(dt);
+}
+
+void GUI::render() {
+    _graphicsSvc.context.withBlendMode(BlendMode::Normal, [this]() {
+        auto retroPass = RetroRenderPass(
+            _options,
+            _graphicsSvc.context,
+            _graphicsSvc.shaderRegistry,
+            _graphicsSvc.statistic,
+            _graphicsSvc.meshRegistry,
+            _graphicsSvc.textureRegistry,
+            _graphicsSvc.uniforms);
+        auto pbrPass = PBRRenderPass(
+            _options,
+            _graphicsSvc.context,
+            _graphicsSvc.shaderRegistry,
+            _graphicsSvc.statistic,
+            _graphicsSvc.meshRegistry,
+            _graphicsSvc.pbrTextures,
+            _graphicsSvc.textureRegistry,
+            _graphicsSvc.uniforms);
+        auto &pass = _options.pbr ? static_cast<IRenderPass &>(pbrPass)
+                                  : static_cast<IRenderPass &>(retroPass);
+        if (_background) {
+            renderBackground(pass);
+        }
+        if (!_rootControl) {
+            return;
+        }
+        std::queue<std::pair<std::reference_wrapper<Control>, glm::ivec2>> controls;
+        controls.push({*_rootControl, renderOffset(_rootControl->get())});
+        while (!controls.empty()) {
+            auto &[controlWrapper, offset] = controls.front();
+            auto &control = controlWrapper.get();
+            control.render({_options.width, _options.height}, offset, pass);
+            for (auto &child : control.children()) {
+                controls.push({child, renderOffset(child)});
+            }
+            controls.pop();
+        }
+    });
+}
+
+void GUI::renderBackground(IRenderPass &pass) {
+    // The outer background is a surround, not part of the control layout. It
+    // covers the viewport without changing aspect, while controls use the
+    // independent limiting-axis factor above.
+    float cover = std::max(_options.width / static_cast<float>(_resolutionX),
+                           _options.height / static_cast<float>(_resolutionY));
+    glm::ivec2 size {
+        static_cast<int>(_resolutionX * cover),
+        static_cast<int>(_resolutionY * cover)};
+    pass.drawImage(
+        *_background,
+        {(_options.width - size.x) / 2, (_options.height - size.y) / 2},
+        size);
+}
+
+void GUI::clearSelection() {
+    if (_selection) {
+        _selection->get().setSelected(false);
+        onSelectionChanged(_selection->get().tag(), false);
+        _selection.reset();
+    }
+}
+
+std::shared_ptr<Control> GUI::findControl(const std::string &tag) const {
+    for (auto &control : _controls) {
+        if (control->tag() == tag) {
+            return control;
+        }
+    }
+    return nullptr;
+}
+
+std::unique_ptr<Control> GUI::newControl(
+    ControlType type,
+    std::string tag) {
+    std::unique_ptr<Control> control;
+    switch (type) {
+    case ControlType::Panel:
+        control = std::make_unique<Panel>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::Label:
+        control = std::make_unique<Label>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::ImageButton:
+        control = std::make_unique<ImageButton>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::Button:
+        control = std::make_unique<Button>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::ToggleButton:
+        control = std::make_unique<ToggleButton>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::Slider:
+        control = std::make_unique<Slider>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::ScrollBar:
+        control = std::make_unique<ScrollBar>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::ProgressBar:
+        control = std::make_unique<ProgressBar>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::ListBox:
+        control = std::make_unique<ListBox>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    case ControlType::IconChain:
+        control = std::make_unique<IconChain>(*this, _sceneGraphs, _graphicsSvc, _resourceSvc);
+        break;
+    default:
+        debug("Unsupported control type: " + std::to_string(static_cast<int>(type)), LogChannel::GUI);
+        return nullptr;
+    }
+
+    control->setTag(tag);
+
+    return control;
+}
+
+void GUI::addControlToFront(std::shared_ptr<Control> control, ControlCoordinates coordinates) {
+    if (coordinates == ControlCoordinates::Authored) {
+        applyControlLayout(*control);
+    }
+    _rootControl->get().addChildToFront(*control);
+    _tagToControl.insert({control->tag(), *control});
+    _controls.push_back(std::move(control));
+}
+
+void GUI::addControlToBack(std::shared_ptr<Control> control, ControlCoordinates coordinates) {
+    if (coordinates == ControlCoordinates::Authored) {
+        applyControlLayout(*control);
+    }
+    _rootControl->get().addChildToBack(*control);
+    _tagToControl.insert({control->tag(), *control});
+    _controls.push_back(std::move(control));
+}
+
+} // namespace gui
+
+} // namespace reone

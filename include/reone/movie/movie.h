@@ -1,0 +1,108 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/audio/source.h"
+#include "reone/graphics/texture.h"
+#include "reone/system/types.h"
+
+#include "videostream.h"
+
+namespace reone {
+
+namespace graphics {
+
+struct GraphicsServices;
+
+}
+
+namespace audio {
+
+class IAudioMixer;
+
+}
+
+namespace movie {
+
+class BikReader;
+
+class IMovie {
+public:
+    virtual ~IMovie() = default;
+
+    virtual void update(float dt) = 0;
+    virtual void render() = 0;
+
+    virtual void finish() = 0;
+
+    virtual bool isFinished() const = 0;
+};
+
+class Movie : public IMovie, boost::noncopyable {
+public:
+    Movie(
+        graphics::GraphicsServices &graphicsSvc,
+        audio::IAudioMixer &audioPlayer) :
+        _graphicsSvc(graphicsSvc),
+        _audioPlayer(audioPlayer) {
+    }
+
+    ~Movie() { deinit(); }
+
+    void init();
+    void deinit();
+
+    void update(float dt) override;
+    void render() override;
+
+    /**
+     * Ends the movie: its audio stops with the picture. The mixer keeps a
+     * playing source alive on its own, so a skipped movie would otherwise go
+     * on being heard after its last frame.
+     */
+    void finish() override;
+
+    bool isFinished() const override { return _finished; }
+
+    void setVideoStream(std::shared_ptr<VideoStream> stream) { _videoStream = std::move(stream); }
+    void setAudioClip(std::shared_ptr<audio::AudioClip> stream) { _audioStream = std::move(stream); }
+
+private:
+    graphics::GraphicsServices &_graphicsSvc;
+    audio::IAudioMixer &_audioPlayer;
+
+    bool _inited {false};
+
+    int _width {0};
+    int _height {0};
+
+    float _time {0.0f};
+    bool _finished {false};
+
+    std::shared_ptr<VideoStream> _videoStream;
+    std::shared_ptr<audio::AudioClip> _audioStream;
+
+    std::shared_ptr<graphics::Texture> _texture;
+    std::shared_ptr<audio::AudioSource> _audioSource;
+
+    void stopAudio();
+};
+
+} // namespace movie
+
+} // namespace reone

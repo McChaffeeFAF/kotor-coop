@@ -1,0 +1,190 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/game/gui/computer.h"
+
+#include "reone/game/game.h"
+
+#include <boost/algorithm/string.hpp>
+
+#include "reone/game/di/services.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/object/item.h"
+#include "reone/game/party.h"
+
+using namespace reone::audio;
+
+using namespace reone::graphics;
+using namespace reone::gui;
+using namespace reone::resource;
+
+namespace reone {
+
+namespace game {
+
+static void setVisible(const std::shared_ptr<Label> &control, bool visible) {
+    if (control) {
+        control->setVisible(visible);
+    }
+}
+
+void ComputerGUI::init() {
+    Conversation::init();
+    _cameraGUI.init();
+}
+
+bool ComputerGUI::handle(const input::Event &event) {
+    if (_presentation == Presentation::Camera) {
+        return _cameraGUI.handle(event);
+    }
+    return Conversation::handle(event);
+}
+
+void ComputerGUI::update(float dt) {
+    Conversation::update(dt);
+    // Scripts on the running entry spend spikes and parts; show it at once.
+    refreshCounts();
+    if (_presentation == Presentation::Camera) {
+        _cameraGUI.update(dt);
+    }
+}
+
+void ComputerGUI::render() {
+    if (_presentation == Presentation::Camera) {
+        _cameraGUI.render();
+    } else {
+        Conversation::render();
+    }
+}
+
+void ComputerGUI::onStart() {
+    _presentation = Presentation::Normal;
+}
+
+void ComputerGUI::onFinish() {
+    _presentation = Presentation::Normal;
+}
+
+static void setText(const std::shared_ptr<Label> &control, const std::string &text) {
+    if (control) {
+        control->setTextMessage(text);
+    }
+}
+
+void ComputerGUI::refreshCounts() {
+    // Consumables are counted over the shared party inventory by item tag.
+    int spikes = 0;
+    int parts = 0;
+    auto &party = _game.party();
+    if (auto owner = party.sharedInventoryReceiver(party.actualPlayer())) {
+        for (const auto &item : owner->items()) {
+            if (boost::iequals(item->tag(), "k_computer_spike")) {
+                spikes += item->stackSize();
+            } else if (boost::iequals(item->tag(), "k_repair_part")) {
+                parts += item->stackSize();
+            }
+        }
+    }
+    setText(_controls.LBL_COMP_SPIKES_VAL, std::to_string(spikes));
+    setText(_controls.LBL_REP_UNITS_VAL, std::to_string(parts));
+
+    // The leader operates the terminal; its skills make the checks.
+    auto leader = party.getLeader();
+    setText(_controls.LBL_COMP_SKILL_VAL, leader ? std::to_string(leader->getSkillValue(SkillType::ComputerUse)) : "");
+    setText(_controls.LBL_REP_SKILL_VAL, leader ? std::to_string(leader->getSkillValue(SkillType::Repair)) : "");
+}
+
+void ComputerGUI::onLoadEntry() {
+    refreshCounts();
+    int cameraId = 0;
+    _presentation = getCamera(cameraId) == CameraType::Static ? Presentation::Camera : Presentation::Normal;
+    if (_presentation == Presentation::Camera) {
+        _cameraGUI.clearSelection();
+    }
+}
+
+void ComputerGUI::onEntryEnded() {
+    _presentation = Presentation::Normal;
+}
+
+void ComputerGUI::returnFromCamera() {
+    if (_presentation == Presentation::Camera) {
+        endCurrentEntry();
+    }
+}
+
+void ComputerGUI::preload(IGUI &gui) {
+    GameGUI::preload(gui);
+}
+
+void ComputerGUI::onGUILoaded() {
+    bindControls();
+    configureMessage();
+    configureReplies();
+    hideK1StaticBands();
+}
+
+void ComputerGUI::configureMessage() {
+    _controls.LB_MESSAGE->setProtoMatchContent(true);
+    _controls.LB_MESSAGE->protoItem().setHilightColor(_hilightColor);
+    _controls.LB_MESSAGE->protoItem().setTextColor(_baseColor);
+}
+
+void ComputerGUI::configureReplies() {
+    _controls.LB_REPLIES->setProtoMatchContent(true);
+    _controls.LB_REPLIES->protoItem().setHilightColor(_hilightColor);
+    _controls.LB_REPLIES->protoItem().setTextColor(_baseColor);
+    _controls.LB_REPLIES->setOnItemClick([this](auto &item) {
+        int replyIdx = stoi(item);
+        pickReply(replyIdx);
+    });
+}
+
+void ComputerGUI::hideK1StaticBands() {
+    if (_game.isTSL()) {
+        return;
+    }
+
+    // K1 computer.gui ships static band overlays that duplicate the terminal background in reone.
+    setVisible(_controls.LBL_STATIC1, false);
+    setVisible(_controls.LBL_STATIC2, false);
+    setVisible(_controls.LBL_STATIC3, false);
+    setVisible(_controls.LBL_STATIC4, false);
+}
+
+void ComputerGUI::setMessage(std::string message) {
+    ListBox::Item item;
+    item.text = std::move(message);
+
+    _controls.LB_MESSAGE->clearItems();
+    _controls.LB_MESSAGE->addItem(std::move(item));
+}
+
+void ComputerGUI::setReplyLines(std::vector<std::string> lines) {
+    _controls.LB_REPLIES->clearItems();
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        ListBox::Item item;
+        item.tag = std::to_string(i);
+        item.text = lines[i];
+        _controls.LB_REPLIES->addItem(std::move(item));
+    }
+}
+
+} // namespace game
+
+} // namespace reone

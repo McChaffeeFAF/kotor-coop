@@ -1,0 +1,305 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/resource/strings.h"
+#include "reone/system/types.h"
+
+namespace reone {
+
+namespace resource {
+
+class Gff : boost::noncopyable {
+public:
+    /**
+     * One CExoLocString override. The wire ID encodes language and gender as
+     * (language << 1) | gender, where male is 0 and female is 1.
+     */
+    struct LocSubstring {
+        uint32_t id {0};
+        std::string text;
+
+        bool operator==(const LocSubstring &rhs) const {
+            return id == rhs.id && text == rhs.text;
+        }
+    };
+
+    enum class FieldType : uint16_t {
+        Byte = 0,
+        Char = 1,
+        Word = 2,
+        Short = 3,
+        Dword = 4,
+        Int = 5,
+        Dword64 = 6,
+        Int64 = 7,
+        Float = 8,
+        Double = 9,
+        CExoString = 10,
+        ResRef = 11,
+        CExoLocString = 12,
+        Void = 13,
+        Struct = 14,
+        List = 15,
+        Orientation = 16,
+        Vector = 17,
+        StrRef = 18
+    };
+
+    struct Field {
+        FieldType type {FieldType::Int};
+        std::string label;
+        std::string strValue; /**< covers CExoString and ResRef */
+        std::vector<LocSubstring> locSubstrings; /**< lossless CExoLocString overrides */
+        glm::vec3 vecValue {0.0f};
+        glm::quat quatValue {1.0f, 0.0f, 0.0f, 0.0f};
+        ByteBuffer data;
+        std::vector<std::shared_ptr<Gff>> children;
+
+        union {
+            int32_t intValue;   /**< covers Char, Short, Int and StrRef */
+            uint32_t uintValue; /**< covers Byte, Word and Dword */
+            int64_t int64Value;
+            uint64_t uint64Value {0};
+            float floatValue;
+            double doubleValue;
+        };
+
+        Field() = default;
+
+        Field(FieldType type, std::string label) :
+            type(type), label(std::move(label)) {
+        }
+
+        std::string toString() const;
+
+        Field deepCopy() const {
+            Field copy {type, label};
+            copy.strValue = strValue;
+            copy.locSubstrings = locSubstrings;
+            copy.vecValue = vecValue;
+            copy.quatValue = quatValue;
+            copy.data = data;
+            // TODO: memcpy?
+            copy.intValue = intValue;
+            copy.uintValue = uintValue;
+            copy.int64Value = int64Value;
+            copy.uint64Value = uint64Value;
+            copy.floatValue = floatValue;
+            copy.doubleValue = doubleValue;
+            // END TODO
+            for (const auto &child : children) {
+                copy.children.push_back(child->deepCopy());
+            }
+            return copy;
+        }
+
+        bool operator==(const Field &rhs) const {
+            if (this == &rhs) {
+                return true;
+            }
+            if (type != rhs.type) {
+                return false;
+            }
+            switch (type) {
+            case FieldType::Byte:
+            case FieldType::Word:
+            case FieldType::Dword:
+                return uintValue == rhs.uintValue;
+            case FieldType::Char:
+            case FieldType::Short:
+            case FieldType::Int:
+            case FieldType::StrRef:
+                return intValue == rhs.intValue;
+            case FieldType::Dword64:
+                return uint64Value == rhs.uint64Value;
+            case FieldType::Int64:
+                return int64Value == rhs.int64Value;
+            case FieldType::Float:
+                return floatValue == rhs.floatValue;
+            case FieldType::Double:
+                return doubleValue == rhs.doubleValue;
+            case FieldType::CExoString:
+            case FieldType::ResRef:
+                return strValue == rhs.strValue;
+            case FieldType::CExoLocString:
+                return intValue == rhs.intValue && locSubstrings == rhs.locSubstrings;
+            case FieldType::Void:
+                return data == rhs.data;
+            case FieldType::Struct:
+            case FieldType::List:
+                return children == rhs.children;
+            case FieldType::Orientation:
+                return quatValue == rhs.quatValue;
+            case FieldType::Vector:
+                return vecValue == rhs.vecValue;
+            }
+        }
+
+        inline bool operator!=(const Field &rhs) const {
+            return !operator==(rhs);
+        }
+
+        static Field newByte(std::string label, uint32_t val);
+        static Field newChar(std::string label, int32_t val);
+        static Field newWord(std::string label, uint32_t val);
+        static Field newShort(std::string label, int32_t val);
+        static Field newDword(std::string label, uint32_t val);
+        static Field newInt(std::string label, int32_t val);
+        static Field newDword64(std::string label, uint64_t val);
+        static Field newInt64(std::string label, int64_t val);
+        static Field newFloat(std::string label, float val);
+        static Field newDouble(std::string label, double val);
+        static Field newCExoString(std::string label, std::string val);
+        static Field newResRef(std::string label, std::string val);
+        static Field newCExoLocString(std::string label, int32_t strRef, std::string val);
+        static Field newCExoLocString(
+            std::string label,
+            int32_t strRef,
+            std::vector<LocSubstring> substrings);
+        static Field newVoid(std::string label, ByteBuffer val);
+        static Field newStruct(std::string label, std::shared_ptr<Gff> val);
+        static Field newList(std::string label, std::vector<std::shared_ptr<Gff>> val);
+        static Field newOrientation(std::string label, glm::quat val);
+        static Field newVector(std::string label, glm::vec3 val);
+        static Field newStrRef(std::string label, int32_t val);
+    };
+
+    class Builder {
+    public:
+        Builder &type(uint32_t type) {
+            _type = type;
+            return *this;
+        }
+
+        Builder &field(Field field) {
+            _fields.push_back(std::move(field));
+            return *this;
+        }
+
+        std::shared_ptr<Gff> build() {
+            return std::make_shared<Gff>(_type, _fields);
+        }
+
+    private:
+        uint32_t _type {0};
+        std::vector<Field> _fields;
+    };
+
+    Gff(uint32_t type, std::vector<Field> fields) :
+        _type(type), _fields(std::move(fields)) {
+    }
+
+    bool readByte(uint8_t &val, std::string_view label) const;
+    bool readChar(int8_t &val, std::string_view label) const;
+    bool readWord(uint16_t &val, std::string_view label) const;
+    bool readShort(int16_t &val, std::string_view label) const;
+    bool readDword(uint32_t &val, std::string_view label) const;
+    bool readInt(int32_t &val, std::string_view label) const;
+    bool readDword64(uint64_t &val, std::string_view label) const;
+    bool readInt64(int64_t &val, std::string_view label) const;
+    bool readFloat(float &val, std::string_view label) const;
+    bool readDouble(double &val, std::string_view label) const;
+    bool readVector(glm::vec3 &val, std::string_view label) const;
+    bool readOrientation(glm::quat &val, std::string_view label) const;
+    bool readString(std::string &val, std::string_view label) const;
+    bool readResRef(std::string &val, std::string_view label) const;
+    bool readLocString(LocString &val, std::string_view label, IStrings &strings) const;
+    bool readStrRef(StrRef &val, std::string_view label, IStrings &strings) const;
+
+    template <class T>
+    bool readEnum(T &value, const std::string &label) const {
+        if (const Field *field = get(label)) {
+            value = static_cast<T>(field->uintValue);
+            return true;
+        }
+        return false;
+    }
+
+    bool readBool(bool &value, std::string_view label) const {
+        if (const Field *field = get(label)) {
+            value = field->uintValue;
+            return true;
+        }
+        return false;
+    }
+
+    bool has(std::string_view name) const { return get(name) != nullptr; }
+    bool getBool(const std::string &name, bool defValue = false) const;
+    int32_t getInt(const std::string &name, int32_t defValue = 0) const;
+    int64_t getInt64(const std::string &name, int64_t defValue = 0) const;
+    uint32_t getUint(const std::string &name, uint32_t defValue = 0) const;
+    uint64_t getUint64(const std::string &name, uint64_t defValue = 0) const;
+    glm::vec3 getColor(const std::string &name, glm::vec3 defValue = glm::vec3(0.0f)) const;
+    float getFloat(const std::string &name, float defValue = 0.0f) const;
+    double getDouble(const std::string &name, double defValue = 0.0) const;
+    std::string getString(const std::string &name, std::string defValue = "") const;
+    glm::vec3 getVector(const std::string &name, glm::vec3 defValue = glm::vec3(0.0f)) const;
+    glm::quat getOrientation(const std::string &name, glm::quat defValue = glm::quat(1.0f, 0.0f, 0.0f, 0.0f)) const;
+    std::vector<std::shared_ptr<Gff>> getList(const std::string &name) const;
+    ByteBuffer getData(const std::string &name) const;
+    std::shared_ptr<Gff> findStruct(std::string_view name) const;
+
+    const std::optional<std::string> &signature() const { return _signature; }
+    uint32_t type() const { return _type; }
+    std::vector<Field> &fields() { return _fields; }
+    const std::vector<Field> &fields() const { return _fields; }
+
+    void setType(uint32_t type) {
+        _type = type;
+    }
+
+    void setSignature(std::string signature) {
+        _signature = signature;
+    }
+
+    std::shared_ptr<Gff> deepCopy() const {
+        std::vector<Field> copyFields;
+        for (const auto &field : _fields) {
+            copyFields.push_back(std::move(field.deepCopy()));
+        }
+        auto copy = std::make_shared<Gff>(_type, std::move(copyFields));
+        copy->_signature = _signature;
+        return copy;
+    }
+
+    static inline glm::vec3 colorFromUint32(uint32_t value) {
+        auto color = glm::vec3(
+            value & 0xff,
+            (value >> 8) & 0xff,
+            (value >> 16) & 0xff);
+
+        return color / 255.0f;
+    }
+
+    template <class T>
+    T getEnum(const std::string &name, T defValue) const {
+        return static_cast<T>(getInt(name, static_cast<int32_t>(defValue)));
+    }
+
+private:
+    std::optional<std::string> _signature;
+    uint32_t _type {0};
+    std::vector<Field> _fields;
+
+    const Field *get(std::string_view name) const;
+};
+
+} // namespace resource
+
+} // namespace reone

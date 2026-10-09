@@ -1,0 +1,614 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/game/gui/selectoverlay.h"
+
+#include "reone/graphics/context.h"
+#include "reone/graphics/di/services.h"
+#include "reone/graphics/font.h"
+#include "reone/graphics/mesh.h"
+#include "reone/graphics/meshregistry.h"
+#include "reone/graphics/shaderregistry.h"
+#include "reone/graphics/texture.h"
+#include "reone/graphics/uniforms.h"
+#include "reone/resource/provider/fonts.h"
+#include "reone/resource/provider/textures.h"
+#include "reone/resource/k2merge.h"
+#include "reone/resource/resources.h"
+#include "reone/resource/strings.h"
+
+#include "reone/game/action/attackobject.h"
+#include "reone/game/action/castspellatobject.h"
+#include "reone/game/action/usefeat.h"
+#include "reone/game/action/trap.h"
+#include "reone/game/action/useskill.h"
+#include "reone/game/di/services.h"
+#include "reone/game/coopsession.h"
+#include "reone/game/game.h"
+#include "reone/game/gui.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/object/placeable.h"
+#include "reone/game/party.h"
+
+using namespace reone::graphics;
+using namespace reone::resource;
+
+namespace reone {
+
+namespace game {
+
+static constexpr int kOffsetToReticle = 8;
+namespace containerlabel {
+
+bool isEmptyContainer(const Object &object) {
+    if (auto *placeable = dyn_cast<const Placeable>(&object)) {
+        return placeable->hasInventory() && placeable->items().empty();
+    }
+    if (auto *creature = dyn_cast<const Creature>(&object)) {
+        if (!creature->isDead()) {
+            return false;
+        }
+        for (auto &item : creature->items()) {
+            if (item->isDropable()) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+std::string emptyWord(IStrings &strings, bool tsl) {
+    std::string word = strings.getText(tsl ? kK2EmptyStrRef : toK2StrRef(kK2EmptyStrRef));
+    return word.empty() ? std::string("Empty") : word;
+}
+
+std::string title(const Object &object, const std::string &emptyWord) {
+    const std::string &name = object.name();
+    if (name.empty() || emptyWord.empty() || !isEmptyContainer(object)) {
+        return name;
+    }
+    return name + " (" + emptyWord + ")";
+}
+
+} // namespace containerlabel
+
+static constexpr int kTitleBarWidth = 250;
+static constexpr int kTitleBarPadding = 6;
+static constexpr int kHealthBarHeight = 6;
+static constexpr float kObjectTitleScale = 2.0f / 3.0f;
+static constexpr int kNumActionSlots = 3;
+static constexpr int kActionBarMargin = 3;
+static constexpr int kActionBarPadding = 3;
+static constexpr int kActionWidth = 35;
+static constexpr int kActionHeight = 59;
+static constexpr int kActionArrowHeight = (kActionHeight - kActionWidth) / 2;
+// Fixed action bar: the frames' bottom edge, layout pixels above the screen edge.
+static constexpr float kFixedActionDock = 130.0f;
+
+static void cycleActionSlot(ActionSlot &slot, bool previous) {
+    if (slot.actions.empty())
+        return;
+
+    if (previous) {
+        if (slot.indexSelected == 0) {
+            slot.indexSelected = static_cast<uint32_t>(slot.actions.size() - 1);
+        } else {
+            --slot.indexSelected;
+        }
+    } else if (++slot.indexSelected == slot.actions.size()) {
+        slot.indexSelected = 0;
+    }
+}
+
+SelectionOverlay::SelectionOverlay(
+    Game &game,
+    ServicesView &services) :
+    _game(game),
+    _services(services) {
+    _actionSlots.resize(kNumActionSlots);
+}
+
+void SelectionOverlay::init() {
+    // Reticles, the title scroll and the action arrows are HUD art, so they
+    // follow the HUD profile (K2 art in a K2 HUD, even in a K1 session).
+    auto presentation = _game.hudPresentation();
+    _presentationTSL = presentation.isTSL();
+    auto &textures = presentation.resource.textures;
+    _font = presentation.resource.fonts.get("dialogfont16x16");
+    _friendlyReticle = textures.get("friendlyreticle", TextureUsage::GUI);
+    _friendlyReticle2 = textures.get("friendlyreticle2", TextureUsage::GUI);
+    _hostileReticle = textures.get("hostilereticle", TextureUsage::GUI);
+    _hostileReticle2 = textures.get("hostilereticle2", TextureUsage::GUI);
+    _friendlyScroll = textures.get("lbl_miscroll_f", TextureUsage::GUI);
+    _hostileScroll = textures.get("lbl_miscroll_h", TextureUsage::GUI);
+    _hilightedScroll = textures.get("lbl_miscroll_hi", TextureUsage::GUI);
+    _actionArrow = textures.get("lbl_miarr_1", TextureUsage::GUI);
+    _hilightedActionArrow = textures.get("lbl_miarr_2", TextureUsage::GUI);
+    _reticleHeight = _friendlyReticle2 ? _friendlyReticle2->height() : 0;
+}
+
+bool SelectionOverlay::handle(const input::Event &event) {
+    switch (event.type) {
+    case input::EventType::MouseMotion:
+        return handleMouseMotion(event.motion);
+    case input::EventType::MouseButtonDown:
+        return handleMouseButtonDown(event.button);
+    case input::EventType::MouseWheel:
+        return handleMouseWheel(event.wheel);
+    default:
+        return false;
+    }
+}
+
+bool SelectionOverlay::handleMouseMotion(const input::MouseMotionEvent &event) {
+    _selectedActionSlot = -1;
+    _hilightedActionBand = ActionBand::None;
+
+    if (!_selectedObject)
+        return false;
+
+    for (int i = 0; i < kNumActionSlots; ++i) {
+        float x, y;
+        getActionScreenCoords(i, x, y);
+        float scale = layoutScale();
+        if (event.x >= x && event.y >= y &&
+            event.x < x + kActionWidth * scale &&
+            event.y < y + kActionHeight * scale) {
+            _selectedActionSlot = i;
+            float actionY = event.y - y;
+            if (actionY < kActionArrowHeight * scale) {
+                _hilightedActionBand = ActionBand::Previous;
+            } else if (actionY >= (kActionArrowHeight + kActionWidth) * scale) {
+                _hilightedActionBand = ActionBand::Next;
+            } else {
+                _hilightedActionBand = ActionBand::Icon;
+            }
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SelectionOverlay::handleMouseButtonDown(const input::MouseButtonEvent &event) {
+    if (event.button != input::MouseButton::Left)
+        return false;
+    if (_selectedActionSlot == -1 || _selectedActionSlot >= _actionSlots.size())
+        return false;
+
+    ActionSlot &slot = _actionSlots[_selectedActionSlot];
+
+    float frameX, frameY;
+    getActionScreenCoords(_selectedActionSlot, frameX, frameY);
+
+    float scale = layoutScale();
+    if (event.x < frameX || event.y < frameY ||
+        event.x >= frameX + kActionWidth * scale ||
+        event.y >= frameY + kActionHeight * scale)
+        return false;
+
+    float actionY = event.y - frameY;
+    if (actionY < kActionArrowHeight * scale) {
+        cycleActionSlot(slot, true);
+        return true;
+    }
+    if (actionY >= (kActionArrowHeight + kActionWidth) * scale) {
+        cycleActionSlot(slot, false);
+        return true;
+    }
+
+    activateActionSlot(_selectedActionSlot);
+    return true;
+}
+
+bool SelectionOverlay::activateActionSlot(int index) {
+    if (index < 0 || index >= static_cast<int>(_actionSlots.size()))
+        return false;
+    ActionSlot &slot = _actionSlots[index];
+
+    std::shared_ptr<Creature> leader(_game.party().getLeader());
+    if (!leader)
+        return false;
+
+    std::shared_ptr<Area> area(_game.module()->area());
+    auto selectedObject = area->selectedObject();
+    if (!selectedObject)
+        return false;
+
+    if (slot.indexSelected >= slot.actions.size())
+        return false;
+
+    const ContextAction &ctxAction = slot.actions[slot.indexSelected];
+    if (auto *coop = _game.coop(); coop && coop->clientContextAction(ctxAction, selectedObject)) {
+        // A co-op client: the host carries it out on the player's creature.
+        return true;
+    }
+    std::shared_ptr<Action> action;
+    switch (ctxAction.type) {
+    case ActionType::AttackObject:
+        action = _game.newAction<AttackObjectAction>(selectedObject);
+        break;
+    case ActionType::UseFeat:
+        action = _game.newAction<UseFeatAction>(ctxAction.feat, selectedObject);
+        break;
+    case ActionType::UseSkill:
+        action = _game.newAction<UseSkillAction>(ctxAction.skill, selectedObject);
+        break;
+    case ActionType::DisableTrap:
+    case ActionType::RecoverTrap:
+        action = _game.newAction<TrapSkillAction>(ctxAction.type, selectedObject);
+        break;
+    case ActionType::CastSpellAtObject: {
+        std::optional<std::shared_ptr<Item>> item =
+            ctxAction.item ? std::optional(ctxAction.item) : std::nullopt;
+
+        action = _game.newAction<CastSpellAtObjectAction>(
+            ctxAction.spell, selectedObject, item);
+        break;
+    }
+    default:
+        break;
+    }
+    if (action) {
+        action->setUserAction(true);
+        leader->addAction(std::move(action));
+    }
+
+    return true;
+}
+
+bool SelectionOverlay::handleMouseWheel(const input::MouseWheelEvent &event) {
+    if (_selectedActionSlot == -1 || _selectedActionSlot >= _actionSlots.size())
+        return false;
+
+    ActionSlot &slot = _actionSlots[_selectedActionSlot];
+    if (slot.actions.empty())
+        return false;
+
+    cycleActionSlot(slot, event.y > 0);
+    return true;
+}
+
+void SelectionOverlay::update() {
+    // TODO: update on selection change only
+
+    _hilightedObject.reset();
+    _hilightedHostile = false;
+
+    _selectedObject.reset();
+    _selectedHostile = false;
+
+    std::shared_ptr<Module> module(_game.module());
+    std::shared_ptr<Area> area(module->area());
+
+    auto camera = _game.getActiveCamera();
+    glm::mat4 projection(camera->cameraSceneNode()->camera()->projection());
+    glm::mat4 view(camera->cameraSceneNode()->camera()->view());
+
+    auto hilightedObject = area->hilightedObject();
+    if (hilightedObject) {
+        _hilightedScreenCoords = area->getSelectableScreenCoords(hilightedObject, projection, view);
+
+        if (_hilightedScreenCoords.z < 1.0f) {
+            _hilightedObject = hilightedObject;
+
+            auto hilightedCreature = std::dynamic_pointer_cast<Creature>(hilightedObject);
+            if (hilightedCreature) {
+                _hilightedHostile = module->isHostileToPartyLeader(*hilightedCreature);
+            }
+        }
+    }
+
+    auto selectedObject = area->selectedObject();
+    if (selectedObject) {
+        _selectedScreenCoords = area->getSelectableScreenCoords(selectedObject, projection, view);
+
+        if (_selectedScreenCoords.z < 1.0f) {
+            _selectedObject = selectedObject;
+
+            for (int i = 0; i < kNumActionSlots; ++i) {
+                _actionSlots[i].actions.clear();
+            }
+            std::vector<ContextAction> actions(module->getContextActions(selectedObject));
+            _hasActions = !actions.empty();
+            if (_hasActions) {
+                for (auto &action : actions) {
+                    switch (action.type) {
+                    case ActionType::AttackObject:
+                    case ActionType::UseFeat:
+                        _actionSlots[0].actions.push_back(action);
+                        break;
+                    case ActionType::UseSkill:
+                    case ActionType::DisableTrap:
+                    case ActionType::RecoverTrap:
+                        _actionSlots[1].actions.push_back(action);
+                        break;
+                    case ActionType::CastSpellAtObject: {
+                        if (action.item) {
+                            _actionSlots[2].actions.push_back(action);
+                        } else {
+                            _actionSlots[1].actions.push_back(action);
+                        }
+                    }
+                    default:
+                        break;
+                    }
+                }
+            }
+            for (int i = 0; i < kNumActionSlots; ++i) {
+                if (_actionSlots[i].indexSelected >= _actionSlots[i].actions.size()) {
+                    _actionSlots[i].indexSelected = 0;
+                }
+            }
+
+            auto selectedCreature = std::dynamic_pointer_cast<Creature>(selectedObject);
+            if (selectedCreature) {
+                _selectedHostile = module->isHostileToPartyLeader(*selectedCreature);
+            }
+        }
+    }
+}
+
+void SelectionOverlay::render() {
+    _services.graphics.context.withBlendMode(BlendMode::Normal, [this]() {
+        if (_hilightedObject) {
+            renderReticle(_hilightedHostile ? _hostileReticle : _friendlyReticle, _hilightedScreenCoords);
+        }
+        if (_selectedObject) {
+            renderReticle(_selectedHostile ? _hostileReticle2 : _friendlyReticle2, _selectedScreenCoords);
+            renderActionBar();
+            renderTitleBar();
+            renderHealthBar();
+        }
+    });
+}
+
+void SelectionOverlay::renderReticle(std::shared_ptr<Texture> texture, const glm::vec3 &screenCoords) {
+    _services.graphics.context.bindTexture(*texture);
+
+    const GraphicsOptions &opts = _game.options().graphics;
+    float scale = layoutScale();
+    float width = texture->width() * scale;
+    float height = texture->height() * scale;
+
+    glm::mat4 transform(1.0f);
+    transform = glm::translate(transform, glm::vec3((opts.width * screenCoords.x) - width / 2, (opts.height * (1.0f - screenCoords.y)) - height / 2, 0.0f));
+    transform = glm::scale(transform, glm::vec3(width, height, 1.0f));
+
+    _services.graphics.uniforms.setLocals([this, transform](auto &locals) {
+        locals.reset();
+        locals.model = std::move(transform);
+    });
+    _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::mvpIcon));
+    _services.graphics.meshRegistry.get(MeshName::quad).draw(_services.graphics.statistic);
+}
+
+void SelectionOverlay::renderTitleBar() {
+    if (_selectedObject->name().empty())
+        return;
+
+    const GraphicsOptions &opts = _game.options().graphics;
+    float scale = layoutScale();
+    float titleScale = scale * kObjectTitleScale;
+    float fontScale = titleScale * opts.guiTextScale * (_presentationTSL ? 1.0f : kK1CombatTextScale);
+    float barWidth = kTitleBarWidth * titleScale;
+    float barHeight = _font->height() * fontScale + kTitleBarPadding * titleScale;
+    float reticleHeight = _reticleHeight * scale;
+    float offsetToReticle = kOffsetToReticle * scale;
+    float healthBarHeight = kHealthBarHeight * titleScale;
+    float actionHeight = kActionHeight * scale;
+    float actionMargin = kActionBarMargin * scale;
+    {
+        float x = opts.width * _selectedScreenCoords.x - barWidth / 2;
+        float y = opts.height * (1.0f - _selectedScreenCoords.y) - reticleHeight / 2.0f - barHeight - offsetToReticle - healthBarHeight - scale;
+
+        if (_hasActions) {
+            y -= actionHeight + 2 * actionMargin;
+        }
+        glm::mat4 transform(1.0f);
+        transform = glm::translate(transform, glm::vec3(x, y, 0.0f));
+        transform = glm::scale(transform, glm::vec3(barWidth, barHeight, 1.0f));
+
+        _services.graphics.uniforms.setLocals([this, transform](auto &locals) {
+            locals.reset();
+            locals.model = std::move(transform);
+            locals.color = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
+            locals.color.a = 0.5f;
+        });
+        _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::mvpColor));
+        _services.graphics.meshRegistry.get(MeshName::quad).draw(_services.graphics.statistic);
+    }
+    {
+        float x = opts.width * _selectedScreenCoords.x;
+        float y = opts.height * (1.0f - _selectedScreenCoords.y) - (reticleHeight + barHeight) / 2 - offsetToReticle - healthBarHeight - scale;
+        if (_hasActions) {
+            y -= actionHeight + 2 * actionMargin;
+        }
+        glm::vec3 position(x, y, 0.0f);
+        // Re-read each frame: the mark appears as the last item is taken.
+        std::string text(containerlabel::title(*_selectedObject, containerlabel::emptyWord(_services.resource.strings, _game.isTSL())));
+        _font->render(text, position, getColorFromSelectedObject(), TextGravity::CenterCenter, fontScale);
+    }
+}
+
+void SelectionOverlay::renderHealthBar() {
+    const GraphicsOptions &opts = _game.options().graphics;
+    float scale = layoutScale();
+    float titleScale = scale * kObjectTitleScale;
+    float barWidth = kTitleBarWidth * titleScale;
+    float healthBarHeight = kHealthBarHeight * titleScale;
+    float x = opts.width * _selectedScreenCoords.x - barWidth / 2;
+    float y = opts.height * (1.0f - _selectedScreenCoords.y) - _reticleHeight * scale / 2.0f - healthBarHeight - kOffsetToReticle * scale;
+    float w = glm::clamp(_selectedObject->currentHitPoints() / static_cast<float>(_selectedObject->maxHitPoints()), 0.0f, 1.0f) * barWidth;
+
+    if (_hasActions) {
+        y -= (kActionHeight + 2 * kActionBarMargin) * scale;
+    }
+    glm::mat4 transform(1.0f);
+    transform = glm::translate(transform, glm::vec3(x, y, 0.0f));
+    transform = glm::scale(transform, glm::vec3(w, healthBarHeight, 1.0f));
+
+    _services.graphics.uniforms.setLocals([this, transform](auto &locals) {
+        locals.reset();
+        locals.model = std::move(transform);
+        locals.color = glm::vec4(getColorFromSelectedObject(), 1.0f);
+    });
+    _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::mvpColor));
+    _services.graphics.meshRegistry.get(MeshName::quad).draw(_services.graphics.statistic);
+}
+
+void SelectionOverlay::renderActionBar() {
+    if (!_hasActions)
+        return;
+
+    for (int i = 0; i < kNumActionSlots; ++i) {
+        renderActionFrame(i);
+        renderActionArrows(i);
+        renderActionIcon(i);
+    }
+}
+
+void SelectionOverlay::renderActionFrame(int index) {
+    std::shared_ptr<Texture> frameTexture;
+    if (index == _selectedActionSlot) {
+        frameTexture = _hilightedScroll;
+    } else if (_selectedHostile) {
+        frameTexture = _hostileScroll;
+    } else {
+        frameTexture = _friendlyScroll;
+    }
+    _services.graphics.context.bindTexture(*frameTexture);
+
+    float frameX, frameY;
+    getActionScreenCoords(index, frameX, frameY);
+    float scale = layoutScale();
+
+    glm::mat4 transform(1.0f);
+    transform = glm::translate(transform, glm::vec3(frameX, frameY, 0.0f));
+    transform = glm::scale(transform, glm::vec3(kActionWidth * scale, kActionHeight * scale, 1.0f));
+
+    _services.graphics.uniforms.setLocals([this, transform](auto &locals) {
+        locals.reset();
+        locals.model = std::move(transform);
+    });
+    _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::mvpTexture));
+    _services.graphics.meshRegistry.get(MeshName::quad).draw(_services.graphics.statistic);
+}
+
+void SelectionOverlay::renderActionArrows(int index) {
+    if (_actionSlots[index].actions.size() < 2)
+        return;
+
+    renderActionArrow(index, true);
+    renderActionArrow(index, false);
+}
+
+void SelectionOverlay::renderActionArrow(int index, bool previous) {
+    bool hilighted = index == _selectedActionSlot &&
+                     _hilightedActionBand == (previous ? ActionBand::Previous : ActionBand::Next);
+    auto texture = hilighted ? _hilightedActionArrow : _actionArrow;
+    _services.graphics.context.bindTexture(*texture);
+
+    float frameX, frameY;
+    getActionScreenCoords(index, frameX, frameY);
+    float scale = layoutScale();
+
+    glm::mat4 transform(1.0f);
+    transform = glm::translate(
+        transform,
+        glm::vec3(frameX, previous ? frameY : frameY + (kActionArrowHeight + kActionWidth) * scale, 0.0f));
+    transform = glm::scale(transform, glm::vec3(kActionWidth * scale, kActionArrowHeight * scale, 1.0f));
+
+    _services.graphics.uniforms.setLocals([transform, previous](auto &locals) {
+        locals.reset();
+        locals.model = transform;
+        if (!previous) {
+            locals.uv = glm::mat3x4(
+                glm::vec4(-1.0f, 0.0f, 0.0f, 0.0f),
+                glm::vec4(0.0f, -1.0f, 0.0f, 0.0f),
+                glm::vec4(1.0f, 1.0f, 0.0f, 0.0f));
+        }
+    });
+    _services.graphics.context.useProgram(_services.graphics.shaderRegistry.get(ShaderProgramId::mvpIcon));
+    _services.graphics.meshRegistry.get(MeshName::quad).draw(_services.graphics.statistic);
+}
+
+glm::vec2 SelectionOverlay::actionAnchor() const {
+    const GraphicsOptions &opts = _game.options().graphics;
+    if (_game.fixedActionBar()) {
+        // "Fixed action bar" (design note p1_ui): the target's choices dock at the
+        // bottom centre, their frames' bottom edge kFixedActionDock above the
+        // screen edge, clear of the HUD's own bar.
+        float scale = layoutScale();
+        return {opts.width / 2.0f,
+                opts.height - (kFixedActionDock - _reticleHeight / 2.0f - kOffsetToReticle - kActionBarMargin) * scale};
+    }
+    // Retail: above the target's reticle, following it on screen.
+    return {opts.width * _selectedScreenCoords.x, opts.height * (1.0f - _selectedScreenCoords.y)};
+}
+
+bool SelectionOverlay::getActionScreenCoords(int index, float &x, float &y) const {
+    if (!_selectedObject)
+        return false;
+
+    const GraphicsOptions &opts = _game.options().graphics;
+    float scale = layoutScale();
+    glm::vec2 anchor = actionAnchor();
+    x = anchor.x + ((static_cast<float>(index - 1) - 0.5f) * kActionWidth + (index - 1) * kActionBarMargin) * scale;
+    y = anchor.y - (_reticleHeight / 2.0f + kActionHeight + kOffsetToReticle + kActionBarMargin) * scale;
+
+    return true;
+}
+
+void SelectionOverlay::renderActionIcon(int index) {
+    const ActionSlot &slot = _actionSlots[index];
+    if (slot.indexSelected >= slot.actions.size())
+        return;
+
+    const ContextAction &action = slot.actions[slot.indexSelected];
+
+    float frameX, frameY;
+    getActionScreenCoords(index, frameX, frameY);
+
+    const GraphicsOptions &opts = _game.options().graphics;
+    float scale = layoutScale();
+    float y = actionAnchor().y - ((_reticleHeight + kActionHeight + kActionWidth) / 2.0f + kOffsetToReticle + kActionBarMargin) * scale;
+
+    glm::mat4 transform(1.0f);
+    transform = glm::translate(transform, glm::vec3(frameX, y, 0.0f));
+    transform = glm::scale(transform, glm::vec3(kActionWidth * scale, kActionWidth * scale, 1.0f));
+
+    renderContextActionIcon(action, transform, _services, _game.hudPresentation().resource.textures);
+}
+
+float SelectionOverlay::layoutScale() const {
+    const auto &opts = _game.options().graphics;
+    return std::min(opts.width / 800.0f, opts.height / 600.0f) * opts.guiScale;
+}
+
+glm::vec3 SelectionOverlay::getColorFromSelectedObject() const {
+    static glm::vec3 red(1.0f, 0.0f, 0.0f);
+
+    auto guiColorBase = _presentationTSL ? kTSLGUIColorBase : kGUIColorBase;
+
+    return (_selectedObject && _selectedHostile) ? red : guiColorBase;
+}
+
+} // namespace game
+
+} // namespace reone

@@ -1,0 +1,78 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/resource/container/erf.h"
+
+#include "reone/resource/format/erfreader.h"
+#include "reone/system/exception/validation.h"
+
+namespace reone {
+
+namespace resource {
+
+void ErfResourceContainer::init() {
+    auto reader = ErfReader(_storage.stream());
+    reader.load();
+
+    auto &keys = reader.keys();
+    auto &erfResources = reader.resources();
+
+    if (keys.size() != erfResources.size()) {
+        throw ValidationException("ERF key and resource counts differ");
+    }
+    auto archiveSize = static_cast<uint64_t>(_storage.stream().length());
+    for (auto i = 0; i < keys.size(); ++i) {
+        const auto &entry = erfResources[i];
+        auto offset = static_cast<uint64_t>(entry.offset);
+        auto size = static_cast<uint64_t>(entry.size);
+        if (offset > archiveSize || size > archiveSize - offset) {
+            throw ValidationException("ERF resource extends beyond the archive");
+        }
+        if (!_resourceIds.insert(keys[i].resId).second) {
+            throw ValidationException("ERF contains a duplicate resource identity");
+        }
+
+        auto resource = Resource();
+        resource.id = keys[i].resId;
+        resource.offset = entry.offset;
+        resource.fileSize = entry.size;
+        _idToResource.emplace(keys[i].resId, std::move(resource));
+    }
+}
+
+std::optional<ByteBuffer> ErfResourceContainer::findResourceData(const ResourceId &id) {
+    auto it = _idToResource.find(id);
+    if (it == _idToResource.end()) {
+        return std::nullopt;
+    }
+    auto &resource = it->second;
+    if (resource.fileSize == 0) {
+        return ByteBuffer();
+    }
+    ByteBuffer buf;
+    buf.resize(resource.fileSize);
+
+    IInputStream &erf = _storage.stream();
+    erf.seek(resource.offset, SeekOrigin::Begin);
+    erf.read(&buf[0], buf.size());
+
+    return buf;
+}
+
+} // namespace resource
+
+} // namespace reone

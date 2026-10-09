@@ -1,0 +1,143 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "savedruntime.h"
+#include "runtimeref.h"
+#include "types.h"
+
+namespace reone {
+
+namespace game {
+
+struct ServicesView;
+
+class Creature;
+class Game;
+class Object;
+
+class Action : boost::noncopyable {
+public:
+    virtual ~Action() = default;
+
+    static bool classof(Action *from) {
+        return true;
+    }
+
+    /**
+     * Execute the action. This function is called every update until it is
+     * either complete(), or cancelled, or the actor it belongs to is dead.
+     */
+    virtual void execute(std::shared_ptr<Action> self, Object &actor, float dt);
+
+    /**
+     * Cancel the action. This function is called only once when either
+     * ClearAllActions is called, or the the actor it belongs to is dead.
+     */
+    virtual void cancel(std::shared_ptr<Action> self, Object &actor) {}
+
+    /**
+     * Actions must call complete() once they are done. Completed actions are
+     * removed from the action queue, allowing subsequent actions to execute.
+     */
+    void complete() { _completed = true; }
+
+    /**
+     * Locked action cannot be cancelled, unless the creature it belongs to is dead.
+     */
+    bool locked() const { return _locked; }
+
+    /**
+     * Lock the action to prevent it from being cancelled. AI scripts may
+     * request to cancel all actions. Actions that are already in progress
+     * (attack, open lock, etc.) should be locked.
+     */
+    void lock() { _locked = true; }
+
+    ActionType type() const { return _type; }
+
+    bool isUserAction() const { return _userAction; }
+    bool isCompleted() const { return _completed; }
+    bool isCancelled() const { return _cancelled; }
+
+    void setUserAction(bool val) { _userAction = val; }
+    void markCancelled() { _cancelled = true; }
+
+    void attachSavedAction(SavedActionRecord record) {
+        _savedAction = std::move(record);
+    }
+    const std::optional<SavedActionRecord> &originalSavedAction() const {
+        return _savedAction;
+    }
+    /** Semantic snapshot only; GFF encoding belongs to later E3. */
+    // Ephemeral actions are ambient behaviour that scripts keep re-issuing
+    // (e.g. random walking); a save skips them instead of failing, and the
+    // owner's scripts queue them again after load.
+    virtual bool isEphemeral() const { return false; }
+
+    virtual std::optional<SavedActionRecord> saveFacingState() const {
+        return _savedAction;
+    }
+
+    /**
+     * True while every non-owning gameplay object used by this action still
+     * denotes the exact live incarnation captured by the action.
+     */
+    bool runtimeDependenciesLive() const;
+
+protected:
+    const float kDefaultMaxObjectDistance = 2.0f;
+    const float kDistanceWalk = 4.0f;
+
+    Game &_game;
+    ServicesView &_services;
+    ActionType _type;
+
+    bool _userAction {false};
+    bool _completed {false};
+    bool _cancelled {false};
+    bool _locked {false};
+    std::optional<SavedActionRecord> _savedAction;
+    std::vector<RuntimeObjectRef<Object>> _runtimeDependencies;
+
+    void requireRuntimeObject(const std::shared_ptr<Object> &object);
+
+    Action(
+        Game &game,
+        ServicesView &services,
+        ActionType type) :
+        _game(game),
+        _services(services),
+        _type(type) {
+    }
+};
+
+/**
+ * Returns true for attacks, feats, some spells (force powers, grenades).
+ */
+bool isHostileAction(Action &action);
+
+/**
+ * Stable snake_case name of an action type, for diagnostics and state dumps.
+ * Unknown values yield an empty view.
+ */
+std::string_view actionTypeName(ActionType type);
+
+} // namespace game
+
+} // namespace reone

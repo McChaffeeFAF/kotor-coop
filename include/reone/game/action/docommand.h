@@ -1,0 +1,70 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "../action.h"
+
+namespace reone {
+
+namespace script {
+
+struct ExecutionContext;
+
+}
+
+namespace game {
+
+class Object;
+
+/**
+ * Run a saved command as actor, here and now.
+ *
+ * The command is a script fragment that was captured elsewhere, so its Caller
+ * is rewritten to actor before it runs while its other arguments are kept: the
+ * fragment is a continuation of the context that saved it.
+ *
+ * Whether a command reaches the action queue is decided by what it contains,
+ * not by how it is dispatched. Action routines inside it queue on actor as
+ * they always do; everything else simply takes effect.
+ */
+void runCommandAsActor(const script::ExecutionContext &command, Object &actor);
+
+class DoCommandAction : public Action {
+public:
+    DoCommandAction(Game &game, ServicesView &services, std::shared_ptr<script::ExecutionContext> actionToDo) :
+        Action(game, services, ActionType::DoCommand),
+        _actionToDo(std::move(actionToDo)) {
+    }
+
+    static bool classof(Action *from) {
+        return from->type() == ActionType::DoCommand;
+    }
+
+    void execute(std::shared_ptr<Action> self, Object &actor, float dt) override;
+
+    std::optional<SavedActionRecord> saveFacingState() const override;
+
+    std::shared_ptr<script::ExecutionContext> actionToDo() const { return _actionToDo; }
+
+private:
+    std::shared_ptr<script::ExecutionContext> _actionToDo;
+};
+
+} // namespace game
+
+} // namespace reone

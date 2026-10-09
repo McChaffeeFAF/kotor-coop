@@ -1,0 +1,283 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include <limits>
+
+#include "reone/audio/clip.h"
+#include "reone/audio/source.h"
+#include "reone/graphics/model.h"
+#include "reone/graphics/texture.h"
+#include "reone/resource/strings.h"
+
+#include "../object.h"
+#include "../types.h"
+
+namespace reone {
+
+namespace resources {
+class Gff;
+}
+
+namespace game {
+
+class Item : public Object {
+public:
+    // itemclass of the Credits base item in baseitems.2da, lower-cased
+    static constexpr char kCreditsItemClass[] = "i_credits";
+
+    struct AmmunitionType {
+        std::shared_ptr<graphics::Model> model;
+        std::shared_ptr<graphics::Model> muzzleFlash;
+        std::shared_ptr<audio::AudioClip> shotSound1;
+        std::shared_ptr<audio::AudioClip> shotSound2;
+        std::shared_ptr<audio::AudioClip> impactSound1;
+        std::shared_ptr<audio::AudioClip> impactSound2;
+    };
+
+    // UpgradeType of a base property: the template has no UpgradeType field.
+    static constexpr uint8_t kNoUpgradeType = 0xff;
+    // upgrade.2da rows an item can remember (the Upgrades field is 32 bits).
+    static constexpr int kMaxUpgradeRows = 32;
+
+    struct PropertyEntry {
+        uint8_t chanceAppear {0};
+        uint8_t costTable {0};
+        uint16_t costValue {0};
+        uint8_t paramTable {0};
+        uint8_t paramValue {0};
+        uint16_t propertyName {0};
+        uint16_t subtype {0};
+        // upgrade.2da row whose installation turns this property on, or
+        // kNoUpgradeType for a property that is always on.
+        uint8_t upgradeType {kNoUpgradeType};
+
+        bool isUpgrade() const { return upgradeType != kNoUpgradeType; }
+    };
+
+    Item(
+        uint32_t id,
+        Game &game,
+        ServicesView &services) :
+        Object(
+            id,
+            ObjectType::Item,
+            "",
+            game,
+            services) {
+    }
+
+    static bool classof(const Object *from) {
+        return from->type() == ObjectType::Item;
+    }
+
+    void loadFromBlueprint(const std::string &resRef);
+    void deserialize(
+        const resource::Gff &gff,
+        const SerializedIdentityContext &identityContext);
+    void clone(const Item &from);
+
+    void update(float dt) override;
+
+    void playShotSound(int variant, glm::vec3 position);
+    void playImpactSound(int variant, glm::vec3 position);
+    void powerUp(glm::vec3 position);
+    void powerDown(glm::vec3 position);
+    void updatePoweredSoundPosition(glm::vec3 position);
+
+    bool isEquippable() const;
+    bool isEquippable(int slot) const;
+    bool isStackCompatibleWith(const Item &other) const;
+    bool mergeStackFrom(Item &other);
+    bool isCredits() const { return _itemClass == kCreditsItemClass; }
+    bool isDropable() const { return _dropable; }
+    bool isIdentified() const { return _identified; }
+    bool isEquipped() const { return _equipped; }
+    bool isLightsaber() const { return _baseItem >= 8 && _baseItem <= 10; }
+    bool isRanged() const { return _weaponType == WeaponType::Ranged; }
+
+    const std::string &baseBodyVariation() const { return _baseBodyVariation; }
+    const std::string &itemClass() const { return _itemClass; }
+    const std::string &localizedName() const { return _localizedName.str(); }
+    float attackRange() const { return _attackRange; }
+    /** baseitems.2da prefattackdist: the distance a wielder prefers to attack from. */
+    float preferredAttackDistance() const { return _preferredAttackDistance; }
+    int bodyVariation() const { return _bodyVariation; }
+    int damageFlags() const {
+        return _damageFlags != 0
+                   ? _damageFlags
+                   : static_cast<int>(DamageType::Universal);
+    }
+    int dieToRoll() const { return _dieToRoll; }
+    int modelVariation() const { return _modelVariation; }
+    int numDice() const { return _numDice; }
+    int stackSize() const { return _stackSize; }
+    int maxStackSize() const { return _maxStackSize; }
+    int textureVariation() const { return _textureVariation; }
+    std::shared_ptr<AmmunitionType> ammunitionType() const { return _ammunitionType; }
+    std::shared_ptr<graphics::Texture> icon() const { return _icon; }
+    WeaponType weaponType() const { return _weaponType; }
+    WeaponWield weaponWield() const { return _weaponWield; }
+    CreatureSize weaponSize() const { return _weaponSize; }
+    const std::string &description() const { return _description.str(); }
+    const std::string &descIdentified() const { return _descIdentified.str(); }
+    int baseItemType() const { return _baseItem; }
+    int criticalThreat() const { return _criticalThreat; }
+    int criticalHitMultiplier() const { return _criticalHitMultiplier; }
+    FeatType weaponFocusFeat() const { return _weaponFocusFeat; }
+    FeatType weaponSpecializationFeat() const { return _weaponSpecializationFeat; }
+    int baseDefense() const { return _baseDefense; }
+    int maxDexterityBonus() const { return _maxDexterityBonus; }
+    int armorCheckPenalty() const { return _armorCheckPenalty; }
+
+    /** Feats a creature needs, all of them, to equip the item (baseitems reqfeat0..). */
+    const std::vector<FeatType> &requiredFeats() const { return _requiredFeats; }
+    /** baseitems droidorhuman: 0 anyone, 1 non-droids only, 2 droids only. */
+    int droidOrHuman() const { return _droidOrHuman; }
+    /** baseitems denysubrace: bit (1 << subrace) set denies that subrace. */
+    uint32_t denySubraceMask() const { return _denySubraceMask; }
+    ACBonus acBonusType() const { return _acBonusType; }
+    std::optional<SpellType> activateSpell() const { return _activateSpell; }
+    int activateSpellCost() const { return _activateSpellCost; }
+    const std::vector<PropertyEntry> &properties() const { return _properties; }
+
+    /** Whether a property applies now: a base property, or one whose upgrade is installed. */
+    bool isPropertyActive(const PropertyEntry &property) const {
+        return !property.isUpgrade() || hasUpgrade(property.upgradeType);
+    }
+
+    // Upgrades (upgrade.2da rows installed, saved as the Upgrades bit set)
+
+    uint32_t upgrades() const { return _upgrades; }
+    bool hasUpgrade(int row) const {
+        return row >= 0 && row < kMaxUpgradeRows && (_upgrades & (1u << row)) != 0;
+    }
+    void setUpgrades(uint32_t upgrades) { _upgrades = upgrades; }
+    /** upgrade.2da rows named by this item's properties: what can be installed. */
+    std::vector<int> upgradeRows() const;
+    bool isUpgradeable() const;
+
+    // END Upgrades
+
+    /** Store ItemList entry that never runs out (UTM Infinite). */
+    bool isInfinite() const { return _infinite; }
+    void setInfinite(bool infinite) { _infinite = infinite; }
+
+    uint32_t addCost() const { return _addCost; }
+    /** The template's computed cost (base, properties and AddCost). */
+    uint32_t cost() const { return _cost; }
+    void setModelVariation(int variation) { _modelVariation = static_cast<uint8_t>(variation); }
+
+    bool hasDisguise() const { return _disguiseAppearance >= 0; }
+    int disguiseAppearance() const { return _disguiseAppearance; }
+
+    void setDropable(bool dropable);
+    void setStackSize(int size);
+    void setIdentified(bool value);
+    void setEquipped(bool equipped);
+
+    uint32_t owner() const { return _ownerId; }
+    void setOwner(uint32_t id) { _ownerId = id; }
+
+    /** SetItemNonEquippable: the item cannot be equipped (again). An item
+     *  already worn stays on; it only cannot be put back on once removed. */
+    bool isNonEquippable() const { return _nonEquippable; }
+    void setNonEquippable(bool value) { _nonEquippable = value; }
+
+private:
+    friend class ModuleSnapshotBuilder;
+    // Serializable
+    int32_t _baseItem {0};
+    resource::LocString _localizedName;
+    resource::LocString _description;
+    resource::LocString _descIdentified;
+    uint8_t _charges {0};
+    uint32_t _cost {0};
+    uint32_t _addCost {0};
+    bool _stolen {false};
+    uint16_t _stackSize {1};
+    bool _identified {true};
+    uint8_t _modelVariation {0};
+    uint8_t _bodyVariation {0};
+    uint8_t _textureVariation {0};
+    bool _dropable {false};
+    bool _infinite {false};
+    uint32_t _upgrades {0};
+    bool _nonEquippable {false};
+    // END Serializable
+
+    uint32_t _ownerId {0};
+
+    // baseitems.2da defines the retail repository limit. The permissive
+    // fallback preserves behavior for incomplete custom/test tables.
+    uint16_t _maxStackSize {std::numeric_limits<uint16_t>::max()};
+
+    std::string _baseBodyVariation;
+    std::string _itemClass;
+
+    std::shared_ptr<graphics::Texture> _icon;
+    uint32_t _equipableSlots {0};
+    float _attackRange {0.0f};
+    float _preferredAttackDistance {0.0f};
+    int _numDice {0};
+    int _dieToRoll {0};
+    int _damageFlags {0};
+    WeaponType _weaponType {WeaponType::None};
+    WeaponWield _weaponWield {WeaponWield::None};
+    CreatureSize _weaponSize {CreatureSize::Invalid};
+
+    bool _equipped {false};
+    std::shared_ptr<AmmunitionType> _ammunitionType;
+    bool _poweredItem {false};
+    bool _isPowered {false};
+    std::shared_ptr<audio::AudioClip> _powerUpSound;
+    std::shared_ptr<audio::AudioClip> _powerDownSound;
+    std::shared_ptr<audio::AudioClip> _poweredSound;
+    std::shared_ptr<audio::AudioSource> _poweredAudioSource;
+
+    int _criticalThreat {0};
+    int _criticalHitMultiplier {0};
+    FeatType _weaponFocusFeat {FeatType::Invalid};
+    FeatType _weaponSpecializationFeat {FeatType::Invalid};
+    int _baseDefense {0};
+    int _maxDexterityBonus {-1};
+    int _armorCheckPenalty {0};
+    std::vector<FeatType> _requiredFeats;
+    int _droidOrHuman {0};
+    uint32_t _denySubraceMask {0};
+    ACBonus _acBonusType {ACBonus::Invalid};
+
+    std::optional<SpellType> _activateSpell;
+    int _activateSpellCost {0};
+    int _disguiseAppearance {-1};
+    std::vector<PropertyEntry> _properties;
+    std::shared_ptr<audio::AudioSource> _audioSource;
+
+    // Blueprint
+    void deserializeAll(
+        const resource::Gff &gff,
+        const SerializedIdentityContext &identityContext);
+    void deserializeProperties(const resource::Gff &gff);
+    void deserializeBase(const resource::Gff &gff);
+    void loadAmmunitionType();
+    // END Blueprint
+};
+
+} // namespace game
+
+} // namespace reone

@@ -1,0 +1,48 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "../effect.h"
+#include "../location.h"
+#include "forcepushed.h"
+
+namespace reone {
+
+namespace game {
+
+class ForcePushTargetedEffect : public Effect {
+public:
+    ForcePushTargetedEffect(std::shared_ptr<Location> centre, bool ignoreTestDirectLine) :
+        Effect(EffectType::ForcePushTargeted),
+        _centre(std::move(centre)),
+        _ignoreTestDirectLine(ignoreTestDirectLine) {
+    }
+
+    bool onApply(Object &object, const EffectInstance &instance) override;
+
+    /** How far the push throws a creature, metres. */
+    static constexpr float kPushDistance = ForcePushedEffect::kPushDistance;
+
+private:
+    std::shared_ptr<Location> _centre;
+    bool _ignoreTestDirectLine;
+};
+
+} // namespace game
+
+} // namespace reone

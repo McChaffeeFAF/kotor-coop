@@ -1,0 +1,125 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#include "reone/resource/format/erfreader.h"
+
+#include "reone/system/exception/validation.h"
+
+namespace reone {
+
+namespace resource {
+
+void ErfReader::load() {
+    checkSignature();
+    _erf.skipBytes(8);
+
+    _numEntries = _erf.readUint32();
+
+    _erf.skipBytes(4);
+
+    _offKeys = _erf.readUint32();
+    _offResources = _erf.readUint32();
+
+    checkTableBounds();
+
+    loadKeys();
+    loadResources();
+}
+
+void ErfReader::checkSignature() {
+    constexpr size_t kFixedHeaderFieldsSize = 32;
+    if (_erf.length() < kFixedHeaderFieldsSize) {
+        throw ValidationException("Invalid binary resource size");
+    }
+    _signature = _erf.readString(8);
+    // One container family with three type tags. The engine's opener probes an
+    // exact basename across NWM, MOD, SAV, ERF and HAK and validates only the
+    // four-character type, because everything after it is the same layout. HAK
+    // is accepted here for that reason and no other: it carries no module
+    // metadata behaviour of its own.
+    bool erf = _signature == std::string("ERF V1.0", 8);
+    bool mod = _signature == std::string("MOD V1.0", 8);
+    bool hak = _signature == std::string("HAK V1.0", 8);
+    if (!erf && !mod && !hak) {
+        throw ValidationException("Invalid ERF/MOD/HAK signature: " + _signature);
+    }
+}
+
+void ErfReader::checkTableBounds() {
+    constexpr uint64_t kKeyEntrySize = 24;
+    constexpr uint64_t kResourceEntrySize = 8;
+    auto archiveSize = static_cast<uint64_t>(_erf.length());
+
+    auto checkTable = [archiveSize](
+                          uint32_t offset,
+                          uint64_t entrySize,
+                          uint32_t count,
+                          const char *name) {
+        auto begin = static_cast<uint64_t>(offset);
+        auto size = entrySize * static_cast<uint64_t>(count);
+        if (begin > archiveSize || size > archiveSize - begin) {
+            throw ValidationException(std::string("ERF ") + name + " extends beyond the archive");
+        }
+    };
+    checkTable(_offKeys, kKeyEntrySize, _numEntries, "key table");
+    checkTable(_offResources, kResourceEntrySize, _numEntries, "resource table");
+}
+
+void ErfReader::loadKeys() {
+    _keys.reserve(_numEntries);
+    _erf.seek(_offKeys);
+
+    for (uint32_t i = 0; i < _numEntries; ++i) {
+        _keys.push_back(readKeyEntry());
+    }
+}
+
+ErfReader::KeyEntry ErfReader::readKeyEntry() {
+    auto resRef = boost::to_lower_copy(_erf.readString(16));
+    auto resId = _erf.readUint32();
+    auto resType = _erf.readUint16();
+    _erf.skipBytes(2); // unused
+
+    auto key = KeyEntry();
+    key.resId = ResourceId(std::move(resRef), static_cast<ResType>(resType));
+
+    return key;
+}
+
+void ErfReader::loadResources() {
+    _resources.reserve(_numEntries);
+    _erf.seek(_offResources);
+
+    for (uint32_t i = 0; i < _numEntries; ++i) {
+        _resources.push_back(readResourceEntry());
+    }
+}
+
+ErfReader::ResourceEntry ErfReader::readResourceEntry() {
+    auto offset = _erf.readUint32();
+    auto size = _erf.readUint32();
+
+    ResourceEntry resource;
+    resource.offset = offset;
+    resource.size = size;
+
+    return resource;
+}
+
+} // namespace resource
+
+} // namespace reone

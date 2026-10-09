@@ -1,0 +1,44 @@
+/*
+ * Copyright (c) 2025 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "reone/system/stream/memoryinput.h"
+#include <memory>
+#include <string>
+
+namespace reone {
+
+class ClipboardStream : public MemoryInputStream {
+public:
+    ClipboardStream(char *data, size_t length) :
+        MemoryInputStream(data, length) {}
+
+    std::string_view str() { return std::string_view(_data, _length); }
+
+    ~ClipboardStream();
+};
+
+std::unique_ptr<ClipboardStream> getClipboard();
+
+/** The clipboard's text, or empty when there is none (never throws). */
+std::string clipboardText();
+
+/** Put text on the system clipboard. False when the system refused. */
+bool setClipboardText(const std::string &text);
+
+} // namespace reone

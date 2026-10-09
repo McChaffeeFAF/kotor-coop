@@ -1,0 +1,112 @@
+/*
+ * Copyright (c) 2020-2023 The reone project contributors
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "../types.h"
+
+#include "feat.h"
+
+namespace reone {
+
+namespace resource {
+
+class Strings;
+class TwoDAs;
+class ITwoDAs;
+class Textures;
+
+} // namespace resource
+
+namespace game {
+
+class CreatureAttributes;
+class CreatureClass;
+
+enum class FeatAvailability {
+    Owned,
+    Selectable,
+    LockedMinLevel,
+    LockedMissingPrerequisite
+};
+
+struct FeatDisplayEntry {
+    FeatType type {FeatType::Invalid};
+    FeatAvailability availability {FeatAvailability::Owned};
+    FeatType chainRoot {FeatType::Invalid};
+    int tier {0};
+    int visualIndex {0};
+};
+
+class IFeats {
+public:
+    virtual ~IFeats() = default;
+
+    virtual void init() = 0;
+
+    virtual std::shared_ptr<Feat> get(FeatType type) const = 0;
+    virtual int getLevelUpChoiceCount(const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
+    virtual bool isLevelUpCandidate(FeatType type, const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
+    virtual std::vector<FeatType> getLevelUpCandidates(const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
+    virtual std::vector<FeatDisplayEntry> getLevelUpDisplayEntries(const CreatureAttributes &attributes, const CreatureClass &clazz) const = 0;
+};
+
+/**
+ * Picks up to count feats for the Recommended button: the class's
+ * recommended feats in order, each taken when it is a level-up candidate
+ * given the feats picked before it.
+ */
+std::vector<FeatType> pickRecommendedFeats(
+    const IFeats &feats,
+    const CreatureAttributes &attributes,
+    const CreatureClass &clazz,
+    int count);
+
+class Feats : public IFeats, boost::noncopyable {
+public:
+    Feats(
+        resource::Textures &textures,
+        resource::Strings &strings,
+        resource::ITwoDAs &twoDas) :
+        _textures(textures),
+        _strings(strings),
+        _twoDas(twoDas) {
+    }
+
+    void init() override;
+
+    std::shared_ptr<Feat> get(FeatType type) const override;
+    int getLevelUpChoiceCount(const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
+    bool isLevelUpCandidate(FeatType type, const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
+    std::vector<FeatType> getLevelUpCandidates(const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
+    std::vector<FeatDisplayEntry> getLevelUpDisplayEntries(const CreatureAttributes &attributes, const CreatureClass &clazz) const override;
+
+private:
+    std::unordered_map<FeatType, std::shared_ptr<Feat>> _feats;
+
+    // Services
+
+    resource::Textures &_textures;
+    resource::Strings &_strings;
+    resource::ITwoDAs &_twoDas;
+
+    // END Services
+};
+
+} // namespace game
+
+} // namespace reone
