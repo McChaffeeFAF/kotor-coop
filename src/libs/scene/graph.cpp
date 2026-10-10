@@ -561,7 +561,12 @@ void SceneGraph::prepareTransparentLeafs() {
                     continue;
                 }
                 auto particle = static_cast<ParticleSceneNode *>(child);
-                if (!camera->isInFrustum(particle->position())) {
+                // A particle is a quad about its position: one whose centre is
+                // out of view can still cover the screen's edge (the
+                // character screen's 3 m alignment streams and mist).
+                float extent = 0.5f * glm::max(particle->size().x, particle->size().y);
+                if (!camera->isInFrustum(AABB(particle->position() - glm::vec3(extent),
+                                              particle->position() + glm::vec3(extent)))) {
                     continue;
                 }
                 leafs.push_back(particle);
@@ -653,6 +658,9 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
     auto &pipeline = *_renderPipeline;
     pipeline.reset();
     pipeline.setFrameTime(_presentationTime);
+    pipeline.setGuiScene(!_modelRoots.empty() && std::all_of(_modelRoots.begin(), _modelRoots.end(), [](auto &root) {
+        return root->usage() == ModelUsage::GUI;
+    }));
 
     auto cameraNode = this->camera();
     if (cameraNode) {

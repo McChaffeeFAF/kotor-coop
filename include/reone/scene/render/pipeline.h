@@ -94,6 +94,13 @@ public:
     virtual void setProbeValid(bool valid) {}
     /** Forget temporal history (TAA, eye adaptation) after off-screen renders. */
     virtual void resetTemporal() {}
+
+    /**
+     * The scene is a GUI control's model (character screen, main menu), not
+     * a place: effects of a medium the camera sits in (volumetric light) and
+     * eye adaptation are left out.
+     */
+    virtual void setGuiScene(bool gui) {}
 };
 
 /** Reflection probe faces: direction and up of face i (world, Z up), shared with f_pp_ssr. */
@@ -135,6 +142,7 @@ public:
     }
 
     void setFrameTime(float dt) override { _frameTime = dt; }
+    void setGuiScene(bool gui) override { _guiScene = gui; }
     void setProbeValid(bool valid) override { _probeValid = valid && _probe.texture; }
     void resetTemporal() override {
         _taa.valid = false;
@@ -298,6 +306,7 @@ protected:
      */
     void applyVolumetrics(graphics::Texture &scene, graphics::Texture &depth, int shadowType, graphics::Framebuffer &dst);
     float _frameTime {0.0f};
+    bool _guiScene {false};
 
     /**
      * Eye adaptation and tone mapping of `src` (the HDR frame) into `dst`;

@@ -21,6 +21,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <set>
+
 #include "reone/audio/clip.h"
 #include "reone/game/visualeffectpresenter.h"
 #include "reone/game/visualeffects.h"
@@ -340,5 +342,116 @@ TEST(VisualEffectPresenter, a_location_effect_plays_where_it_was_placed) {
     scene.frame();
     ASSERT_EQ(1u, scene.presenter.numModels());
     scene.presenter.clear();
+    EXPECT_EQ(0u, scene.presenter.numModels());
+}
+
+TEST(VisualEffects, a_programmed_beam_row_loads_the_beam_model_for_its_number) {
+    TwoDA::Builder builder;
+    builder.columns(kColumns);
+    builder.row("2038", row({{"label", "VFX_BEAM_LIGHTNING_DARK_L"}, {"type_fd", "D"}, {"progfx_duration", "609"}}));
+    builder.row("2040", row({{"label", "VFX_DUR_SHIELD_BLUE_01"}, {"type_fd", "D"}, {"progfx_duration", "1413"}}));
+    auto table = builder.build();
+    auto beam = effectModel("v_lightnx_dur", {"conjure01"});
+    std::vector<std::string> asked;
+
+    auto effects = VisualEffects::parse(
+        *table,
+        [&](const std::string &resRef) -> std::shared_ptr<Model> {
+            asked.push_back(resRef);
+            return resRef == "v_lightnx_dur" ? beam : nullptr;
+        },
+        [](const std::string &) { return nullptr; });
+
+    EXPECT_EQ(609, effects.at(2038).progfxDuration);
+    EXPECT_EQ(beam, effects.at(2038).beamModel);
+    EXPECT_EQ(1413, effects.at(2040).progfxDuration);
+    EXPECT_EQ(nullptr, effects.at(2040).beamModel) << "shields are not beams";
+    EXPECT_EQ(std::vector<std::string> {"v_lightnx_dur"}, asked);
+    // The fourteen beam numbers each have their own model.
+    std::set<std::string> names;
+    for (int progfx = 608; progfx <= 621; ++progfx) {
+        names.insert(VisualEffectDesc::beamModelResRef(progfx));
+    }
+    EXPECT_EQ(14u, names.size());
+    EXPECT_EQ(0u, names.count(""));
+    EXPECT_EQ("", VisualEffectDesc::beamModelResRef(607));
+    EXPECT_EQ("", VisualEffectDesc::beamModelResRef(1407));
+}
+
+namespace {
+
+/** A beam model: an emitter-less root with one reattachable and one fixed reference. */
+std::shared_ptr<Model> beamModel() {
+    auto root = std::make_shared<ModelNode>(0, "v_beam", glm::vec3(0.0f), kIdentity, true, nullptr);
+    auto far = std::make_shared<ModelNode>(1, "omenref01", glm::vec3(0.0f, 0.0f, 5.0f), kIdentity, true, root.get());
+    auto farRef = std::make_shared<ModelNode::Reference>();
+    farRef->reattachable = true;
+    far->setReference(farRef);
+    auto near = std::make_shared<ModelNode>(2, "omenref02", glm::vec3(0.0f, 0.0f, 1.0f), kIdentity, true, root.get());
+    auto nearRef = std::make_shared<ModelNode::Reference>();
+    nearRef->reattachable = false;
+    near->setReference(nearRef);
+    root->addChild(far);
+    root->addChild(near);
+    auto model = std::make_shared<Model>("v_beam", 0, root, std::vector<std::shared_ptr<Animation>>(), "", 1.0f);
+    model->init();
+    return model;
+}
+
+/** A caster-like model with a right hand hook. */
+std::shared_ptr<Model> casterModel() {
+    auto root = std::make_shared<ModelNode>(0, "caster", glm::vec3(0.0f), kIdentity, true, nullptr);
+    auto hand = std::make_shared<ModelNode>(1, "rhand", glm::vec3(0.3f, 0.2f, 1.1f), kIdentity, true, root.get());
+    root->addChild(hand);
+    auto model = std::make_shared<Model>("caster", 0, root, std::vector<std::shared_ptr<Animation>>(), "", 1.0f);
+    model->init();
+    return model;
+}
+
+} // namespace
+
+TEST(VisualEffectPresenter, a_beam_leaves_the_source_hand_and_its_far_end_sits_on_the_target) {
+    PresenterScene scene;
+    auto casterModelData = casterModel();
+    auto caster = scene.graph->newModel(*casterModelData, ModelUsage::Creature);
+    caster->setLocalTransform(glm::translate(glm::vec3(10.0f, 15.0f, 0.0f)));
+    scene.graph->addRoot(caster);
+    scene.ctx.modelOf = [&](uint32_t id) -> ModelSceneNode * {
+        return id == 7 ? scene.creature.get() : (id == 9 ? caster.get() : nullptr);
+    };
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.beamModel = beamModel();
+
+    auto request = scene.begin(desc);
+    request->sourceId = 9;
+    request->sourceBodyNode = static_cast<int>(BodyNode::Hand);
+    scene.frame();
+    ASSERT_EQ(1u, scene.presenter.numModels());
+    for (int i = 0; i < 5; ++i) {
+        scene.frame();
+    }
+    ASSERT_EQ(1u, scene.presenter.numModels()) << "lasts while the effect does";
+
+    ModelSceneNode *beam = scene.presenter.models().front();
+    ASSERT_TRUE(beam);
+    glm::vec3 hand(10.3f, 15.2f, 1.1f);
+    EXPECT_NEAR(0.0f, glm::distance(hand, glm::vec3(beam->absoluteTransform()[3])), 1e-4f) << "on the caster's right hand";
+    glm::vec3 impact(10.0f, 20.0f, 1.2f); // the target's impact node
+    EXPECT_NEAR(0.0f, glm::distance(impact, beam->getNodeByName("omenref01")->origin()), 1e-4f) << "far end on the target";
+    EXPECT_GT(glm::distance(impact, beam->getNodeByName("omenref02")->origin()), 1.0f) << "a fixed reference stays on the beam";
+
+    request->ended = true;
+    scene.frame();
+    EXPECT_EQ(0u, scene.presenter.numModels());
+}
+
+TEST(VisualEffectPresenter, a_beam_row_without_a_source_draws_no_beam) {
+    PresenterScene scene;
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.beamModel = beamModel();
+    scene.begin(desc);
+    scene.frame();
     EXPECT_EQ(0u, scene.presenter.numModels());
 }

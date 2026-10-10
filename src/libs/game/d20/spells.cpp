@@ -234,6 +234,7 @@ void Spells::init() {
         auto spell = std::make_shared<Spell>();
         spell->type = type;
         spell->name = std::move(name);
+        spell->label = spells->getString(row, "label");
         spell->description = std::move(description);
         spell->icon = std::move(icon);
         spell->pips = pips;

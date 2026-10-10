@@ -471,6 +471,10 @@ ParticleSceneNode *EmitterSceneNode::doSpawnParticle(float pathFraction) {
     if (_fps > 0.0f) {
         particle->setAnimLength((_frameEnd - _frameStart + 1) / _fps);
     }
+    if (emitter.updateMode != ModelNode::Emitter::UpdateMode::Lightning) {
+        // Lightning sizes and colours its bolts itself.
+        particle->startLife();
+    }
 
     return particle;
 }
@@ -578,7 +582,14 @@ void EmitterSceneNode::spawnLightningParticles() {
         addChild(*particle);
         particle->resetAt(glm::vec3(_absTransform * glm::vec4(center, 1.0f)));
         particle->setDir(_absTransform * glm::vec4(glm::normalize(endToStart), 0.0f));
-        particle->setSize(glm::vec2(_lightningScale, glm::length(endToStart)));
+        // A bolt segment is as wide as the emitter's particle size: the K1
+        // rays (cold, stun, drain, the space laser) author lightningscale 0
+        // and a size of 0.1-0.6, and a scale-wide segment drew nothing.
+        // Lightning particles are not aged (ParticleSceneNode::update), so
+        // they take the start colour and alpha.
+        particle->setSize(glm::vec2(getParticleSize(0.0f), glm::length(endToStart)));
+        particle->setColor(getColor(0.0f));
+        particle->setAlpha(getAlpha(0.0f));
     }
 }
 
@@ -778,7 +789,13 @@ void EmitterSceneNode::renderLeafs(IRenderPass &pass, const std::vector<SceneNod
         particles[i].right = right;
         particles[i].up = up;
     }
-    bool twosided = _modelNode.emitter()->twosided || _modelNode.emitter()->renderMode == ModelNode::Emitter::RenderMode::MotionBlur;
+    // Billboard_to_Local_Z quads lie in the emitter's XY plane with their
+    // axes swapped (right is local Y, up is local X), so their front face is
+    // local -Z. Seen from +Z (the character screen's alignment mist and
+    // streams, which face the camera along Dummy02's +Z) they were culled.
+    bool twosided = _modelNode.emitter()->twosided ||
+                    _modelNode.emitter()->renderMode == ModelNode::Emitter::RenderMode::MotionBlur ||
+                    _modelNode.emitter()->renderMode == ModelNode::Emitter::RenderMode::BillboardToLocalZ;
     auto faceCulling = twosided ? FaceCullMode::None : FaceCullMode::Back;
     bool premultipliedAlpha = emitter->blendMode == ModelNode::Emitter::BlendMode::Lighten;
     pass.drawParticles(*texture, faceCulling, premultipliedAlpha, emitter->gridSize, particles);

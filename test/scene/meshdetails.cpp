@@ -241,3 +241,27 @@ TEST(MeshLightDetails, VC_M_reattach_only_a_reattachable_reference_moves_to_anot
     EXPECT_EQ(target.get(), movable->parent());
     EXPECT_EQ(effect->getNodeByName("omenref02"), fixed->parent());
 }
+
+TEST(MeshLightDetails, VC_M_aim_holds_reattachable_references_at_a_world_point_across_updates) {
+    DetailsFixture f;
+    auto root = DetailsFixture::node(0, "v_lightnx_dur", nullptr);
+    for (auto [number, name, reattachable] : std::vector<std::tuple<uint16_t, std::string, bool>> {
+             {1, "omenref01", true}, {2, "omenref02", false}}) {
+        auto refNode = DetailsFixture::node(number, name, root.get());
+        auto reference = std::make_shared<ModelNode::Reference>();
+        reference->reattachable = reattachable;
+        refNode->setReference(reference);
+        root->addChild(refNode);
+    }
+    auto effect = f.build(root, ModelUsage::Projectile);
+    effect->setLocalTransform(glm::translate(glm::vec3(1.0f, 2.0f, 3.0f)));
+    glm::vec3 fixedBefore = effect->getNodeByName("omenref02")->origin();
+
+    EXPECT_EQ(1, effect->aimReattachableReferences(glm::vec3(5.0f, 6.0f, 7.0f)));
+    effect->update(0.1f);
+    effect->setLocalTransform(glm::translate(glm::vec3(0.0f, 0.0f, 3.0f)));
+    effect->update(0.1f);
+
+    EXPECT_NEAR(0.0f, glm::distance(glm::vec3(5.0f, 6.0f, 7.0f), effect->getNodeByName("omenref01")->origin()), 1e-4f);
+    EXPECT_NE(fixedBefore, effect->getNodeByName("omenref02")->origin()) << "the fixed one moves with the model";
+}

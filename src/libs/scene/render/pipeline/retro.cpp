@@ -352,7 +352,10 @@ Texture &RetroRenderPipeline::render() {
 
         // Volumetric light over the composed frame, before bloom and tone
         // mapping, so its glow blooms and rolls off with the rest.
-        if (_options.volumetrics && _volume.texture && _targets.opaqueDepthTexture) {
+        // Not in a GUI scene: its lights are authored for a lit backdrop (the
+        // character screen's key light has multiplier 50), and scattered
+        // through the haze they filled the panel with a flat glare.
+        if (_options.volumetrics && !_guiScene && _volume.texture && _targets.opaqueDepthTexture) {
             gputimer::Scope timer("volumetrics");
             if (dirLightShadows) {
                 _context.bindTexture(*_targets.dirLightShadowsDepth, TextureUnits::shadowMapArray);

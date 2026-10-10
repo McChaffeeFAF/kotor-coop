@@ -272,7 +272,9 @@ void RenderPipelineBase::initEnhancedTargets() {
 }
 
 void RenderPipelineBase::applyToneMapping(Texture &src, Framebuffer &dst) {
-    bool autoExposure = _options.autoExposure && _tone.meter.texture;
+    // A GUI scene keeps the fixed exposure: metering the character screen's
+    // dark, mostly empty frame brightened it until its faint mist was a glare.
+    bool autoExposure = _options.autoExposure && !_guiScene && _tone.meter.texture;
     float op = _options.tonemap ? static_cast<float>(_options.tonemapOperator) : 0.0f;
     float dt = glm::clamp(_frameTime, 0.0f, 0.25f);
     bool valid = _tone.valid;

@@ -1849,6 +1849,7 @@ private:
     void consoleStepIdle(const ConsoleArgs &tokens);
     void consoleSpawnFollowers(const ConsoleArgs &tokens);
     void consoleSetVitals(const ConsoleArgs &tokens);
+    void consoleSetAlign(const ConsoleArgs &tokens);
     void consoleUntilTick(const ConsoleArgs &tokens);
     void consoleTickStatus(const ConsoleArgs &tokens);
     void consoleInterp(const ConsoleArgs &tokens);

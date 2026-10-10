@@ -195,6 +195,17 @@ public:
      */
     bool reattachReference(const std::string &referenceNodeName, SceneNode &newParent);
 
+    /**
+     * Hold every reattachable reference node at a world point (a beam's
+     * target), without moving it out of this model: the emitters above them
+     * then reach from where this model sits to that point. The aim is kept
+     * over animation updates until cleared.
+     *
+     * @return the number of references aimed
+     */
+    int aimReattachableReferences(const glm::vec3 &worldPoint);
+    void clearReferenceAim() { _referenceAim.reset(); }
+
     // END Attachments
 
     // Object lighting
@@ -229,6 +240,10 @@ private:
 
     std::unordered_map<uint16_t, ModelNodeSceneNode *> _nodeByNumber;
     std::unordered_map<std::string, ModelNodeSceneNode *> _nodeByName;
+
+    std::optional<glm::vec3> _referenceAim;
+
+    int applyReferenceAim();
     std::unordered_map<std::string, SceneNode *> _attachments;
 
     // END Lookups

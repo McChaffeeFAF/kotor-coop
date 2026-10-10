@@ -21,6 +21,7 @@
 #include "reone/game/companionbrain.h"
 
 #include "reone/game/action/attackobject.h"
+#include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/movetopoint.h"
 #include "reone/game/action/usetalentonobject.h"
 #include "reone/game/coopsession.h"
@@ -56,6 +57,7 @@ constexpr float kKnownEnemyRange = 30.0f;
 constexpr float kMineRadius = kMineHalfSize + 0.5f;
 constexpr int kPartyStyleDefensive = 1;
 constexpr int kPartyStylePassive = 2;
+constexpr int kMaxPrerequisiteDepth = 8;
 
 bool isDroid(const Creature &creature) {
     return creature.racialType() == RacialType::Droid;
@@ -66,13 +68,51 @@ bool wieldsRanged(const Creature &creature) {
     return weapon && weapon->isRanged();
 }
 
-void fillActor(Actor &actor, const Creature &creature) {
+/** The first spell of a power's prerequisite line (Force Armor -> Force Aura). */
+int prerequisiteRoot(ISpells &spells, const Spell &spell) {
+    int root = static_cast<int>(spell.type);
+    const Spell *current = &spell;
+    std::shared_ptr<Spell> holder;
+    for (int depth = 0; depth < kMaxPrerequisiteDepth && !current->prerequisites.empty(); ++depth) {
+        root = static_cast<int>(current->prerequisites.front());
+        holder = spells.get(current->prerequisites.front());
+        if (!holder) {
+            break;
+        }
+        current = holder.get();
+    }
+    return root;
+}
+
+SpellTraits traitsOf(const Spell &spell, bool fromItem) {
+    return describeSpell(spell.category, spell.hostile, fromItem, spell.label, spell.itemTargeting, spell.maxCR);
+}
+
+std::string familyOf(ISpells &spells, const Spell &spell, const SpellTraits &traits) {
+    return spellFamily(traits, spell.label, prerequisiteRoot(spells, spell));
+}
+
+bool isDisabled(const Creature &creature) {
+    for (EffectType type : {EffectType::Stunned, EffectType::Paralyze, EffectType::DroidStun,
+                            EffectType::Horrified, EffectType::Entangle, EffectType::Sleep,
+                            EffectType::Dazed, EffectType::Choke, EffectType::CutSceneStunned,
+                            EffectType::CutSceneParalyze, EffectType::CutSceneHorrified}) {
+        if (creature.hasEffect(type)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void fillActor(Actor &actor, const Creature &creature, ISpells &spells) {
     actor.id = creature.id();
     actor.position = creature.position();
     actor.hitPoints = creature.currentHitPoints();
     actor.maxHitPoints = creature.maxHitPoints();
     actor.droid = isDroid(creature);
     actor.ranged = wieldsRanged(creature);
+    actor.level = std::max(1, creature.attributes().getAggregateLevel());
+    actor.boss = creature.plotFlag() || creature.isMinOneHP();
     auto target = creature.getAttackTarget();
     actor.target = target ? target->id() : 0;
     for (const auto &effect : creature.effects()) {
@@ -82,6 +122,25 @@ void fillActor(Actor &actor, const Creature &creature) {
     }
     std::sort(actor.activeSpells.begin(), actor.activeSpells.end());
     actor.activeSpells.erase(std::unique(actor.activeSpells.begin(), actor.activeSpells.end()), actor.activeSpells.end());
+    for (int id : actor.activeSpells) {
+        auto spell = spells.get(static_cast<SpellType>(id));
+        if (spell) {
+            actor.activeFamilies.push_back(familyOf(spells, *spell, traitsOf(*spell, isItemLabel(spell->label))));
+        }
+    }
+    std::sort(actor.activeFamilies.begin(), actor.activeFamilies.end());
+    actor.activeFamilies.erase(std::unique(actor.activeFamilies.begin(), actor.activeFamilies.end()), actor.activeFamilies.end());
+    if (creature.effects().empty()) {
+        return;
+    }
+    actor.disabled = isDisabled(creature);
+    actor.poisoned = creature.hasEffect(EffectType::Poison);
+    actor.shielded = creature.hasEffect(EffectType::ForceShield);
+    actor.forceResistant = creature.hasEffect(EffectType::ForceResistanceIncrease);
+    actor.immuneStun = creature.hasEffectImmunity(ImmunityType::Stun) ||
+                       creature.hasEffectImmunity(ImmunityType::Paralysis) ||
+                       creature.hasEffectImmunity(ImmunityType::MindSpells);
+    actor.immunePoison = creature.hasEffectImmunity(ImmunityType::Poison);
 }
 
 void classifyCaster(Actor &actor, const Creature &creature, ISpells &spells) {
@@ -97,25 +156,33 @@ void classifyCaster(Actor &actor, const Creature &creature, ISpells &spells) {
     }
 }
 
-std::optional<Talent> spellTalent(const Creature &creature, const Spell &spell, uint32_t item) {
-    auto role = classifySpell(spell.category, spell.hostile, item != 0);
-    if (!role) {
+std::optional<Talent> spellTalent(const Creature &creature, ISpells &spells, const Spell &spell, const Item *item) {
+    SpellTraits traits = traitsOf(spell, item != nullptr);
+    if (!traits.role) {
         return std::nullopt;
     }
     Talent talent;
-    talent.role = *role;
+    talent.role = *traits.role;
     talent.type = TalentType::Spell;
     talent.id = static_cast<int>(spell.type);
-    talent.item = item;
-    talent.forceCost = item != 0 ? 0 : creature.forcePowerCost(spell);
+    talent.item = item ? item->id() : 0;
+    talent.forceCost = item ? 0 : creature.forcePowerCost(spell);
     talent.exclusion = spell.exclusion;
     talent.rank = spell.maxCR;
+    talent.itemKind = traits.itemKind;
+    talent.grenade = traits.grenade;
+    talent.effects = traits.effects;
+    talent.rare = traits.rare;
+    talent.droidItem = traits.droidItem;
+    talent.family = familyOf(spells, spell, traits);
+    talent.value = item ? static_cast<int>(item->cost()) : 0;
     bool area = ((spell.category >> 12) & 0xf) == 2;
-    switch (*role) {
+    switch (talent.role) {
     case TalentRole::Heal:
     case TalentRole::Buff:
-        if (item != 0) {
-            talent.selfOnly = true; // medpacs, shields, stims: on oneself
+    case TalentRole::Cure:
+        if (item) {
+            talent.selfOnly = true; // stims and shields on oneself; kits on whoever is matched
         } else if (area) {
             talent.onCaster = true;
             talent.radius = kAreaHealRadius;
@@ -128,7 +195,7 @@ std::optional<Talent> spellTalent(const Creature &creature, const Spell &spell, 
         talent.radius = kAreaPowerRadius;
         break;
     case TalentRole::Grenade:
-        talent.radius = kGrenadeRadius;
+        talent.radius = traits.radius > 0.0f ? traits.radius : kGrenadeRadius;
         break;
     default:
         break;
@@ -136,6 +203,13 @@ std::optional<Talent> spellTalent(const Creature &creature, const Spell &spell, 
     return talent;
 }
 
+/**
+ * The talents of a companion: known powers it can afford, the usable items
+ * it carries or the party shares, and its attack feats. A co-op guest in
+ * Free Mode draws only on its own pack; everyone else on the shared party
+ * inventory too. Plot items are never offered, and a droid's utilities and
+ * shields only from its own equipment slots.
+ */
 void collectTalents(CompanionView &view, Game &game, const Creature &creature, ServicesView &services) {
     auto &spells = services.game.spells;
     for (SpellType type : creature.attributes().spells()) {
@@ -143,35 +217,51 @@ void collectTalents(CompanionView &view, Game &game, const Creature &creature, S
         if (!spell || !creature.canAffordForcePower(*spell)) {
             continue;
         }
-        if (auto talent = spellTalent(creature, *spell, 0)) {
+        if (auto talent = spellTalent(creature, spells, *spell, nullptr)) {
             view.talents.push_back(*talent);
         }
     }
-    std::set<int> itemSpells;
-    auto offerItem = [&](const std::shared_ptr<Item> &item) {
+    std::map<int, size_t> itemTalent; // spell id -> index in view.talents
+    std::set<int> skipped;
+    auto offerItem = [&](const std::shared_ptr<Item> &item, bool equipped) {
         auto type = item ? item->activateSpell() : std::nullopt;
-        if (!type || !itemSpells.insert(static_cast<int>(*type)).second) {
+        if (!type || item->plotFlag()) {
+            return;
+        }
+        int id = static_cast<int>(*type);
+        if (auto found = itemTalent.find(id); found != itemTalent.end()) {
+            view.talents[found->second].count += std::max(1, item->stackSize());
+            return;
+        }
+        if (skipped.count(id)) {
             return;
         }
         auto spell = spells.get(*type);
         if (!spell) {
             return;
         }
-        if (auto talent = spellTalent(creature, *spell, item->id())) {
-            view.talents.push_back(*talent);
+        auto talent = spellTalent(creature, spells, *spell, item.get());
+        if (!talent || (talent->droidItem && !equipped)) {
+            skipped.insert(id);
+            return;
         }
+        talent->count = std::max(1, item->stackSize());
+        itemTalent.emplace(id, view.talents.size());
+        view.talents.push_back(*talent);
     };
     for (const auto &[slot, item] : creature.equipment()) {
-        offerItem(item);
+        offerItem(item, true);
     }
     for (const auto &item : creature.items()) {
-        offerItem(item);
+        offerItem(item, false);
     }
+    auto *coop = game.coop();
+    bool ownPackOnly = coop && coop->freeMode() && coop->isPlayerControlled(creature.id());
     // A party member's pack is the shared party inventory the player holds.
-    auto owner = game.party().actualPlayer();
-    if (owner && owner.get() != &creature) {
+    auto owner = ownPackOnly ? nullptr : game.party().sharedItemHolder(creature);
+    if (owner) {
         for (const auto &item : owner->items()) {
-            offerItem(item);
+            offerItem(item, false);
         }
     }
     auto &feats = services.game.feats;
@@ -217,6 +307,50 @@ bool partyMemberId(Game &game, uint32_t id) {
     return false;
 }
 
+/**
+ * What the rest of the party is about to do this round: the items queued
+ * in their casts, and who they are giving a kit or cure to. Two companions
+ * deciding in one round then do not both reach for the last shield, or
+ * both medpac the same ally.
+ */
+void collectClaims(CompanionView &view, Game &game, const Creature &creature, ISpells &spells) {
+    for (const auto &member : game.party().members()) {
+        auto other = member.creature;
+        if (!other || other->id() == creature.id() || other->isDead()) {
+            continue;
+        }
+        for (const auto &action : other->actions()) {
+            const CastSpellAtObjectAction *cast = nullptr;
+            if (auto use = dyn_cast<UseTalentOnObjectAction>(action.get())) {
+                cast = use->subAction() ? dyn_cast<CastSpellAtObjectAction>(use->subAction().get()) : nullptr;
+            } else {
+                cast = dyn_cast<CastSpellAtObjectAction>(action.get());
+            }
+            if (!cast || !cast->item() || !*cast->item()) {
+                continue;
+            }
+            view.claimedItems.push_back((*cast->item())->id());
+            const auto &spell = cast->spell();
+            if (spell && cast->target() && !spell->hostile) {
+                auto traits = traitsOf(*spell, true);
+                if (traits.role == TalentRole::Heal || traits.role == TalentRole::Cure) {
+                    view.tended.push_back(cast->target()->id());
+                }
+            }
+        }
+    }
+    for (auto *ids : {&view.claimedItems, &view.tended}) {
+        std::sort(ids->begin(), ids->end());
+        ids->erase(std::unique(ids->begin(), ids->end()), ids->end());
+    }
+}
+
+/** A medpac, kit or anti-toxin given to someone else: the retail script treats OBJECT_SELF. */
+bool givenItem(const Decision &decision, uint32_t self) {
+    return decision.talent.item != 0 && decision.target != self &&
+           (decision.talent.role == TalentRole::Heal || decision.talent.role == TalentRole::Cure);
+}
+
 } // namespace
 
 bool usesBrain(Game &game, const Creature &creature) {
@@ -242,13 +376,14 @@ bool usesBrain(Game &game, const Creature &creature) {
 
 void runCompanionBrainRound(Game &game, Creature &creature) {
     auto &services = game.services();
+    auto &spells = services.game.spells;
     auto module = game.module();
     auto area = module ? module->area() : nullptr;
     if (!area) {
         return;
     }
     CompanionView view;
-    fillActor(view.self, creature);
+    fillActor(view.self, creature, spells);
     view.forcePoints = creature.currentForce();
     view.stealthed = creature.hasEffect(EffectType::Invisibility) ||
                      creature.hasEffect(EffectType::ImprovedInvisibility);
@@ -271,11 +406,15 @@ void runCompanionBrainRound(Game &game, Creature &creature) {
 
     for (const auto &member : game.party().members()) {
         auto ally = member.creature;
-        if (!ally || ally->id() == creature.id() || ally->isDead()) {
+        if (!ally || ally->id() == creature.id()) {
+            continue;
+        }
+        if (ally->isDead()) {
+            ++view.partyDown;
             continue;
         }
         Actor actor;
-        fillActor(actor, *ally);
+        fillActor(actor, *ally, spells);
         view.allies.push_back(std::move(actor));
     }
     std::sort(view.allies.begin(), view.allies.end(), [](const Actor &a, const Actor &b) { return a.id < b.id; });
@@ -299,12 +438,13 @@ void runCompanionBrainRound(Game &game, Creature &creature) {
             continue;
         }
         Actor actor;
-        fillActor(actor, *other);
-        classifyCaster(actor, *other, services.game.spells);
+        fillActor(actor, *other, spells);
+        classifyCaster(actor, *other, spells);
         view.enemies.push_back(std::move(actor));
     }
     collectTalents(view, game, creature, services);
     collectHazards(view, game, creature, *area);
+    collectClaims(view, game, creature, spells);
 
     Decision decision = decide(view, [](int min, int max) {
         return gameplayRandom().uniformInt(min, max);
@@ -332,7 +472,23 @@ void runCompanionBrainRound(Game &game, Creature &creature) {
         }
         break;
     case DecisionKind::TalentOnObject:
-        if (target) {
+        if (!target) {
+            break;
+        }
+        if (givenItem(decision, creature.id())) {
+            // The companion walks to the ally and uses the item; its effect
+            // lands on the ally (the retail script heals OBJECT_SELF).
+            auto spell = spells.get(static_cast<SpellType>(decision.talent.id));
+            auto item = game.getObjectById<Item>(decision.talent.item);
+            if (spell && item) {
+                auto cast = game.newAction<CastSpellAtObjectAction>(
+                    std::move(spell), target, std::optional<std::shared_ptr<Item>>(std::move(item)), /*cheat=*/false);
+                cast->setImpactCaller(target);
+                creature.addAction(std::move(cast));
+            }
+            break;
+        }
+        {
             auto talent = decision.talent.item != 0
                               ? std::make_shared<game::Talent>(decision.talent.type, decision.talent.id, 0, decision.talent.item)
                               : std::make_shared<game::Talent>(decision.talent.type, decision.talent.id);

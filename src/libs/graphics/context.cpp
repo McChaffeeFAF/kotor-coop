@@ -544,6 +544,10 @@ void Context::setBlendMode(BlendMode mode) {
             glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
             glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
             break;
+        case BlendMode::PremultipliedAlpha:
+            glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);
+            glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+            break;
         case BlendMode::Normal:
         default:
             glBlendEquationSeparate(GL_FUNC_ADD, GL_FUNC_ADD);

@@ -54,6 +54,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/script/nsscomp.cpp
     ${TESTS_SOURCE_DIR}/texgen/texgen.cpp
     ${TESTS_SOURCE_DIR}/game/action.cpp
+    ${TESTS_SOURCE_DIR}/game/charactermenu.cpp
     ${TESTS_SOURCE_DIR}/game/coopnet.cpp
     ${TESTS_SOURCE_DIR}/game/cooploot.cpp
     ${TESTS_SOURCE_DIR}/game/coopprompts.cpp

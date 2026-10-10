@@ -197,6 +197,44 @@ TEST(EmitterBehaviour, VC_E_update_explosion_bursts_birthrate_particles_on_deton
     EXPECT_EQ(8u, f.particles(emitter).size());
 }
 
+TEST(EmitterBehaviour, detonated_particles_are_drawn_at_their_start_state_before_their_first_update) {
+    // The impact models' detonate event fires during the model's animation
+    // update, after the emitter has updated its particles for the frame. The
+    // burst is drawn before its own first update: it must already have the
+    // start size, colour and alpha, not a pooled particle's defaults (a white
+    // 1 m square: the hit flash's white spot) or its last life's end state.
+    Fixture f(ModelNode::Emitter::UpdateMode::Explosion);
+    f.rest(ControllerTypes::birthrate, 3.0f);
+    f.rest(ControllerTypes::sizeStart, 0.014f);
+    f.rest(ControllerTypes::sizeEnd, 0.5f);
+    f.rest(ControllerTypes::alphaStart, 0.25f);
+    f.rest(ControllerTypes::alphaEnd, 1.0f);
+    f.emitterNode->vectorTracks()[ControllerTypes::colorStart].add(0.0f, glm::vec3(1.0f, 0.5f, 0.0f));
+    f.emitterNode->vectorTracks()[ControllerTypes::colorEnd].add(0.0f, glm::vec3(0.0f, 0.0f, 1.0f));
+    auto &emitter = f.build();
+    f.graph->update(0.0f);
+
+    for (int life = 0; life < 2; ++life) {
+        f.sceneModel->signalEvent("detonate");
+        auto particles = f.particles(emitter);
+        ASSERT_EQ(3u, particles.size());
+        for (auto particle : particles) {
+            EXPECT_NEAR(0.014f, particle->size().x, 1e-6f);
+            EXPECT_NEAR(0.014f, particle->size().y, 1e-6f);
+            EXPECT_NEAR(0.25f, particle->alpha(), 1e-6f);
+            EXPECT_NEAR(1.0f, particle->color().r, 1e-6f);
+            EXPECT_NEAR(0.5f, particle->color().g, 1e-6f);
+            EXPECT_NEAR(0.0f, particle->color().b, 1e-6f);
+        }
+        // Age the burst out, so the second round reuses pooled particles
+        // that ended at the end state.
+        f.graph->update(4.9f);
+        f.graph->update(0.2f);
+        f.graph->update(0.0f);
+        EXPECT_TRUE(f.particles(emitter).empty());
+    }
+}
+
 TEST(EmitterBehaviour, fountains_ignore_detonate) {
     Fixture f;
     f.rest(ControllerTypes::birthrate, 0.0f);
@@ -534,4 +572,32 @@ TEST(EmitterBehaviour, geometry_controller_values_reach_the_simulation) {
     f.graph->update(1.0f);
     f.graph->update(0.0f);
     EXPECT_TRUE(f.particles(emitter).empty()) << "expired at its life expectancy";
+}
+
+TEST(EmitterAnimation, a_lightning_segment_is_as_wide_as_the_particle_size_not_the_lightning_scale) {
+    // v_coldray_dur / v_stunray_dur: lightningscale 0, size 0.1. The bolt
+    // runs from the emitter to the reference node under it.
+    Fixture f(ModelNode::Emitter::UpdateMode::Lightning);
+    f.emitter->renderMode = ModelNode::Emitter::RenderMode::Linked;
+    f.rest(ControllerTypes::sizeStart, 0.1f);
+    f.rest(ControllerTypes::lightingScale, 0.0f);
+    f.rest(ControllerTypes::lightingSubDiv, 2.0f);
+    f.emitterNode->vectorTracks()[ControllerTypes::colorStart].add(0.0f, glm::vec3(0.2f, 0.4f, 1.0f));
+    f.emitterNode->floatTracks()[ControllerTypes::alphaStart].add(0.0f, 0.5f);
+    auto ref = std::make_shared<ModelNode>(2, "omenref01", glm::vec3(0.0f, 0.0f, 4.0f), kIdentity, true, f.emitterNode.get());
+    ref->setReference(std::make_shared<ModelNode::Reference>());
+    f.emitterNode->addChild(ref);
+    auto &emitter = f.build();
+
+    f.graph->update(0.05f);
+    auto segments = f.particles(emitter);
+    ASSERT_EQ(3u, segments.size()) << "subdiv 2: three segments";
+    float length = 0.0f;
+    for (auto *segment : segments) {
+        EXPECT_FLOAT_EQ(0.1f, segment->size().x);
+        EXPECT_NEAR(0.4f, segment->color().y, 1e-5f);
+        EXPECT_FLOAT_EQ(0.5f, segment->alpha());
+        length += segment->size().y;
+    }
+    EXPECT_NEAR(4.0f, length, 1e-3f);
 }

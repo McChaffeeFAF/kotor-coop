@@ -255,11 +255,19 @@ void Control::renderScene(const glm::ivec2 &screenSize,
             0.0f, 0.0f, 100.0f);
         globals.projectionInv = glm::inverse(globals.projection);
     });
+    // The scene's frame is premultiplied: its colour already carries the
+    // coverage of its see-through layers, and additive light (lighten
+    // particles, the glow channel, hilights) adds colour over empty pixels
+    // without adding alpha. Retail draws these scenes straight over the GUI;
+    // composite as it would, or that light vanishes off the model and the
+    // mist is darkened twice.
     _graphicsSvc.context.withDepthTestMode(DepthTestMode::None, [this, &offset, &pass, &output]() {
-        pass.drawImage(
-            *output,
-            {_extent.left + offset.x, _extent.top + offset.y},
-            {_extent.width, _extent.height});
+        _graphicsSvc.context.withBlendMode(BlendMode::PremultipliedAlpha, [this, &offset, &pass, &output]() {
+            pass.drawImage(
+                *output,
+                {_extent.left + offset.x, _extent.top + offset.y},
+                {_extent.width, _extent.height});
+        });
     });
 }
 

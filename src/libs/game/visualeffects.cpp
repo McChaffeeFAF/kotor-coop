@@ -41,6 +41,32 @@ std::shared_ptr<graphics::Model> VisualEffectDesc::rootModel() const {
     return impRootHNode;
 }
 
+// Programmed beams: visualeffects.2da names no model for its VFX_BEAM_* rows,
+// only a progfx_duration number (608-621). K1 ships exactly fourteen models
+// that no table names, each a lightning (or flame/ion) emitter with a
+// reattachable reference at its far end, and their names match the fourteen
+// beam labels one to one. Inferred from the game data (design note
+// v13_beams); not read from any executable.
+std::string VisualEffectDesc::beamModelResRef(int progfx) {
+    switch (progfx) {
+    case 608: return "v_lightns_dur";  // VFX_BEAM_LIGHTNING_DARK_S
+    case 609: return "v_lightnx_dur";  // VFX_BEAM_LIGHTNING_DARK_L
+    case 610: return "v_drddisab_dur"; // VFX_BEAM_DROID_DISABLE
+    case 611: return "v_drdkill_dur";  // VFX_BEAM_DROID_DESTROY
+    case 612: return "v_deathfld_dur"; // VFX_BEAM_DEATH_FIELD_TENTACLE
+    case 613: return "v_drain_dur";    // VFX_BEAM_DRAIN_LIFE
+    case 614: return "v_flame_dur";    // VFX_BEAM_FLAME_SPRAY
+    case 615: return "v_stunray_dur";  // VFX_BEAM_STUN_RAY
+    case 616: return "v_coldray_dur";  // VFX_BEAM_COLD_RAY
+    case 617: return "v_ionray01_dur"; // VFX_BEAM_ION_RAY_01
+    case 618: return "v_ionray02_dur"; // VFX_BEAM_ION_RAY_02
+    case 619: return "v_fstorm_dur";   // VFX_BEAM_FORCE_STORM_ARC
+    case 620: return "v_drdstun_dur";  // VFX_BEAM_DROID_STUN
+    case 621: return "v_fshock_dur";   // VFX_BEAM_SHOCK
+    default: return "";
+    }
+}
+
 static std::optional<uint32_t> parseRowLabel(const std::string &label) {
     if (label.empty() || label.size() > 9) {
         return std::nullopt;
@@ -58,6 +84,14 @@ static std::optional<uint32_t> parseRowLabel(const std::string &label) {
 static std::string cell(const TwoDA &twoDa, int row, const std::string &column) {
     std::string value = twoDa.getString(row, column);
     return value == "****" ? std::string() : value;
+}
+
+static int cellInt(const TwoDA &twoDa, int row, const std::string &column) {
+    std::string value = cell(twoDa, row, column);
+    if (value.empty() || !std::all_of(value.begin(), value.end(), [](unsigned char c) { return std::isdigit(c); })) {
+        return 0;
+    }
+    return std::stoi(value);
 }
 
 std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
@@ -102,8 +136,14 @@ std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
         desc.cesImpactNode = model(row, "ces_impact_node");
         desc.cesRootMNode = model(row, "ces_root_m_node");
 
-        // progfx_* (programmed effects: beams, shields) are not read here:
-        // nothing draws them yet (census batch V13).
+        // progfx_* (programmed effects). Only the beams (6xx) are drawn, by
+        // their model; shields, auras and the like (14xx-18xx) are not yet.
+        desc.progfxImpact = cellInt(twoDa, row, "progfx_impact");
+        desc.progfxDuration = cellInt(twoDa, row, "progfx_duration");
+        std::string beamResRef = VisualEffectDesc::beamModelResRef(desc.progfxDuration);
+        if (!beamResRef.empty()) {
+            desc.beamModel = loadModel(beamResRef);
+        }
 
         desc.soundImpact = sound(row, "soundimpact");
         desc.soundDuration = sound(row, "soundduration");

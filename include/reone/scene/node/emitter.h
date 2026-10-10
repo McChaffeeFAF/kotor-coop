@@ -109,9 +109,11 @@ public:
 private:
     template <class T>
     struct StartMidEnd {
-        T start;
-        T mid;
-        T end;
+        // Zero until a controller sets them: an unset height ramp read as
+        // garbage made _hasSizeY true and gave particles a random height.
+        T start {};
+        T mid {};
+        T end {};
 
         T get(float factor, float percentStart, float percentMid, float percentEnd) const {
             percentStart = glm::clamp(percentStart, 0.0f, 1.0f);

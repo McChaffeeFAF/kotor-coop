@@ -37,6 +37,7 @@ class Spell {
 public:
     SpellType type;
     std::string name;
+    std::string label;      // spells.2da label (ITEM_ABILITY_GRENADE_ION, FORCE_POWER_STUN)
     std::string description;
     std::shared_ptr<graphics::Texture> icon;
     uint32_t pips {1};

@@ -740,7 +740,7 @@ void Game::initConsole() {
     registerConsoleCommand("partyselect", "add NPCs on the party selection screen and press Done: partyselect available|<npc>...", &Game::consolePartySelect);
     registerConsoleCommand("switchleader", "switch the party leader as Tab does, until <tag> leads: switchleader [tag]", &Game::consoleSwitchLeader);
     registerConsoleCommand("useskill", "use a skill on a target as the target menu does: useskill <security|demolitions|computeruse|repair|treatinjury|...> <id|tag> [@actor]", &Game::consoleUseSkill);
-    registerConsoleCommand("vfx", "present a visual effect row fire-and-forget, as a hit does: vfx <visualeffects row> <id|tag>", &Game::consoleVfx);
+    registerConsoleCommand("vfx", "present a visual effect row fire-and-forget, as a hit does: vfx <visualeffects row> <id|tag>; with a source, a beam from it: vfx <row> <target> <source> [seconds]", &Game::consoleVfx);
     registerConsoleCommand("giveloot", "create a droppable item on an object as CreateItemOnObject does: giveloot <id|tag> <item template> [stack]", &Game::consoleGiveLoot);
     registerConsoleCommand("tickgate", "close (1) or open (0) the tick gate; closed, the simulation runs only granted ticks: tickgate [1|0]", &Game::consoleTickGate);
     registerConsoleCommand("step", "run exactly n simulation ticks, holding command execution until they have run: step <ticks>", &Game::consoleStep);
@@ -748,6 +748,7 @@ void Game::initConsole() {
     registerConsoleCommand("stepidle", "run ticks until a creature's action queue is empty: stepidle [@id|tag] [maxticks=300]", &Game::consoleStepIdle);
     registerConsoleCommand("spawnfollowers", "spawn friendly co-op party characters that follow the leader: spawnfollowers <template> <count>", &Game::consoleSpawnFollowers);
     registerConsoleCommand("setvitals", "set a creature's current hit points and force points: setvitals [hp=<n>] [fp=<n>] [@id|tag]", &Game::consoleSetVitals);
+    registerConsoleCommand("setalign", "set a creature's good/evil value (0 dark to 100 light) directly: setalign <0-100> [@id|tag]", &Game::consoleSetAlign);
     registerConsoleCommand("interp", "render interpolation between ticks: interp [status|0|1|headless 0|1|trace <frames> [@id|tag]|dump]", &Game::consoleInterp);
     registerConsoleCommand("tickstatus", "print the simulation tick, tick gate and gameplay random stream state", &Game::consoleTickStatus);
     registerConsoleCommand("usedefitem", "use a defensive item (stim, energy shield) as the action bar does: usedefitem <item tag>", &Game::consoleUseDefensiveItem);

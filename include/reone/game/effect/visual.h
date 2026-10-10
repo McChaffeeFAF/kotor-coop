@@ -44,6 +44,12 @@ public:
     void setLocation(glm::vec3 loc) { _location = loc; }
     void setFacing(float facing) { _facing = facing; }
 
+    /** Draw this row's beam model from an effector (EffectBeam); 0 clears. */
+    void setBeamSource(uint32_t sourceId, int bodyNode) {
+        _beamSourceId = sourceId;
+        _beamBodyNode = bodyNode;
+    }
+
     /**
      * How long an instant visual at a location holds its slot: the longest
      * impact animation or impact sound of its row. From model data only.
@@ -58,6 +64,8 @@ private:
     const VisualEffectDesc *_desc {nullptr};
     std::optional<glm::vec3> _location;
     float _facing {0.0f};
+    uint32_t _beamSourceId {0};
+    int _beamBodyNode {0};
     ServicesView &_services;
 
     /** One presentation request per application of this effect. */

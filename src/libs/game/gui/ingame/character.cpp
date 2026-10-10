@@ -28,6 +28,7 @@
 #include "reone/resource/provider/models.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
+#include "reone/scene/types.h"
 
 using namespace reone::audio;
 
@@ -248,10 +249,26 @@ std::shared_ptr<ModelSceneNode> CharacterMenu::getSceneModel(ISceneGraph &sceneG
     character->loadAppearance();
     character->updateModelAnimation();
 
-    auto sceneModel = sceneGraph.newModel(*_services.resource.models.get("charmain_light"), ModelUsage::GUI);
-    sceneModel->attach("charmain_light", *character->sceneNode());
+    // Both games stand the character in charrec_light: mist, streams and
+    // sparkles posed for the alignment by the model's own zero-length
+    // animations. (charmain_light is a plain blue mist neither game shows here.)
+    auto sceneModel = sceneGraph.newModel(*_services.resource.models.get("charrec_light"), ModelUsage::GUI);
+    sceneModel->attach("charrec_light", *character->sceneNode());
+    sceneModel->playAnimation(alignmentAnimation(partyLeader->goodEvil()), nullptr,
+                              AnimationProperties::fromFlags(AnimationFlags::loop));
 
     return sceneModel;
+}
+
+std::string CharacterMenu::alignmentAnimation(int goodEvil) {
+    int band = std::clamp(goodEvil, 0, 100) / 5;
+    if (band == 0) {
+        return "evil";
+    }
+    if (band == 20) {
+        return "good";
+    }
+    return "align" + std::to_string(band);
 }
 
 } // namespace game

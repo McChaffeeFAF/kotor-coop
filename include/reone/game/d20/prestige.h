@@ -28,7 +28,7 @@ namespace game {
 
 /**
  * K2 prestige classes in the K1 campaign (design note k2_merge,
- * "Prestige classes"; ADDON_KORRIBAN.md "Prestige classes in K1").
+ * "Prestige classes"; design note addon_korriban, "Prestige classes in K1").
  */
 namespace prestige {
 

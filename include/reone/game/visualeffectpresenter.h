@@ -52,12 +52,15 @@ public:
         glm::vec3 location {0.0f};      /**< where a location effect plays */
         float facing {0.0f};            /**< radians, for a location effect */
         bool ended {false};             /**< set by the simulation */
+        uint32_t sourceId {0};          /**< a beam's effector (EffectBeam), 0: none */
+        int sourceBodyNode {0};         /**< BodyNode the beam leaves from */
     };
 
     enum class AttachPoint {
         Root,
         Impact,
-        HeadConjure
+        HeadConjure,
+        BeamSource /**< a beam model, on its effector's body node */
     };
 
     struct Context {
@@ -84,8 +87,17 @@ public:
     size_t numPending() const { return _pending.size(); }
     size_t numModels() const;
 
+    /** Every model the presenter shows now (inspection and tests). */
+    std::vector<scene::ModelSceneNode *> models() const;
+
     /** World transform of the attach point, for a target model and a point. */
     static glm::mat4 attachTransform(scene::ModelSceneNode &target, AttachPoint point, bool keepWorldOrientation);
+
+    /** World point a beam leaves from: the effector's node for a BodyNode. */
+    static glm::vec3 beamSourcePoint(scene::ModelSceneNode &source, int bodyNode);
+
+    /** World point a beam ends at: the target's impact node. */
+    static glm::vec3 beamTargetPoint(scene::ModelSceneNode &target);
 
 private:
     enum class Phase {
@@ -100,6 +112,7 @@ private:
         AttachPoint point {AttachPoint::Root};
         Phase phase {Phase::Once};
         float age {0.0f};
+        bool unanimated {false}; /**< none of its animations was played */
     };
 
     struct Presented {
@@ -107,6 +120,8 @@ private:
         std::vector<Part> parts;
         std::shared_ptr<audio::AudioSource> loopSound;
         glm::mat4 lastRoot {1.0f};
+        glm::vec3 lastBeamSource {0.0f};
+        bool sourceLost {false};
         bool endHandled {false};
         bool targetLost {false};
     };
@@ -127,6 +142,7 @@ private:
     void start(const std::shared_ptr<Request> &request, const Context &ctx);
     void place(Presented &presented, const Context &ctx);
     void advance(Presented &presented, float dt, const Context &ctx);
+    void placeBeam(Presented &presented, Part &part, scene::ModelSceneNode *target, const Context &ctx);
     void finish(Presented &presented, const Context &ctx);
     void removePart(Part &part);
     void updateShake(float dt, const Context &ctx);

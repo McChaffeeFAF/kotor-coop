@@ -129,6 +129,8 @@ void ModelSceneNode::update(float dt) {
     }
     SceneNode::update(dt);
     updateAnimations(dt);
+    // Animation sets the references back to their keyed places.
+    applyReferenceAim();
 }
 
 void ModelSceneNode::renderLeafs(IRenderPass &pass, const std::vector<SceneNode *> &leafs) {
@@ -217,6 +219,28 @@ bool ModelSceneNode::reattachReference(const std::string &referenceNodeName, Sce
     newParent.addChild(attached);
     computeAABB();
     return true;
+}
+
+int ModelSceneNode::aimReattachableReferences(const glm::vec3 &worldPoint) {
+    _referenceAim = worldPoint;
+    return applyReferenceAim();
+}
+
+int ModelSceneNode::applyReferenceAim() {
+    if (!_referenceAim) {
+        return 0;
+    }
+    int aimed = 0;
+    for (auto &[name, node] : _nodeByName) {
+        auto modelNode = _model->getNodeByName(name);
+        if (!modelNode || !modelNode->isReference() || !modelNode->reference()->reattachable) {
+            continue;
+        }
+        glm::mat4 parentAbs = node->parent() ? node->parent()->absoluteTransform() : glm::mat4(1.0f);
+        node->setLocalTransform(glm::inverse(parentAbs) * glm::translate(*_referenceAim));
+        ++aimed;
+    }
+    return aimed;
 }
 
 bool ModelSceneNode::usesObjectLighting() const {

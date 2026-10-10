@@ -98,6 +98,8 @@ void VisualEffect::applyTo(Object &object) {
         request->location = object.position();
         request->facing = object.getFacing();
     }
+    request->sourceId = _beamSourceId;
+    request->sourceBodyNode = _beamBodyNode;
     _requests.push_back(request);
     if (auto *coop = object.game().coop()) {
         coop->onVisualEffectBegin(request);

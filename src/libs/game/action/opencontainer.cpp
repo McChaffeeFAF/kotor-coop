@@ -34,7 +34,7 @@ void OpenContainerAction::openAt(Object &actor) {
     auto container = _object;
     _game.openContainer(container);
     // Retail: the container window opens, then the container's OnUsed fires
-    // with the opener as the user (ENGINE_SPEC, body bags). K1 containers
+    // with the opener as the user (design note engine_spec, body bags). K1 containers
     // carry OnUsed scripts that must run on the click: the Tusken bins'
     // k_ptat_tuskcont, manm27aa's BroknDrd journal entry.
     if (auto placeable = std::dynamic_pointer_cast<Placeable>(container)) {

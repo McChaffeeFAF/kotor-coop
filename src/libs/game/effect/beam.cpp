@@ -21,14 +21,15 @@ namespace reone {
 
 namespace game {
 
-// Presentation only: the beam's visual row plays its impact model and sound
-// at the target. The procedural beam between the two (progfx_duration) is
-// not drawn yet.
+// Presentation only: the beam's visual row plays its sound and impact models
+// at the target, and its programmed beam model (progfx_duration) from the
+// effector's body node to the target (design note v13_beams).
 void BeamEffect::applyTo(Object &object) {
     if (!_impact) {
         return;
     }
-    // The impact row's models attach to the target like any visual effect.
+    auto effector = _effector.resolve();
+    _impact->setBeamSource(effector ? effector->id() : 0, static_cast<int>(_bodyPart));
     _impact->applyTo(object);
 }
 

@@ -196,7 +196,7 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
                 module->area()->exciteCombat(*target, 1);
             }
         }
-        runScript(_game, *_spell, caster, *_target);
+        runScript(_game, *_spell, _impactCaller ? *_impactCaller : static_cast<const Object &>(caster), *_target);
         // Using an item's Activate Item property is an item activation: the
         // module hears of it once the spell has taken effect.
         if (_item) {

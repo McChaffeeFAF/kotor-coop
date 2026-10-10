@@ -84,6 +84,22 @@ struct VisualEffectDesc {
     int rumblePattern {0}; /**< read only: reone drives no rumble device */
     float rumbleCutoff {0.0f};
 
+    // Programmed effects (progfx_*): numbers the engine draws by its own
+    // means rather than through a model column.
+
+    int progfxImpact {0};
+    int progfxDuration {0};
+
+    /**
+     * The beam model of a programmed beam (progfx_duration 608-621). It sits
+     * on the beam's source and its reattachable references are moved onto
+     * the target, so its lightning emitters reach from one to the other.
+     */
+    std::shared_ptr<graphics::Model> beamModel;
+
+    /** The model K1 ships for a programmed beam number, or empty. */
+    static std::string beamModelResRef(int progfx);
+
     /** The root model for the target's size (medium in every K1 row). */
     std::shared_ptr<graphics::Model> rootModel() const;
 };

@@ -66,6 +66,8 @@ public:
     void setDir(glm::vec3 dir) { _dir = std::move(dir); }
     void setVelocity(glm::vec3 velocity) { _velocity = std::move(velocity); }
     void setSize(glm::vec2 size) { _size = std::move(size); }
+    void setColor(glm::vec3 color) { _color = std::move(color); }
+    void setAlpha(float alpha) { _alpha = alpha; }
     void setFrame(int frame) { _frame = frame; }
     void setFrameOffset(int offset) { _frameOffset = offset; }
     void setAnimLength(float length) { _animLength = length; }
@@ -77,6 +79,14 @@ public:
      * a point-to-point curve. Also keeps the scene-node transform in step.
      */
     void resetAt(const glm::vec3 &worldPosition);
+
+    /**
+     * Take the frame, size, colour and alpha of age 0. A particle born after
+     * its emitter's update in a frame (an explosion burst fired by an
+     * animation event) is drawn before its own first update, and must not be
+     * drawn with its last life's state or the defaults (a white 1 m square).
+     */
+    void startLife() { updateAnimation(0.0f); }
 
     /** Move the particle by a world-space offset (inherit flags). */
     void translateBy(const glm::vec3 &offset);

@@ -36,6 +36,10 @@ void SceneInitializer::invoke() {
     }
 
     _sceneGraph.clear();
+    // A GUI scene's model is in view by design. Its bounds need not be: the
+    // character screen's alignment poses move the camera until charrec_light's
+    // small box at the feet leaves the frame, which culled the character too.
+    model->setCullingEnabled(false);
     _sceneGraph.addRoot(model);
     _sceneGraph.setAmbientLightColor(_ambientLightColor);
     if (_prewarmEmitters) {

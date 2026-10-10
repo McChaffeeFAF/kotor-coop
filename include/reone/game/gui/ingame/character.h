@@ -47,6 +47,12 @@ public:
 
     void refreshControls();
 
+    /**
+     * The backdrop model's pose for a good/evil value (0 to 100): "evil",
+     * "align1" to "align19", then "good", one band per 5 points.
+     */
+    static std::string alignmentAnimation(int goodEvil);
+
 private:
     static constexpr int kNumControlsGood = 10;
     static constexpr int kNumControlsBar = 6;

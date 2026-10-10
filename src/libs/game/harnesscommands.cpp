@@ -20,6 +20,8 @@
 // scripting layer queue, so pathfinding and interaction behave as in play.
 
 #include "reone/game/hitvisuals.h"
+#include "reone/game/effect/beam.h"
+#include "reone/game/effect/visual.h"
 #include "reone/game/visualeffects.h"
 #include "reone/game/game.h"
 #include "reone/game/gui/chargen.h"
@@ -875,13 +877,24 @@ void Game::consoleGiveLoot(const ConsoleArgs &args) {
 void Game::consoleVfx(const ConsoleArgs &args) {
     HarnessArgs parsed(args);
     parsed.requireKnown({});
-    if (parsed.positional.size() != 2 || parsed.actor) {
-        throw std::runtime_error("Usage: vfx <visualeffects row> <id|tag>");
+    if (parsed.positional.size() < 2 || parsed.positional.size() > 4 || parsed.actor) {
+        throw std::runtime_error("Usage: vfx <visualeffects row> <id|tag> [source id|tag [seconds]]");
     }
     int row = std::stoi(parsed.positional[0]);
     auto target = findConsoleObject(parsed.positional[1]);
     if (!_services.game.visualEffects.get(static_cast<uint32_t>(row))) {
         throw std::runtime_error("vfx: no visualeffects row " + parsed.positional[0]);
+    }
+    if (parsed.positional.size() >= 3) {
+        // A beam from a source, as EffectBeam(row, source, BODY_NODE_HAND)
+        // applied temporary: the same effect objects a script makes.
+        auto source = findConsoleObject(parsed.positional[2]);
+        float seconds = parsed.positional.size() == 4 ? std::stof(parsed.positional[3]) : 2.0f;
+        auto beam = newEffect<BeamEffect>(row, source, BodyNode::Hand, false);
+        beam->setImpactVisual(newEffect<VisualEffect>(row, false, _services));
+        target->applyEffect(beam, DurationType::Temporary, seconds);
+        _console.printLine("vfx " + parsed.positional[0] + " " + source->tag() + " -> " + target->tag());
+        return;
     }
     hitvisuals::presentOn(*this, _services, row, *target);
     _console.printLine("vfx " + parsed.positional[0] + " -> " + target->tag());
@@ -1736,6 +1749,19 @@ void Game::consoleSetVitals(const ConsoleArgs &args) {
     _console.printLine(str(boost::format("setvitals %s hp=%d/%d fp=%d/%d") % actor->tag() %
                            actor->currentHitPoints() % actor->maxHitPoints() %
                            actor->currentForce() % actor->maxForcePoints()));
+}
+
+void Game::consoleSetAlign(const ConsoleArgs &args) {
+    HarnessArgs parsed(args);
+    parsed.requireKnown({"value"});
+    auto value = parsed.value(0, "value");
+    if (!value) {
+        throw std::runtime_error("Usage: setalign <0-100> [@id|tag]");
+    }
+    auto actor = findConsoleActor(parsed.actor);
+    // A harness input: sets the value directly, with no shift feedback.
+    actor->setGoodEvil(std::stoi(*value));
+    _console.printLine(str(boost::format("setalign %s %d") % actor->tag() % actor->goodEvil()));
 }
 
 void Game::consoleTickStatus(const ConsoleArgs &args) {

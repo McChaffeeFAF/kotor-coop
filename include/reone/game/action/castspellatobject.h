@@ -50,9 +50,18 @@ public:
     const std::optional<std::shared_ptr<Item>> &item() const { return _item; }
     const std::shared_ptr<Object> &target() const { return _target; }
 
+    /**
+     * C13 smarter companions only: the impact script runs as this object, not
+     * the caster. The retail item scripts (k_sup_healing) heal and cure
+     * OBJECT_SELF, so a medpac, repair kit or anti-toxin a companion gives to
+     * an ally runs as the ally (design note c13_companions, "Ally items").
+     */
+    void setImpactCaller(std::shared_ptr<Object> caller) { _impactCaller = std::move(caller); }
+
 private:
     std::shared_ptr<Spell> _spell;
     std::shared_ptr<Object> _target;
+    std::shared_ptr<Object> _impactCaller;
     std::optional<std::shared_ptr<Item>> _item;
     SpellSchedule _schedule;
     std::optional<Grenade> _grenade;

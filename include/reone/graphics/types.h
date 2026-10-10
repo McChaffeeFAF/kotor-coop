@@ -114,7 +114,8 @@ enum class BlendMode {
     Normal,
     Additive,
     Lighten,
-    OIT_Transparent
+    OIT_Transparent,
+    PremultipliedAlpha
 };
 
 enum class PolygonMode {

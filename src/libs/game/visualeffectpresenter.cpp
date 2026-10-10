@@ -85,6 +85,69 @@ glm::mat4 VisualEffectPresenter::attachTransform(ModelSceneNode &target, AttachP
     return glm::translate(position) * rotation;
 }
 
+// A named hook on a model, as a world point. A placeable names its hooks
+// after its model without the "plc_" prefix ("PwrCond_impact" on
+// PLC_PwrCond), so "<name>_impact" is tried after the plain names.
+static std::optional<glm::vec3> hookPoint(ModelSceneNode &model, std::initializer_list<const char *> names) {
+    for (auto name : names) {
+        if (auto node = model.getNodeByName(name)) {
+            return node->origin();
+        }
+    }
+    return std::nullopt;
+}
+
+static std::optional<glm::vec3> placeableImpact(ModelSceneNode &model) {
+    std::string name(model.model().name());
+    if (name.size() > 4 && boost::istarts_with(name, "plc_")) {
+        name = name.substr(4);
+    }
+    for (auto &candidate : {name + "_impact", boost::to_lower_copy(name) + "_impact"}) {
+        if (auto node = model.getNodeByName(candidate)) {
+            return node->origin();
+        }
+    }
+    return std::nullopt;
+}
+
+static glm::vec3 aboveRoot(ModelSceneNode &model) {
+    return glm::vec3(model.absoluteTransform()[3]) + glm::vec3(0.0f, 0.0f, 1.0f);
+}
+
+glm::vec3 VisualEffectPresenter::beamTargetPoint(ModelSceneNode &target) {
+    if (auto point = hookPoint(target, {"impact"})) {
+        return *point;
+    }
+    if (auto point = placeableImpact(target)) {
+        return *point;
+    }
+    return aboveRoot(target);
+}
+
+glm::vec3 VisualEffectPresenter::beamSourcePoint(ModelSceneNode &source, int bodyNode) {
+    std::optional<glm::vec3> point;
+    switch (static_cast<BodyNode>(bodyNode)) {
+    case BodyNode::Hand:
+    case BodyNode::HandRight:
+        point = hookPoint(source, {"rhand", "handconjure"});
+        break;
+    case BodyNode::HandLeft:
+        point = hookPoint(source, {"lhand", "handconjure"});
+        break;
+    case BodyNode::Head:
+        point = hookPoint(source, {"headconjure", "headhook"});
+        break;
+    case BodyNode::Chest:
+    default:
+        break;
+    }
+    if (point) {
+        return *point;
+    }
+    // The chest, and any node a placeable or door lacks: its impact hook.
+    return beamTargetPoint(source);
+}
+
 void VisualEffectPresenter::begin(std::shared_ptr<Request> request) {
     if (!request || !request->desc) {
         return;
@@ -98,6 +161,18 @@ size_t VisualEffectPresenter::numModels() const {
         count += presented.parts.size();
     }
     return count;
+}
+
+std::vector<ModelSceneNode *> VisualEffectPresenter::models() const {
+    std::vector<ModelSceneNode *> result;
+    for (auto &presented : _active) {
+        for (auto &part : presented.parts) {
+            if (part.node) {
+                result.push_back(part.node.get());
+            }
+        }
+    }
+    return result;
 }
 
 void VisualEffectPresenter::removePart(Part &part) {
@@ -132,13 +207,9 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
     Presented presented;
     presented.request = request;
 
-    std::pair<std::shared_ptr<Model>, AttachPoint> models[] {
-        {desc.impHeadConNode, AttachPoint::HeadConjure},
-        {desc.impImpactNode, AttachPoint::Impact},
-        {desc.rootModel(), AttachPoint::Root}};
-    for (auto &[model, point] : models) {
+    auto addPart = [&](const std::shared_ptr<Model> &model, AttachPoint point) {
         if (!model || !ctx.graph) {
-            continue;
+            return;
         }
         Part part;
         part.node = ctx.graph->newModel(*model, ModelUsage::Projectile);
@@ -151,6 +222,10 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
                 playOnce(node, "duration");
             } else if (hasAnimation(node, "default")) {
                 playOnce(node, "default");
+            } else {
+                // Its animations are none of these (a beam's "conjure01"):
+                // nothing plays, so it shows for the fixed lifetime.
+                part.unanimated = true;
             }
             part.phase = Phase::Once;
         } else if (hasAnimation(node, "impact")) {
@@ -165,6 +240,15 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
             part.phase = Phase::Duration;
         }
         presented.parts.push_back(std::move(part));
+    };
+    addPart(desc.impHeadConNode, AttachPoint::HeadConjure);
+    addPart(desc.impImpactNode, AttachPoint::Impact);
+    addPart(desc.rootModel(), AttachPoint::Root);
+    // A programmed beam: its model leaves from the effector and reaches the
+    // target. Without an effector (a plain EffectVisualEffect of a beam row)
+    // there is nothing to draw it from.
+    if (request->sourceId != 0 && request->sourceId != request->targetId) {
+        addPart(desc.beamModel, AttachPoint::BeamSource);
     }
     _graph = ctx.graph;
 
@@ -197,7 +281,8 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
             ctx.mixer->play(desc.soundCessation, audio::AudioType::Sound, 1.0f, false, position);
         }
     }
-    debug(str(boost::format("vfx: present %u %s target=%u models=%u") % desc.id % desc.label % request->targetId % presented.parts.size()));
+    debug(str(boost::format("vfx: present %u %s target=%u models=%u%s") % desc.id % desc.label % request->targetId % presented.parts.size() %
+               (request->sourceId != 0 ? str(boost::format(" source=%u beam=%u") % request->sourceId % (desc.beamModel ? 1 : 0)) : std::string())));
     _active.push_back(std::move(presented));
 }
 
@@ -244,6 +329,10 @@ void VisualEffectPresenter::place(Presented &presented, const Context &ctx) {
         if (!part.node) {
             continue;
         }
+        if (part.point == AttachPoint::BeamSource) {
+            placeBeam(presented, part, target, ctx);
+            continue;
+        }
         glm::mat4 transform = root;
         if (target && part.point != AttachPoint::Root) {
             transform = attachTransform(*target, part.point, desc.orientationOff);
@@ -254,6 +343,39 @@ void VisualEffectPresenter::place(Presented &presented, const Context &ctx) {
     }
     if (presented.loopSound) {
         presented.loopSound->setPosition(glm::vec3(root[3]));
+    }
+}
+
+void VisualEffectPresenter::placeBeam(Presented &presented, Part &part, ModelSceneNode *target, const Context &ctx) {
+    const Request &request = *presented.request;
+    ModelSceneNode *source = nullptr;
+    if (ctx.modelOf && !presented.sourceLost) {
+        source = ctx.modelOf(request.sourceId);
+        if (!source) {
+            presented.sourceLost = true;
+        }
+    }
+    glm::vec3 from = source ? beamSourcePoint(*source, request.sourceBodyNode) : presented.lastBeamSource;
+    presented.lastBeamSource = from;
+    std::optional<glm::vec3> to;
+    if (target) {
+        to = beamTargetPoint(*target);
+    } else if (request.targetId == 0) {
+        to = request.location;
+    }
+    // Turn the model to face along the beam, as a caster faces its target
+    // (models face +Y); keep the last heading once the target is gone.
+    glm::mat4 rotation = rotationOf(part.node->localTransform());
+    if (to) {
+        glm::vec3 dir(*to - from);
+        if (glm::length(glm::vec2(dir)) > 1e-4f) {
+            float heading = std::atan2(-dir.x, dir.y);
+            rotation = glm::rotate(glm::mat4(1.0f), heading, glm::vec3(0.0f, 0.0f, 1.0f));
+        }
+    }
+    part.node->setLocalTransform(glm::translate(from) * rotation);
+    if (to) {
+        part.node->aimReattachableReferences(*to);
     }
 }
 
@@ -293,7 +415,7 @@ void VisualEffectPresenter::advance(Presented &presented, float dt, const Contex
         }
         part.age += dt;
         auto &node = *part.node;
-        bool animated = !node.model().getAnimationNames().empty();
+        bool animated = !part.unanimated && !node.model().getAnimationNames().empty();
         switch (part.phase) {
         case Phase::Impact:
             if (node.isAnimationFinished()) {
