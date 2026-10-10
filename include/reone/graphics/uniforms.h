@@ -56,6 +56,7 @@ struct UniformsFeatureFlags {
     static constexpr int objectlights = 1 << 15;
     static constexpr int surfacedetail = 1 << 16; /**< the normal map is a generated one (Tier 4) */
     static constexpr int materialmap = 1 << 17;   /**< a generated material map is bound (Tier 4) */
+    static constexpr int shell = 1 << 18;         /**< a programmed body overlay pass (surfaceParams.yzw) */
 };
 
 struct alignas(16) GlobalUniformsLight {
@@ -136,7 +137,7 @@ struct LocalUniforms {
     GlobalUniformsLight objectLights[kMaxObjectLights]; /**< lights chosen for this object (FEATURE_OBJECTLIGHTS) */
     int numObjectLights;
     int padding1[3];
-    glm::vec4 surfaceParams; /**< x: surface-detail strength (0-1); yzw unused */
+    glm::vec4 surfaceParams; /**< x: surface-detail strength (0-1); yzw: body overlay (FEATURE_SHELL, Material::shell) */
 
     LocalUniforms() {
         reset();

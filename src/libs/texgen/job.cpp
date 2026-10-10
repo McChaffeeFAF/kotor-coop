@@ -46,7 +46,7 @@ struct Result {
     bool record {true}; ///< whether the manifest should hold the entry
 };
 
-constexpr char kToolVersion[] = "texgen-1";
+constexpr char kToolVersion[] = "texgen-2";
 
 // Only the output and override folders hold generated companion maps. A texture of the
 // game's own archives is always a source, whatever its name ends in (n_comm_b_m).
@@ -73,7 +73,12 @@ bool endsWith(const std::string &s, const char *suffix) {
 }
 
 std::filesystem::path outputPath(const JobOptions &options, const std::string &name, const char *suffix) {
-    return options.outputDir / (name + suffix + ".tga");
+    return options.outputDir / (name + suffix + (options.format == OutputFormat::Dds ? ".dds" : ".tga"));
+}
+
+// The same map in the other format: left behind it would shadow (a DDS) or be shadowed by the new file.
+std::filesystem::path otherOutputPath(const JobOptions &options, const std::string &name, const char *suffix) {
+    return options.outputDir / (name + suffix + (options.format == OutputFormat::Dds ? ".tga" : ".dds"));
 }
 
 void writeFile(const std::filesystem::path &path, const ByteBuffer &bytes) {
@@ -97,10 +102,16 @@ void writeTga(const std::filesystem::path &path, const Image &image) {
     writeFile(path, writer.toBytes());
 }
 
+void writeDdsFile(const std::filesystem::path &path, const ByteBuffer &bytes) {
+    writeFile(path, bytes);
+}
+
 void removeOutputs(const JobOptions &options, const std::string &name) {
     std::error_code ec;
-    std::filesystem::remove(outputPath(options, name, "_n"), ec);
-    std::filesystem::remove(outputPath(options, name, "_m"), ec);
+    for (const char *suffix : {"_n", "_m"}) {
+        std::filesystem::remove(outputPath(options, name, suffix), ec);
+        std::filesystem::remove(otherOutputPath(options, name, suffix), ec);
+    }
 }
 
 bool outputsExist(const JobOptions &options, const std::string &name) {
@@ -154,6 +165,7 @@ Result process(const TextureSource &source, const SourceSet &sources, const Rule
         hasher.add(looseTxi->data(), looseTxi->size());
     }
     hasher.add(std::string("|") + kToolVersion + "|" + std::to_string(options.baseStrength) + "|" + settings.rulesFingerprint);
+    hasher.add(options.format == OutputFormat::Dds ? (options.materialCodec == MaterialCodec::BC1 ? "|dds-bc1" : "|dds-bc7") : "|tga");
     // Whether a game texture of the companion name exists changes the answer too.
     hasher.add(sources.has(source.name + "_n") ? "|n" : "|-");
     result.entry.sourceHash = hasher.hex();
@@ -243,8 +255,19 @@ Result process(const TextureSource &source, const SourceSet &sources, const Rule
     normal.strength = decision.strength;
     MaterialOptions material;
     material.shiny = info.shiny;
-    writeTga(outputPath(options, source.name, "_n"), generateNormalMap(image, normal));
-    writeTga(outputPath(options, source.name, "_m"), generateMaterialMap(image, material));
+    Image normalMap = generateNormalMap(image, normal);
+    Image materialMap = generateMaterialMap(image, material);
+    if (options.format == OutputFormat::Dds) {
+        writeDdsFile(outputPath(options, source.name, "_n"), encodeNormalDds(normalMap));
+        writeDdsFile(outputPath(options, source.name, "_m"), encodeMaterialDds(materialMap, options.materialCodec));
+    } else {
+        writeTga(outputPath(options, source.name, "_n"), normalMap);
+        writeTga(outputPath(options, source.name, "_m"), materialMap);
+    }
+    std::error_code ec;
+    for (const char *suffix : {"_n", "_m"}) {
+        std::filesystem::remove(otherOutputPath(options, source.name, suffix), ec);
+    }
     return result;
 }
 

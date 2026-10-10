@@ -19,7 +19,9 @@
 #include "reone/resource/2da.h"
 #include "reone/resource/provider/2das.h"
 #include "reone/resource/provider/audioclips.h"
+#include "reone/graphics/texture.h"
 #include "reone/resource/provider/models.h"
+#include "reone/resource/provider/textures.h"
 #include "reone/system/logutil.h"
 
 using namespace reone::resource;
@@ -67,6 +69,35 @@ std::string VisualEffectDesc::beamModelResRef(int progfx) {
     }
 }
 
+// Programmed body effects: K1 ships 26 textures fx_tex_01..fx_tex_26 that
+// no model or table names, and their colours match the 14xx progfx rows one
+// to one once fx_tex_13 (authored apart: 64x64, mip-mapped) is left out:
+// 1401-1412 take 01-12, 1413-1425 take 14-26, 1426 (the stealth field) takes
+// fx_tex_stealth. Inferred from the game data (design note
+// v14_programmed_effects, section 2); not read from any executable.
+std::optional<VisualEffectDesc::BodyLook> VisualEffectDesc::bodyLookFor(int progfx) {
+    BodyLook look;
+    if (progfx >= 1401 && progfx <= 1425) {
+        int index = progfx <= 1412 ? progfx - 1400 : progfx - 1399;
+        look.texture = str(boost::format("fx_tex_%02d") % index);
+        return look;
+    }
+    switch (progfx) {
+    case 1426: // VFX_DUR_STEALTH_FIELD
+    case 2000: // VFX_DUR_STEALTH_PULSE
+    case 2001: // VFX_DUR_INVISIBILITY
+        look.texture = "fx_tex_stealth";
+        look.opacity = 0.35f;
+        return look;
+    case 1800: // VFX_DUR_DISTORTION (and VFX_DUR_CLOAK_REMOVAL's duration)
+        look.texture = "fx_distortion";
+        look.opacity = 0.5f;
+        return look;
+    default:
+        return std::nullopt;
+    }
+}
+
 static std::optional<uint32_t> parseRowLabel(const std::string &label) {
     if (label.empty() || label.size() > 9) {
         return std::nullopt;
@@ -97,7 +128,8 @@ static int cellInt(const TwoDA &twoDa, int row, const std::string &column) {
 std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
     const TwoDA &twoDa,
     const ModelLoader &loadModel,
-    const SoundLoader &loadSound) {
+    const SoundLoader &loadSound,
+    const TextureLoader &loadTexture) {
 
     auto model = [&](int row, const char *column) -> std::shared_ptr<graphics::Model> {
         std::string resRef = cell(twoDa, row, column);
@@ -136,13 +168,25 @@ std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
         desc.cesImpactNode = model(row, "ces_impact_node");
         desc.cesRootMNode = model(row, "ces_root_m_node");
 
-        // progfx_* (programmed effects). Only the beams (6xx) are drawn, by
-        // their model; shields, auras and the like (14xx-18xx) are not yet.
+        // progfx_* (programmed effects): the beams (6xx) are drawn by their
+        // model (design note v13_beams), shields, auras, the body crackle and the
+        // cloaks (14xx, 1800, 2000s) as an overlay on the target (v14).
         desc.progfxImpact = cellInt(twoDa, row, "progfx_impact");
         desc.progfxDuration = cellInt(twoDa, row, "progfx_duration");
         std::string beamResRef = VisualEffectDesc::beamModelResRef(desc.progfxDuration);
         if (!beamResRef.empty()) {
             desc.beamModel = loadModel(beamResRef);
+        }
+        bool duration = desc.kind == VisualEffectDesc::Kind::Duration;
+        auto look = VisualEffectDesc::bodyLookFor(duration ? desc.progfxDuration : desc.progfxImpact);
+        if (!look) {
+            look = VisualEffectDesc::bodyLookFor(duration ? desc.progfxImpact : desc.progfxDuration);
+        }
+        if (look) {
+            if (loadTexture) {
+                desc.bodyTexture = loadTexture(look->texture);
+            }
+            desc.bodyLook = std::move(*look);
         }
 
         desc.soundImpact = sound(row, "soundimpact");
@@ -160,6 +204,32 @@ std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
     return effects;
 }
 
+std::map<uint32_t, VisualEffectDesc> VisualEffects::parseCastHands(
+    const TwoDA &spells,
+    const ModelLoader &loadModel) {
+    std::map<uint32_t, VisualEffectDesc> effects;
+    for (int row = 0; row < spells.getRowCount(); ++row) {
+        std::string resRef = cell(spells, row, "casthandvisual");
+        if (resRef.empty()) {
+            resRef = cell(spells, row, "conjhandvisual");
+        }
+        if (resRef.empty()) {
+            continue;
+        }
+        auto model = loadModel(resRef);
+        if (!model) {
+            continue; // v_con_light: named by seven K1 powers, shipped by neither game
+        }
+        VisualEffectDesc desc;
+        desc.id = VisualEffectDesc::castHandId(row);
+        desc.label = "CASTHAND_" + spells.getString(row, "label");
+        desc.kind = VisualEffectDesc::Kind::Duration; // the cast ends it
+        desc.handModel = std::move(model);
+        effects[desc.id] = std::move(desc);
+    }
+    return effects;
+}
+
 void VisualEffects::init() {
     std::shared_ptr<TwoDA> effectsDa(_twoDas.get("visualeffects"));
     if (!effectsDa) {
@@ -171,7 +241,16 @@ void VisualEffects::init() {
         // shield impacts): retail draws them through their progfx programmed
         // effect. Those are not reported as missing (design note p2_combat, item 10).
         [this](const std::string &resRef) { return _models.getOptional(boost::to_lower_copy(resRef)); },
-        [this](const std::string &resRef) { return _audioClips.get(boost::to_lower_copy(resRef)); });
+        [this](const std::string &resRef) { return _audioClips.get(boost::to_lower_copy(resRef)); },
+        [this](const std::string &resRef) -> std::shared_ptr<graphics::Texture> {
+            return _textures ? _textures->get(resRef, graphics::TextureUsage::MainTex) : nullptr;
+        });
+    if (std::shared_ptr<TwoDA> spells = _twoDas.get("spells")) {
+        auto hands = parseCastHands(*spells, [this](const std::string &resRef) {
+            return _models.getOptional(boost::to_lower_copy(resRef));
+        });
+        _effects.insert(hands.begin(), hands.end());
+    }
 }
 
 void VisualEffects::clear() {

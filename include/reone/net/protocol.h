@@ -21,7 +21,7 @@ namespace net {
  * floats, so nothing malformed reaches the game.
  */
 
-constexpr uint16_t kProtocolVersion = 3;
+constexpr uint16_t kProtocolVersion = 4; // 4: VfxBegin carries a beam source
 
 /** A client message is small: a hello, a slot request or one command. */
 constexpr size_t kMaxClientMessageBytes = 2048;
@@ -69,7 +69,8 @@ enum class MessageType : uint8_t {
     GuestCharacter = 23,  // either way: a guest's own character (client: at join; host: its saved state)
     StoreView = 24,       // host -> client: the store a guest trades with, priced for them
     GuestRoster = 25,     // host -> client: every guest's name, hit points and level, for the HUD list
-    Offer = 26            // host -> client: a store or minigame prompt instead of a conversation
+    Offer = 26,           // host -> client: a store or minigame prompt instead of a conversation
+    BenchView = 27        // host -> client: the workbench or lab a guest uses, with what it can do there
 };
 
 /** The largest message a client may send, by its leading type byte. */
@@ -307,10 +308,14 @@ struct WorldState {
 };
 
 enum class EventKind : uint8_t {
-    VfxBegin = 1,  // handle, row, target (0: at location), location, facing
+    VfxBegin = 1,  // handle, row, a: target (0: at location), location, facing,
+                   // b: beam source (0: none), flags: the source's BodyNode (0-4)
     VfxEnd = 2,    // handle
     Projectile = 3 // a: attacker, b: target, flags: bit0 offhand, bit1 miss
 };
+
+/** The largest BodyNode a VfxBegin may name (game::BodyNode::HandRight). */
+constexpr uint8_t kMaxVfxBodyNode = 4;
 
 struct NetEvent {
     EventKind kind {EventKind::VfxBegin};
@@ -386,7 +391,13 @@ enum class CommandType : uint8_t {
     SwitchWeapons = 23,  // the weapon-set swap
     AutoCombat = 24,     // param: 1 on, 0 off (the HUD's AI toggle)
     SetMine = 25,        // param: host item id of the mine; point: where to lay it
-    DisarmTrap = 26      // target: the detected trap trigger to disarm
+    DisarmTrap = 26,     // target: the detected trap trigger to disarm
+    // Workbenches and lab stations (Free and Story Mode guests); target is the bench this guest has open
+    BenchUpgrade = 27,   // param: host id of the item to upgrade; item: decimal host id of the upgrade part to install
+    BenchRemove = 28,    // param: host id of the item; item: decimal slot index (BenchItem::slots) to empty
+    BenchCraft = 29,     // param: material (0 components, 1 chemicals); item: the recipe's template
+    BenchBreak = 30,     // param: host id of the item to break down
+    BenchClose = 31
 };
 
 const char *commandTypeName(CommandType type);
@@ -436,7 +447,12 @@ enum class CommandReject : uint8_t {
     NotYourTerminal = 29,       // a reply pick with no terminal session handed to this player
     ClassLocked = 30,           // a level-up into a class the story or prestige unlock has not opened for this character
     ClassAlignment = 31,        // a prestige class the character's alignment does not qualify for
-    ClassSlotsFull = 32         // a level-up into a new class with no class slot free
+    ClassSlotsFull = 32,        // a level-up into a new class with no class slot free
+    BenchClosed = 33,           // no workbench or lab open for this guest, or it does not do that
+    UpgradeIncompatible = 34,   // the part does not fit the item, or the slot is taken
+    NotEnoughMaterial = 35,     // not enough components or chemicals
+    SkillTooLow = 36,           // the crafter's skill does not reach the recipe
+    NotBreakable = 37           // the item cannot be broken down, or has nothing to remove
 };
 
 const char *commandRejectName(CommandReject reason);
@@ -569,6 +585,8 @@ struct GuestItem {
     std::string resref;
     uint16_t stack {1};
     uint8_t slot {kGuestInventory};
+    uint32_t upgrades {0};       // installed upgrade rows (upgrade.2da bits), set at a workbench
+    int16_t modelVariation {-1}; // a lightsaber's blade colour from a colour crystal, or -1
 };
 
 /**
@@ -593,6 +611,8 @@ struct GuestCharacter {
     int16_t baseFp {0};
     uint8_t goodEvil {50};
     std::vector<GuestItem> items;
+    int32_t components {0}; // crafting material this guest holds (Free Mode: not the party's)
+    int32_t chemicals {0};
 };
 
 struct StoreEntry {
@@ -609,6 +629,69 @@ struct StoreView {
     int32_t credits {0};
     std::vector<StoreEntry> stock;
     std::vector<StoreEntry> sellable;
+};
+
+constexpr size_t kMaxBenchItems = 128;
+constexpr size_t kMaxBenchSlots = 8;
+constexpr size_t kMaxBenchCandidates = 64;
+constexpr size_t kMaxBenchRecipes = 192;
+constexpr size_t kMaxBenchBreakdown = 256;
+constexpr size_t kMaxBenchParts = 128;
+
+enum class BenchKind : uint8_t {
+    Workbench = 1, // upgrades, and crafting and breakdown of both materials
+    Lab = 2        // crafting and breakdown with chemicals
+};
+
+/** A slot of an upgradeable item and the inventory parts that could go in it now. */
+struct BenchSlot {
+    uint8_t type {0};            // upgradetypes.2da row the slot takes
+    bool color {false};          // a lightsaber's colour crystal slot
+    int16_t installedRow {-1};   // upgrade.2da row in it, or -1
+    std::vector<uint32_t> candidates; // host ids of BenchView::parts that fit
+};
+
+struct BenchItem {
+    uint32_t id {0};
+    std::string resref;
+    uint8_t category {0}; // UpgradeCategory: 1 lightsaber, 2 ranged, 3 melee, 4 armor
+    bool equipped {false};
+    uint32_t upgrades {0};
+    int16_t modelVariation {-1};
+    std::vector<BenchSlot> slots;
+};
+
+struct BenchBreakdown {
+    uint32_t id {0};
+    std::string resref;
+    uint16_t stack {1};
+    uint16_t yield {0};   // what breaking one down gives this crafter
+    uint8_t material {0}; // 0 components, 1 chemicals
+};
+
+struct BenchRecipe {
+    std::string resref;
+    uint8_t material {0};
+    int32_t cost {0};
+    bool skilled {false};
+    bool affordable {false};
+};
+
+/**
+ * Workbenches and lab stations for a guest: what they may upgrade, break down and make, all
+ * computed on the host (Free Mode from the guest's own bag, Story Mode from the shared
+ * inventory). Resent after each command; open false closes it.
+ */
+struct BenchView {
+    uint32_t bench {0};
+    BenchKind kind {BenchKind::Workbench};
+    bool open {true};
+    int32_t components {0};
+    int32_t chemicals {0};
+    std::vector<BenchItem> items;
+    std::vector<StoreEntry> parts; // upgrade parts in the inventory (price unused, 0)
+    std::vector<BenchBreakdown> breakdown;
+    std::vector<BenchRecipe> recipes;
 };
 
 struct GuestRosterEntry {
@@ -669,6 +752,7 @@ std::vector<uint8_t> encode(const GuestCharacter &message);
 std::vector<uint8_t> encode(const StoreView &message);
 std::vector<uint8_t> encode(const GuestRoster &message);
 std::vector<uint8_t> encode(const Offer &message);
+std::vector<uint8_t> encode(const BenchView &message);
 
 // Decoding: false for anything malformed; the output is then unspecified.
 
@@ -694,6 +778,7 @@ bool decode(const std::vector<uint8_t> &bytes, GuestCharacter &out);
 bool decode(const std::vector<uint8_t> &bytes, StoreView &out);
 bool decode(const std::vector<uint8_t> &bytes, GuestRoster &out);
 bool decode(const std::vector<uint8_t> &bytes, Offer &out);
+bool decode(const std::vector<uint8_t> &bytes, BenchView &out);
 
 // Entity deltas
 

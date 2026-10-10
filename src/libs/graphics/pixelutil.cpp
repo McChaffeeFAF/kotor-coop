@@ -45,6 +45,10 @@ uint32_t getInternalPixelFormatGL(PixelFormat format) {
         return GL_COMPRESSED_RGB_S3TC_DXT1_EXT;
     case PixelFormat::DXT5:
         return GL_COMPRESSED_RGBA_S3TC_DXT5_EXT;
+    case PixelFormat::BC5:
+        return GL_COMPRESSED_RG_RGTC2;
+    case PixelFormat::BC7:
+        return 0x8E8C; // GL_COMPRESSED_RGBA_BPTC_UNORM (ARB_texture_compression_bptc)
     case PixelFormat::Depth24:
         return GL_DEPTH_COMPONENT24;
     case PixelFormat::Depth32F:

@@ -37,8 +37,40 @@ vec3 getNormal(vec2 uv) {
     }
 }
 
+// A programmed body overlay (design note v14_programmed_effects): the
+// texture on the mesh UVs, unlit, a flipbook frame when it is an array,
+// added to what is behind it when additive (as "Lighten" particles are not:
+// it is a layer, weighted by its brightness), else alpha blended.
+void shellMain(vec2 uv) {
+    vec4 texel = uSurfaceParams.z > 0.5
+                     ? texture(sBumpMapArray, vec3(uv, float(uBumpMapFrame)))
+                     : texture(sMainTex, uv);
+    vec3 color = texel.rgb * uColor.rgb;
+    float alpha;
+    if (uSurfaceParams.w > 0.5) {
+        color *= texel.a * uColor.a;
+        alpha = clamp(rgbToLuma(color), 0.0, 1.0);
+        if (alpha < 0.002) {
+            discard;
+        }
+        color /= alpha;
+    } else {
+        alpha = texel.a * uColor.a;
+        if (alpha < 0.002) {
+            discard;
+        }
+    }
+    float w = OIT_weight(gl_FragCoord.z, alpha);
+    fragColor1 = vec4(color * w, alpha);
+    fragColor2 = vec4(w, 0.0, 0.0, 0.0);
+}
+
 void main() {
     vec2 uv = vec2(uUV * vec3(fragUV1, 1.0));
+    if (isFeatureEnabled(FEATURE_SHELL)) {
+        shellMain(uv);
+        return;
+    }
 
     vec4 mainTexSample = texture(sMainTex, uv);
     vec3 diffuseColor = mainTexSample.rgb;

@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include "compress.h"
 #include "generate.h"
 #include "manifest.h"
 #include "rules.h"
@@ -33,6 +34,8 @@ struct JobOptions {
     bool force {false};  ///< regenerate even where the manifest says nothing changed
     bool dryRun {false}; ///< classify and report, write nothing
     std::string only;    ///< a glob; when set, only textures matching it are looked at
+    OutputFormat format {OutputFormat::Dds};
+    MaterialCodec materialCodec {MaterialCodec::BC7}; ///< DDS output only
 };
 
 enum class Outcome {
@@ -61,7 +64,7 @@ struct Summary {
 constexpr char kManifestName[] = "texgen_manifest.json";
 
 /**
- * Generates the normal (`<name>_n.tga`) and material (`<name>_m.tga`) maps for the textures of a
+ * Generates the normal (`<name>_n.dds` or `.tga`) and material (`<name>_m.dds` or `.tga`) maps for the textures of a
  * source set into the output directory, on several threads, and records them in the manifest.
  * `onProgress` is called once per texture, from whichever thread finished it, one call at a time.
  */

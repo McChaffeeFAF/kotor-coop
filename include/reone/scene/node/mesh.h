@@ -34,6 +34,9 @@ namespace scene {
 
 class ModelSceneNode;
 
+/** The frame of a numX x numY flipbook ("proceduretype cycle") after time seconds. */
+int overlayCycleFrame(int numX, int numY, float fps, float time);
+
 class MeshSceneNode : public ModelNodeSceneNode {
 public:
     MeshSceneNode(
@@ -69,6 +72,14 @@ public:
     const std::deque<glm::mat4> &trail() const { return _trail; }
     void renderAt(IRenderPass &pass, const glm::mat4 &transform, float colorScale, float alpha);
     void renderShadow(IRenderPass &pass);
+
+    /**
+     * Programmed body overlays (BodyOverlay) of the model this mesh belongs
+     * to, or of the model it is attached to: one additive pass each, drawn
+     * with the transparent geometry.
+     */
+    void renderOverlays(IRenderPass &pass);
+    bool hasOverlays() const;
 
     bool shouldRender() const;
     bool shouldCastShadows() const;
@@ -140,6 +151,11 @@ private:
     glm::vec3 _selfIllumColor {0.0f};
 
     float _windTime {0.0f};
+
+    /** The opacity a cloak (BodyOverlay) leaves this mesh at, times its own alpha. */
+    float effectiveAlpha() const;
+
+    void drawMesh(IRenderPass &pass, graphics::Material &material);
 
     void initTextures();
     void initDanglyMesh();

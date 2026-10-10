@@ -28,7 +28,8 @@ void convertGridTextureToArray(Texture &texture, int numX, int numY);
 Texture::Properties getTextureProperties(TextureUsage usage);
 
 inline bool isCompressed(PixelFormat format) {
-    return format == PixelFormat::DXT1 || format == PixelFormat::DXT5;
+    return format == PixelFormat::DXT1 || format == PixelFormat::DXT5 ||
+           format == PixelFormat::BC5 || format == PixelFormat::BC7;
 }
 
 inline bool hasAlphaChannel(PixelFormat format) {

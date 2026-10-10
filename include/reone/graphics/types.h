@@ -83,7 +83,9 @@ enum class PixelFormat {
     DXT5,
     Depth24,
     Depth32F,
-    Depth32FStencil8
+    Depth32FStencil8,
+    BC5, ///< two-channel block compression (RGTC2); the third channel samples as 0
+    BC7  ///< BPTC; falls back to RGBA8 on GPUs without native support
 };
 
 enum class CubeMapFace {

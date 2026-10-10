@@ -28,7 +28,7 @@ static const char *kUsage =
     "\n"
     "  texgen --game <install dir | key | erf | rim | tga | tpc> --out <folder> [options]\n"
     "\n"
-    "The output (<name>_n.tga, <name>_m.tga and texgen_manifest.json) is derived from game\n"
+    "The output (<name>_n.dds, <name>_m.dds - or .tga with --format tga - and texgen_manifest.json) is derived from game\n"
     "files: keep it on your machine, never share or commit it.\n";
 
 static int run(const po::variables_map &args) {
@@ -53,6 +53,24 @@ static int run(const po::variables_map &args) {
     options.threads = args["threads"].as<int>();
     options.force = args.count("force") > 0;
     options.dryRun = args.count("dry-run") > 0;
+    auto format = args["format"].as<std::string>();
+    if (format == "dds") {
+        options.format = OutputFormat::Dds;
+    } else if (format == "tga") {
+        options.format = OutputFormat::Tga;
+    } else {
+        std::cerr << "texgen: --format must be dds or tga\n";
+        return 2;
+    }
+    auto codec = args["material-codec"].as<std::string>();
+    if (codec == "bc7") {
+        options.materialCodec = MaterialCodec::BC7;
+    } else if (codec == "bc1") {
+        options.materialCodec = MaterialCodec::BC1;
+    } else {
+        std::cerr << "texgen: --material-codec must be bc7 or bc1\n";
+        return 2;
+    }
     if (args.count("only")) {
         options.only = args["only"].as<std::string>();
     }
@@ -91,6 +109,8 @@ int main(int argc, char **argv) {
             ("rules,r", po::value<std::string>(), "a JSON rules file (default: built-in naming-convention rules)")
             ("strength,s", po::value<float>()->default_value(2.0f), "base normal map strength")
             ("threads,j", po::value<int>()->default_value(0), "worker threads (0: one per core)")
+            ("format", po::value<std::string>()->default_value("dds"), "output format: dds (BC5 normals, BC7 materials, mip maps; about a quarter of the size) or tga")
+            ("material-codec", po::value<std::string>()->default_value("bc7"), "DDS material maps: bc7 or bc1 (half the size, coarser)")
             ("only", po::value<std::string>(), "only textures whose name matches this glob (* and ?)")
             ("force", "regenerate even what the manifest says is up to date")
             ("dry-run", "classify and report; write nothing")

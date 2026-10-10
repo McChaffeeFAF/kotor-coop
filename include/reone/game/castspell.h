@@ -17,6 +17,9 @@
 
 #pragma once
 
+#include <optional>
+#include <string>
+
 namespace reone {
 
 namespace scene {
@@ -34,6 +37,31 @@ class Action;
 class CombatRound;
 class Creature;
 class Object;
+
+/**
+ * The creature clips of a Force power's cast, from its spells.2da conjanim
+ * and castanim (design note v14_programmed_effects, section 9). K1's
+ * supermodel has three cast poses, each a short raise into the pose
+ * (castoutN, 0.33 s) and a held loop (castoutlpN): 1 a crouch with clawed
+ * hands ("dark"), 2 one arm out, palm open ("self", most powers), 3 an arm
+ * raised high ("up"). "throw" is the saber throw (throwsab, throwsablp).
+ */
+struct CastAnimations {
+    std::string conjure; /**< played once at the start of the conjure time */
+    std::string cast;    /**< looped through the cast time */
+};
+
+/** The clips for a spells.2da conjanim/castanim pair, or none ("jump", "monster", empty). */
+std::optional<CastAnimations> forceCastAnimations(const std::string &conjAnim, const std::string &castAnim);
+
+/**
+ * What CastSpellAtObject plays: a grenade is thrown (throwgren), an item is
+ * used (activate when it targets, inject otherwise), anything else - a Force
+ * power or ability - takes its forceCastAnimations, or the item clips when
+ * spells.2da names no pose. cast is empty when nothing is held.
+ */
+CastAnimations castActionAnimations(const std::string &conjAnim, const std::string &castAnim,
+                                    bool fromItem, bool grenade, bool itemTargeting);
 
 class SpellSchedule {
 public:

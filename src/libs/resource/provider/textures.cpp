@@ -23,6 +23,7 @@
 #include <chrono>
 
 #include "reone/graphics/format/curreader.h"
+#include "reone/graphics/format/ddsreader.h"
 #include "reone/graphics/format/tgareader.h"
 #include "reone/graphics/format/tpcreader.h"
 #include "reone/graphics/format/txireader.h"
@@ -189,9 +190,15 @@ std::shared_ptr<Texture> Textures::loadSurfaceMap(const std::string &texture, su
             std::ifstream file(path, std::ios::binary);
             ByteBuffer bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
             auto stream = MemoryInputStream(bytes);
-            auto reader = TgaReader(stream, name, TextureUsage::BumpMap);
-            reader.load();
-            map = reader.texture();
+            if (path.extension() == ".dds") {
+                auto reader = DdsReader(stream, name, TextureUsage::BumpMap, Texture::supportsBC7());
+                reader.load();
+                map = reader.texture();
+            } else {
+                auto reader = TgaReader(stream, name, TextureUsage::BumpMap);
+                reader.load();
+                map = reader.texture();
+            }
         } catch (const std::exception &ex) {
             warn("Surface map not loaded: " + path.string() + ": " + ex.what(), LogChannel::Graphics);
             map = nullptr;

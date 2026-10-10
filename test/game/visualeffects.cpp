@@ -28,6 +28,7 @@
 #include "reone/game/visualeffects.h"
 #include "reone/graphics/animation.h"
 #include "reone/graphics/model.h"
+#include "reone/graphics/texture.h"
 #include "reone/graphics/options.h"
 #include "reone/resource/2da.h"
 #include "reone/scene/graph.h"
@@ -452,6 +453,219 @@ TEST(VisualEffectPresenter, a_beam_row_without_a_source_draws_no_beam) {
     desc.kind = VisualEffectDesc::Kind::Duration;
     desc.beamModel = beamModel();
     scene.begin(desc);
+    scene.frame();
+    EXPECT_EQ(0u, scene.presenter.numModels());
+}
+
+// Programmed body effects and cast-hand visuals
+// (design note v14_programmed_effects).
+
+TEST(VisualEffects, the_14xx_numbers_take_the_fx_tex_textures_with_13_left_out) {
+    EXPECT_EQ("fx_tex_01", VisualEffectDesc::bodyLookFor(1401)->texture); // afflict
+    EXPECT_EQ("fx_tex_04", VisualEffectDesc::bodyLookFor(1404)->texture); // hold
+    EXPECT_EQ("fx_tex_05", VisualEffectDesc::bodyLookFor(1405)->texture); // force aura / shield
+    EXPECT_EQ("fx_tex_12", VisualEffectDesc::bodyLookFor(1412)->texture);
+    EXPECT_EQ("fx_tex_14", VisualEffectDesc::bodyLookFor(1413)->texture); // shield blue 01
+    EXPECT_EQ("fx_tex_23", VisualEffectDesc::bodyLookFor(1422)->texture); // carbonite
+    EXPECT_EQ("fx_tex_26", VisualEffectDesc::bodyLookFor(1425)->texture);
+    EXPECT_EQ("fx_tex_stealth", VisualEffectDesc::bodyLookFor(1426)->texture);
+    for (int progfx = 1401; progfx <= 1425; ++progfx) {
+        EXPECT_NE("fx_tex_13", VisualEffectDesc::bodyLookFor(progfx)->texture) << progfx;
+        EXPECT_EQ(1.0f, VisualEffectDesc::bodyLookFor(progfx)->opacity) << "an overlay, not a cloak: " << progfx;
+    }
+    for (int cloak : {1426, 2000, 2001, 1800}) {
+        ASSERT_TRUE(VisualEffectDesc::bodyLookFor(cloak)) << cloak;
+        EXPECT_LT(VisualEffectDesc::bodyLookFor(cloak)->opacity, 1.0f) << cloak;
+    }
+    EXPECT_EQ("fx_distortion", VisualEffectDesc::bodyLookFor(1800)->texture);
+    EXPECT_FALSE(VisualEffectDesc::bodyLookFor(0));
+    EXPECT_FALSE(VisualEffectDesc::bodyLookFor(1400));
+    EXPECT_FALSE(VisualEffectDesc::bodyLookFor(1427));
+    EXPECT_FALSE(VisualEffectDesc::bodyLookFor(609)) << "beams are drawn by their model";
+}
+
+TEST(VisualEffects, a_programmed_body_row_loads_its_texture) {
+    TwoDA::Builder builder;
+    builder.columns(kColumns);
+    builder.row("2040", row({{"label", "VFX_DUR_SHIELD_BLUE_01"}, {"type_fd", "D"}, {"progfx_duration", "1413"}}));
+    builder.row("1021", row({{"label", "VFX_PRO_LIGHTNING_L"}, {"type_fd", "F"}, {"progfx_impact", "1407"}}));
+    builder.row("8001", row({{"label", "VFX_DUR_CLOAK_REMOVAL"}, {"type_fd", "F"}, {"progfx_impact", "1423"}, {"progfx_duration", "1800"}}));
+    builder.row("1001", row({{"label", "VFX_PRO_FORCE_ARMOR"}, {"type_fd", "F"}, {"imp_impact_node", "v_farmor_imp"}}));
+    auto table = builder.build();
+    auto ramp = std::make_shared<Texture>("fx_tex_14", TextureType::TwoDim, Texture::Properties {});
+    ramp->clear(32, 512, PixelFormat::RGB8);
+    auto pattern = std::make_shared<Texture>("fx_tex_07", TextureType::TwoDim, Texture::Properties {});
+    pattern->clear(128, 128, PixelFormat::RGB8);
+    std::vector<std::string> asked;
+
+    auto effects = VisualEffects::parse(
+        *table,
+        [](const std::string &) { return nullptr; },
+        [](const std::string &) { return nullptr; },
+        [&](const std::string &resRef) -> std::shared_ptr<Texture> {
+            asked.push_back(resRef);
+            return resRef == "fx_tex_14" ? ramp : (resRef == "fx_tex_07" ? pattern : nullptr);
+        });
+
+    ASSERT_TRUE(effects.at(2040).bodyLook);
+    EXPECT_EQ(ramp, effects.at(2040).bodyTexture);
+    ASSERT_TRUE(effects.at(1021).bodyLook);
+    EXPECT_EQ(pattern, effects.at(1021).bodyTexture);
+    ASSERT_TRUE(effects.at(8001).bodyLook);
+    EXPECT_EQ("fx_tex_24", effects.at(8001).bodyLook->texture) << "a fire-and-forget row takes its impact number";
+    EXPECT_FALSE(effects.at(1001).bodyLook) << "Force Armor is a model row";
+    // Rows are read in label order (the map), so 1021, 2040, 8001.
+    EXPECT_EQ(3u, asked.size());
+}
+
+TEST(VisualEffectPresenter, an_overlay_fades_in_holds_while_the_effect_lasts_and_fades_out) {
+    // Lasting: in over 0.25 s, held, out over 0.4 s once ended.
+    EXPECT_FLOAT_EQ(0.0f, VisualEffectPresenter::overlayStrength(true, 0.0f, -1.0f));
+    EXPECT_FLOAT_EQ(0.5f, VisualEffectPresenter::overlayStrength(true, 0.125f, -1.0f));
+    EXPECT_FLOAT_EQ(1.0f, VisualEffectPresenter::overlayStrength(true, 100.0f, -1.0f));
+    EXPECT_FLOAT_EQ(0.5f, VisualEffectPresenter::overlayStrength(true, 100.0f, 0.2f));
+    EXPECT_FALSE(VisualEffectPresenter::overlayDone(true, 100.0f, -1.0f));
+    EXPECT_FALSE(VisualEffectPresenter::overlayDone(true, 100.0f, 0.2f));
+    EXPECT_TRUE(VisualEffectPresenter::overlayDone(true, 100.0f, 0.4f));
+    // Fire-and-forget: 1.5 s.
+    EXPECT_FLOAT_EQ(1.0f, VisualEffectPresenter::overlayStrength(false, 0.5f, -1.0f));
+    EXPECT_NEAR(0.5f, VisualEffectPresenter::overlayStrength(false, 1.2f, -1.0f), 1e-5f);
+    EXPECT_FLOAT_EQ(0.0f, VisualEffectPresenter::overlayStrength(false, 1.5f, -1.0f));
+    EXPECT_TRUE(VisualEffectPresenter::overlayDone(false, 1.5f, -1.0f));
+}
+
+TEST(VisualEffectPresenter, an_overlay_flipbook_steps_a_frame_per_one_over_fps) {
+    // fx_tex_14: numx 1, numy 16, fps 16 - a one-second colour pulse.
+    EXPECT_EQ(0, overlayCycleFrame(1, 16, 16.0f, 0.0f));
+    EXPECT_EQ(0, overlayCycleFrame(1, 16, 16.0f, 0.06f));
+    EXPECT_EQ(1, overlayCycleFrame(1, 16, 16.0f, 0.07f));
+    EXPECT_EQ(15, overlayCycleFrame(1, 16, 16.0f, 0.99f));
+    EXPECT_EQ(0, overlayCycleFrame(1, 16, 16.0f, 1.01f)) << "it loops";
+    EXPECT_EQ(3, overlayCycleFrame(2, 2, 20.0f, 0.16f)) << "fx_tex_07: 2x2 at 20 fps";
+    EXPECT_EQ(0, overlayCycleFrame(1, 1, 16.0f, 5.0f)) << "a still texture";
+    EXPECT_EQ(0, overlayCycleFrame(2, 2, 0.0f, 5.0f)) << "no fps";
+}
+
+namespace {
+
+std::shared_ptr<Texture> overlayTexture(const std::string &name, int w, int h) {
+    auto texture = std::make_shared<Texture>(name, TextureType::TwoDim, Texture::Properties {});
+    texture->clear(w, h, PixelFormat::RGB8);
+    return texture;
+}
+
+} // namespace
+
+TEST(VisualEffectPresenter, a_duration_body_effect_overlays_the_target_until_it_ends) {
+    PresenterScene scene;
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.bodyLook = VisualEffectDesc::BodyLook {"fx_tex_14", 1.0f};
+    desc.bodyTexture = overlayTexture("fx_tex_14", 32, 512);
+
+    auto request = scene.begin(desc);
+    for (int i = 0; i < 10; ++i) {
+        scene.frame();
+    }
+    ASSERT_EQ(1u, scene.creature->bodyOverlays().size());
+    const auto &overlay = scene.creature->bodyOverlays().front();
+    EXPECT_EQ(desc.bodyTexture.get(), overlay.texture);
+    EXPECT_FLOAT_EQ(1.0f, overlay.strength) << "faded in";
+    EXPECT_GT(overlay.time, 0.4f);
+    EXPECT_FLOAT_EQ(1.0f, scene.creature->bodyOpacity());
+    EXPECT_EQ(1u, scene.presenter.numActive()) << "no model, still shown";
+    EXPECT_EQ(0u, scene.presenter.numModels());
+
+    request->ended = true;
+    scene.frame();
+    ASSERT_EQ(1u, scene.creature->bodyOverlays().size()) << "fading out";
+    for (int i = 0; i < 10; ++i) {
+        scene.frame();
+    }
+    EXPECT_TRUE(scene.creature->bodyOverlays().empty());
+    EXPECT_EQ(0u, scene.presenter.numActive());
+    EXPECT_TRUE(scene.presenter.overlayTargets().empty());
+}
+
+TEST(VisualEffectPresenter, a_cloak_makes_the_body_see_through_and_a_crackle_shows_briefly) {
+    PresenterScene scene;
+    VisualEffectDesc cloak;
+    cloak.kind = VisualEffectDesc::Kind::Duration;
+    cloak.bodyLook = VisualEffectDesc::BodyLook {"fx_tex_stealth", 0.35f};
+    cloak.bodyTexture = overlayTexture("fx_tex_stealth", 512, 512);
+    VisualEffectDesc crackle;
+    crackle.kind = VisualEffectDesc::Kind::FireAndForget;
+    crackle.bodyLook = VisualEffectDesc::BodyLook {"fx_tex_07", 1.0f};
+    crackle.bodyTexture = overlayTexture("fx_tex_07", 128, 128);
+
+    auto cloakRequest = scene.begin(cloak);
+    auto crackleRequest = scene.begin(crackle);
+    crackleRequest->ended = true; // fire-and-forget
+    for (int i = 0; i < 10; ++i) {
+        scene.frame();
+    }
+    EXPECT_EQ(2u, scene.creature->bodyOverlays().size());
+    EXPECT_NEAR(0.35f, scene.creature->bodyOpacity(), 1e-4f);
+    for (int i = 0; i < 30; ++i) {
+        scene.frame(); // past 1.5 s
+    }
+    ASSERT_EQ(1u, scene.creature->bodyOverlays().size()) << "the crackle is over, the cloak is not";
+    EXPECT_EQ(cloak.bodyTexture.get(), scene.creature->bodyOverlays().front().texture);
+    cloakRequest->ended = true;
+    for (int i = 0; i < 10; ++i) {
+        scene.frame();
+    }
+    EXPECT_TRUE(scene.creature->bodyOverlays().empty());
+    EXPECT_FLOAT_EQ(1.0f, scene.creature->bodyOpacity());
+}
+
+TEST(VisualEffects, cast_hand_visuals_come_from_spells_2da_and_skip_models_k1_lacks) {
+    TwoDA::Builder builder;
+    builder.columns({"label", "conjhandvisual", "casthandvisual"});
+    builder.row("0", {"FORCE_POWER_MASTER_ALTER_XXX", "****", "****"});
+    builder.row("1", {"FORCE_POWER_AFFLICTION", "****", "v_con_dark"});
+    builder.row("2", {"FORCE_POWER_HEAL", "****", "v_con_light"});
+    builder.row("3", {"FORCE_POWER_X", "v_fpush_cas", "****"});
+    auto table = builder.build();
+    auto dark = effectModel("v_con_dark", {"cast01"});
+    auto push = effectModel("v_fpush_cas", {"dur"});
+
+    auto hands = VisualEffects::parseCastHands(*table, [&](const std::string &resRef) -> std::shared_ptr<Model> {
+        return resRef == "v_con_dark" ? dark : (resRef == "v_fpush_cas" ? push : nullptr);
+    });
+
+    ASSERT_EQ(2u, hands.size());
+    const auto &affliction = hands.at(VisualEffectDesc::castHandId(1));
+    EXPECT_EQ(dark, affliction.handModel);
+    EXPECT_EQ(VisualEffectDesc::Kind::Duration, affliction.kind);
+    EXPECT_EQ("CASTHAND_FORCE_POWER_AFFLICTION", affliction.label);
+    EXPECT_EQ(push, hands.at(VisualEffectDesc::castHandId(3)).handModel) << "conjhandvisual when casthandvisual is empty";
+    EXPECT_EQ(0u, hands.count(VisualEffectDesc::castHandId(2))) << "v_con_light is not shipped";
+    EXPECT_GE(VisualEffectDesc::castHandId(0), VisualEffectDesc::kCastHandBase);
+}
+
+TEST(VisualEffectPresenter, a_cast_hand_visual_plays_cast01_on_the_right_hand_until_the_cast_ends) {
+    PresenterScene scene;
+    auto casterModelData = casterModel();
+    auto caster = scene.graph->newModel(*casterModelData, ModelUsage::Creature);
+    caster->setLocalTransform(glm::translate(glm::vec3(10.0f, 15.0f, 0.0f)));
+    scene.graph->addRoot(caster);
+    scene.ctx.modelOf = [&](uint32_t id) -> ModelSceneNode * { return id == 9 ? caster.get() : nullptr; };
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.handModel = effectModel("v_con_dark", {"cast01"}, 0.2f);
+
+    auto request = scene.begin(desc, 9);
+    for (int i = 0; i < 10; ++i) {
+        scene.frame(); // longer than one play of cast01: it loops
+    }
+    ASSERT_EQ(1u, scene.presenter.numModels());
+    ModelSceneNode *hand = scene.presenter.models().front();
+    EXPECT_TRUE(hand->isAnimationPlaying("cast01"));
+    glm::vec3 rhand(10.3f, 15.2f, 1.1f);
+    EXPECT_NEAR(0.0f, glm::distance(rhand, glm::vec3(hand->absoluteTransform()[3])), 1e-4f);
+
+    request->ended = true;
     scene.frame();
     EXPECT_EQ(0u, scene.presenter.numModels());
 }

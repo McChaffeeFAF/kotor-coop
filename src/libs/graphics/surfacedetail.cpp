@@ -30,16 +30,24 @@ std::string mapFileName(const std::string &texture, MapKind kind) {
     return boost::to_lower_copy(texture) + (kind == MapKind::Normal ? "_n.tga" : "_m.tga");
 }
 
+std::string mapFileNameDds(const std::string &texture, MapKind kind) {
+    return boost::to_lower_copy(texture) + (kind == MapKind::Normal ? "_n.dds" : "_m.dds");
+}
+
 std::optional<std::filesystem::path> findMapFile(const std::filesystem::path &folder, const std::string &texture, MapKind kind) {
     if (folder.empty() || texture.empty()) {
         return std::nullopt;
     }
     std::error_code ec;
-    auto path = folder / mapFileName(texture, kind);
-    if (!std::filesystem::is_regular_file(path, ec)) {
-        return std::nullopt;
+    // A DDS beats a TGA of the same map: texgen writes only one of them, and a stale TGA
+    // from an earlier run must not shadow a newer DDS.
+    for (const auto &name : {mapFileNameDds(texture, kind), mapFileName(texture, kind)}) {
+        auto path = folder / name;
+        if (std::filesystem::is_regular_file(path, ec)) {
+            return path;
+        }
     }
-    return path;
+    return std::nullopt;
 }
 
 std::filesystem::path defaultFolder(const std::filesystem::path &executablePath) {

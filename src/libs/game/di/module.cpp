@@ -35,7 +35,7 @@ void GameModule::init() {
     _surfaces = std::make_unique<Surfaces>(_resource.twoDas());
     _projectiles = std::make_unique<Projectiles>(_resource.twoDas());
     _animations = std::make_unique<Animations>(_resource.twoDas());
-    _visualEffects = std::make_unique<VisualEffects>(_resource.twoDas(), _resource.audioClips(), _resource.models());
+    _visualEffects = std::make_unique<VisualEffects>(_resource.twoDas(), _resource.audioClips(), _resource.models(), &_resource.textures());
 
     _services = std::make_unique<GameServices>(
         *_cameraStyles,

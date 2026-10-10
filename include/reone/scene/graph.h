@@ -378,6 +378,7 @@ private:
     std::vector<MeshSceneNode *> _opaqueMeshes;
     std::vector<MeshSceneNode *> _transparentMeshes;
     std::vector<MeshSceneNode *> _glowMeshes;
+    std::vector<MeshSceneNode *> _overlayMeshes; /**< meshes under a programmed body overlay */
     std::vector<MeshSceneNode *> _shadowMeshes;
     std::vector<LightSceneNode *> _lights;
     std::vector<EmitterSceneNode *> _emitters;

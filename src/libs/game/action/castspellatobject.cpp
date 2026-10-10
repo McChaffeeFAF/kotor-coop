@@ -21,6 +21,7 @@
 #include "reone/game/d20/spells.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
+#include "reone/game/hitvisuals.h"
 #include "reone/game/party.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
@@ -47,6 +48,10 @@ CastSpellAtObjectAction::CastSpellAtObjectAction(
     if (_item) {
         requireRuntimeObject(*_item);
     }
+}
+
+CastSpellAtObjectAction::~CastSpellAtObjectAction() {
+    hitvisuals::endCastHand(_castHand);
 }
 
 // The impact script runs as the caster: OBJECT_SELF is the caster and
@@ -164,18 +169,30 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
         scene::AnimationProperties animProp =
             scene::AnimationProperties::fromFlags(scene::AnimationFlags::blend);
 
+        // A grenade is thrown, an item used, a Force power cast in the
+        // pose of its spells.2da conjanim/castanim, held through the cast
+        // time (design note v14_programmed_effects, section 9).
+        CastAnimations anims = castActionAnimations(_spell->conjAnim, _spell->castAnim,
+                                                    _item.has_value(), _spell->projModel != nullptr,
+                                                    _spell->itemTargeting != 0);
         if (_spell->projModel) {
-            // Throw a grenade.
             _grenade = Grenade();
             _grenade->fire(caster, *_spell->projModel, /*swingTime=*/0.8f, /*throwTime=*/0.5f);
-            caster.playAnimation("throwgren");
+            caster.playAnimation(anims.conjure);
         } else {
-            // Activate an item.
-            caster.playAnimation((_spell->itemTargeting ? "activate" : "inject"), animProp);
+            caster.playAnimation(anims.conjure, animProp);
+            _castLoop = anims.cast;
         }
         return;
     }
     case SpellSchedule::Cast: {
+        // The cast-hand visual (spells.2da casthandvisual) for the cast.
+        if (!_castHand) {
+            _castHand = hitvisuals::beginCastHand(_game, _services, static_cast<int>(_spell->type), caster);
+        }
+        if (!_castLoop.empty()) {
+            caster.playAnimation(_castLoop, scene::AnimationProperties::fromFlags(scene::AnimationFlags::loopBlend));
+        }
         if (_spell->castSound) {
             _services.audio.mixer.play(
                 _spell->castSound,
@@ -187,6 +204,8 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
         return;
     }
     case SpellSchedule::Effect: {
+        hitvisuals::endCastHand(_castHand);
+        releaseCastPose(caster);
         caster.recordForcePowerUsed(_spell->type);
         // A cast excites the caster (excitedduration.2da row 2) and the
         // target (row 1): battle music, see Area::exciteCombat.
@@ -222,7 +241,16 @@ void CastSpellAtObjectAction::cancel(std::shared_ptr<Action> self, Object &actor
     finish(cast<Creature>(actor));
 }
 
+void CastSpellAtObjectAction::releaseCastPose(Creature &caster) {
+    if (!_castLoop.empty()) {
+        _castLoop.clear();
+        caster.resumeStateDrivenAnimation();
+    }
+}
+
 void CastSpellAtObjectAction::finish(Creature &caster) {
+    hitvisuals::endCastHand(_castHand);
+    releaseCastPose(caster);
     releaseConsumedItem();
     caster.setMovementRestricted(false);
     complete();

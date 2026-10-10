@@ -21,6 +21,7 @@
 #include "../castspell.h"
 #include "../object.h"
 #include "../types.h"
+#include "../visualeffectpresenter.h"
 
 namespace reone {
 
@@ -37,6 +38,7 @@ public:
         std::shared_ptr<Object> target,
         std::optional<std::shared_ptr<Item>> item,
         bool cheat = false);
+    ~CastSpellAtObjectAction() override;
 
     static bool classof(Action *from) {
         return from->type() == ActionType::CastSpellAtObject;
@@ -65,6 +67,10 @@ private:
     std::optional<std::shared_ptr<Item>> _item;
     SpellSchedule _schedule;
     std::optional<Grenade> _grenade;
+    std::shared_ptr<VisualEffectPresenter::Request> _castHand; /**< the cast-hand visual while casting */
+    std::string _castLoop; /**< a Force power's held cast pose, played at Cast; empty for items */
+
+    void releaseCastPose(Creature &caster);
     bool _cheat;
     // A single-use item whose last charge this cast spent. It has left the
     // inventory, but stays alive until the module's OnActivateItem script

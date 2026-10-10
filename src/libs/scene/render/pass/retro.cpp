@@ -314,6 +314,12 @@ void RetroRenderPass::applyMaterialToLocals(const Material &material,
     if (material.surfaceDetail) {
         locals.surfaceParams.x = material.surfaceStrength;
     }
+    if (material.shell) {
+        locals.featureMask |= UniformsFeatureFlags::shell;
+        locals.surfaceParams.y = material.shell->x;
+        locals.surfaceParams.z = material.shell->y;
+        locals.surfaceParams.w = material.shell->z;
+    }
     if (material.objectLighting) {
         locals.numObjectLights = material.numObjectLights;
         for (int i = 0; i < material.numObjectLights; ++i) {

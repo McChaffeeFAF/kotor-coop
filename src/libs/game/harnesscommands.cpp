@@ -878,12 +878,20 @@ void Game::consoleVfx(const ConsoleArgs &args) {
     HarnessArgs parsed(args);
     parsed.requireKnown({});
     if (parsed.positional.size() < 2 || parsed.positional.size() > 4 || parsed.actor) {
-        throw std::runtime_error("Usage: vfx <visualeffects row> <id|tag> [source id|tag [seconds]]");
+        throw std::runtime_error("Usage: vfx <visualeffects row> <id|tag> [source id|tag|- [seconds]]");
     }
     int row = std::stoi(parsed.positional[0]);
     auto target = findConsoleObject(parsed.positional[1]);
     if (!_services.game.visualEffects.get(static_cast<uint32_t>(row))) {
         throw std::runtime_error("vfx: no visualeffects row " + parsed.positional[0]);
+    }
+    if (parsed.positional.size() >= 3 && parsed.positional[2] == "-") {
+        // No source: the row as EffectVisualEffect applied temporary (a
+        // duration row - shield, aura, hold, cloak - lasting that long).
+        float seconds = parsed.positional.size() == 4 ? std::stof(parsed.positional[3]) : 3.0f;
+        target->applyEffect(newEffect<VisualEffect>(row, false, _services), DurationType::Temporary, seconds);
+        _console.printLine(str(boost::format("vfx %s -> %s for %.2f s") % parsed.positional[0] % target->tag() % seconds));
+        return;
     }
     if (parsed.positional.size() >= 3) {
         // A beam from a source, as EffectBeam(row, source, BODY_NODE_HAND)

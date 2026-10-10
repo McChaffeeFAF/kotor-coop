@@ -148,6 +148,31 @@ glm::vec3 VisualEffectPresenter::beamSourcePoint(ModelSceneNode &source, int bod
     return beamTargetPoint(source);
 }
 
+// Programmed body overlays (design note v14_programmed_effects, section 4).
+static constexpr float kOverlayFadeIn = 0.25f;
+static constexpr float kOverlayFadeOut = 0.4f;
+static constexpr float kOverlayImpactLifetime = 1.5f;
+static constexpr float kOverlayImpactFadeIn = 0.1f;
+static constexpr float kOverlayImpactFadeOut = 0.6f;
+
+float VisualEffectPresenter::overlayStrength(bool lasting, float age, float sinceEnd) {
+    if (lasting) {
+        float in = glm::clamp(age / kOverlayFadeIn, 0.0f, 1.0f);
+        float out = sinceEnd < 0.0f ? 1.0f : glm::clamp(1.0f - sinceEnd / kOverlayFadeOut, 0.0f, 1.0f);
+        return in * out;
+    }
+    float in = glm::clamp(age / kOverlayImpactFadeIn, 0.0f, 1.0f);
+    float out = glm::clamp((kOverlayImpactLifetime - age) / kOverlayImpactFadeOut, 0.0f, 1.0f);
+    return in * out;
+}
+
+bool VisualEffectPresenter::overlayDone(bool lasting, float age, float sinceEnd) {
+    if (lasting) {
+        return sinceEnd >= kOverlayFadeOut;
+    }
+    return age >= kOverlayImpactLifetime;
+}
+
 void VisualEffectPresenter::begin(std::shared_ptr<Request> request) {
     if (!request || !request->desc) {
         return;
@@ -193,6 +218,7 @@ void VisualEffectPresenter::clear() {
     }
     _active.clear();
     _pending.clear();
+    _overlayTargets.clear(); // the models go with the area
     _shakes.clear();
     _shakeOffset = glm::vec3(0.0f);
 }
@@ -215,7 +241,19 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
         part.node = ctx.graph->newModel(*model, ModelUsage::Projectile);
         part.point = point;
         auto &node = *part.node;
-        if (once) {
+        // A cast-hand visual animates by its own clip (v_con_dark "cast01").
+        bool castClip = point == AttachPoint::Hand &&
+                        !hasAnimation(node, "impact") && !hasAnimation(node, "duration") &&
+                        !hasAnimation(node, "default") && hasAnimation(node, "cast01");
+        if (castClip) {
+            if (once) {
+                playOnce(node, "cast01");
+                part.phase = Phase::Once;
+            } else {
+                playLooped(node, "cast01");
+                part.phase = Phase::Duration;
+            }
+        } else if (once) {
             if (hasAnimation(node, "impact")) {
                 playOnce(node, "impact");
             } else if (hasAnimation(node, "duration")) {
@@ -250,6 +288,10 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
     if (request->sourceId != 0 && request->sourceId != request->targetId) {
         addPart(desc.beamModel, AttachPoint::BeamSource);
     }
+    if (request->targetId != 0) {
+        addPart(desc.handModel, AttachPoint::Hand);
+    }
+    presented.lasting = duration && !request->ended;
     _graph = ctx.graph;
 
     place(presented, ctx);
@@ -281,8 +323,9 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
             ctx.mixer->play(desc.soundCessation, audio::AudioType::Sound, 1.0f, false, position);
         }
     }
-    debug(str(boost::format("vfx: present %u %s target=%u models=%u%s") % desc.id % desc.label % request->targetId % presented.parts.size() %
-               (request->sourceId != 0 ? str(boost::format(" source=%u beam=%u") % request->sourceId % (desc.beamModel ? 1 : 0)) : std::string())));
+    debug(str(boost::format("vfx: present %u %s target=%u models=%u%s%s") % desc.id % desc.label % request->targetId % presented.parts.size() %
+               (request->sourceId != 0 ? str(boost::format(" source=%u beam=%u") % request->sourceId % (desc.beamModel ? 1 : 0)) : std::string()) %
+               (desc.bodyLook ? str(boost::format(" look=%s%s") % desc.bodyLook->texture % (desc.bodyTexture ? "" : "(missing)")) : std::string())));
     _active.push_back(std::move(presented));
 }
 
@@ -334,7 +377,9 @@ void VisualEffectPresenter::place(Presented &presented, const Context &ctx) {
             continue;
         }
         glm::mat4 transform = root;
-        if (target && part.point != AttachPoint::Root) {
+        if (target && part.point == AttachPoint::Hand) {
+            transform = glm::translate(beamSourcePoint(*target, static_cast<int>(BodyNode::HandRight))) * rotationOf(root);
+        } else if (target && part.point != AttachPoint::Root) {
             transform = attachTransform(*target, part.point, desc.orientationOff);
         } else if (!target && part.point != AttachPoint::Root && request.targetId != 0) {
             transform = part.node->localTransform(); // hold the last attach point
@@ -487,6 +532,10 @@ void VisualEffectPresenter::update(float dt, const Context &ctx) {
     for (auto &presented : _active) {
         place(presented, ctx);
         advance(presented, dt, ctx);
+        presented.age += dt;
+        if (presented.lasting && (presented.request->ended || presented.targetLost)) {
+            presented.sinceEnd = presented.sinceEnd < 0.0f ? 0.0f : presented.sinceEnd + dt;
+        }
     }
     for (auto &presented : _active) {
         bool duration = presented.request->desc->kind == VisualEffectDesc::Kind::Duration;
@@ -497,8 +546,8 @@ void VisualEffectPresenter::update(float dt, const Context &ctx) {
         }
     }
     _active.erase(
-        std::remove_if(_active.begin(), _active.end(), [](auto &presented) {
-            if (!presented.parts.empty()) {
+        std::remove_if(_active.begin(), _active.end(), [this](auto &presented) {
+            if (!presented.parts.empty() || overlayLive(presented)) {
                 return false;
             }
             // A duration effect with no models (sound only) lives until it ends.
@@ -506,7 +555,54 @@ void VisualEffectPresenter::update(float dt, const Context &ctx) {
             return !duration || presented.endHandled || !presented.loopSound;
         }),
         _active.end());
+    updateOverlays(ctx);
     updateShake(dt, ctx);
+}
+
+bool VisualEffectPresenter::overlayLive(const Presented &presented) const {
+    const VisualEffectDesc &desc = *presented.request->desc;
+    if (!desc.bodyLook || !desc.bodyTexture || presented.request->targetId == 0 || presented.targetLost) {
+        return false;
+    }
+    return !overlayDone(presented.lasting, presented.age, presented.sinceEnd);
+}
+
+void VisualEffectPresenter::updateOverlays(const Context &ctx) {
+    struct Look {
+        std::vector<BodyOverlay> overlays;
+        float opacity {1.0f};
+    };
+    std::map<uint32_t, Look> looks;
+    for (auto &presented : _active) {
+        if (!overlayLive(presented)) {
+            continue;
+        }
+        const VisualEffectDesc &desc = *presented.request->desc;
+        const auto &look = *desc.bodyLook;
+        float strength = overlayStrength(presented.lasting, presented.age, presented.sinceEnd);
+        auto &target = looks[presented.request->targetId];
+        BodyOverlay overlay;
+        overlay.texture = desc.bodyTexture.get();
+        overlay.strength = strength;
+        overlay.time = presented.age;
+        target.overlays.push_back(overlay);
+        target.opacity = glm::min(target.opacity, glm::mix(1.0f, look.opacity, strength));
+    }
+    std::set<uint32_t> targets;
+    for (auto &[id, look] : looks) {
+        targets.insert(id);
+        if (auto model = ctx.modelOf ? ctx.modelOf(id) : nullptr) {
+            model->setBodyOverlays(std::move(look.overlays), look.opacity);
+        }
+    }
+    for (uint32_t id : _overlayTargets) {
+        if (targets.count(id) == 0 && ctx.modelOf) {
+            if (auto model = ctx.modelOf(id)) {
+                model->setBodyOverlays({}, 1.0f);
+            }
+        }
+    }
+    _overlayTargets = std::move(targets);
 }
 
 } // namespace game

@@ -358,6 +358,33 @@ TEST(NetProtocol, events_travel_on_their_own_and_are_checked) {
     EXPECT_FALSE(decode(encode(batch), out));
 }
 
+TEST(NetProtocol, a_vfx_begin_carries_its_beam_source_and_body_node) {
+    // Design note v14_programmed_effects, section 6: guests draw beams.
+    EventBatch batch;
+    batch.generation = 1;
+    batch.tick = 5;
+    NetEvent beam;
+    beam.kind = EventKind::VfxBegin;
+    beam.handle = 9;
+    beam.row = 2038;
+    beam.a = 42;
+    beam.b = 77;
+    beam.flags = 4; // BodyNode::HandRight
+    batch.events.push_back(beam);
+    auto bytes = encode(batch);
+    EventBatch out;
+    ASSERT_TRUE(decode(bytes, out));
+    ASSERT_EQ(1u, out.events.size());
+    EXPECT_EQ(2038u, out.events[0].row);
+    EXPECT_EQ(42u, out.events[0].a);
+    EXPECT_EQ(77u, out.events[0].b);
+    EXPECT_EQ(4, out.events[0].flags);
+    expectEveryTruncationRejected<EventBatch>(bytes);
+    batch.events[0].flags = kMaxVfxBodyNode + 1;
+    EXPECT_FALSE(decode(encode(batch), out)) << "no such body node";
+    EXPECT_GE(kProtocolVersion, 4) << "older peers would misread the event";
+}
+
 TEST(NetProtocol, snapshot_acks_are_small_and_checked) {
     SnapshotAck ack {3, 99};
     auto bytes = encode(ack);

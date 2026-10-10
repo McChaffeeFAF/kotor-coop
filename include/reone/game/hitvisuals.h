@@ -18,7 +18,10 @@
 #pragma once
 
 #include <glm/vec3.hpp>
+#include <memory>
 #include <vector>
+
+#include "reone/game/visualeffectpresenter.h"
 
 namespace reone {
 
@@ -70,6 +73,16 @@ void presentAt(Game &game, ServicesView &services, int row, const glm::vec3 &pos
  */
 void presentAttack(Game &game, ServicesView &services, const Object &target,
                    bool ranged, bool landed, bool deflected, int damageFlags);
+
+/**
+ * A spell's cast-hand visual (spells.2da casthandvisual) on the caster's
+ * right hand, until endCastHand. Null when the spell names none that K1
+ * ships. Goes to co-op guests like any visual effect.
+ */
+std::shared_ptr<VisualEffectPresenter::Request> beginCastHand(Game &game, ServicesView &services, int spellRow, const Object &caster);
+
+/** End a cast-hand visual begun by beginCastHand (null: nothing). */
+void endCastHand(std::shared_ptr<VisualEffectPresenter::Request> &request);
 
 } // namespace hitvisuals
 

@@ -246,6 +246,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/gameclock.h
     ${GAME_INCLUDE_DIR}/onhit.h
     ${GAME_INCLUDE_DIR}/traps.h
+    ${GAME_INCLUDE_DIR}/guestbench.h
     ${GAME_INCLUDE_DIR}/upgradebench.h
     ${GAME_INCLUDE_DIR}/gui/conversation.h
     ${GAME_INCLUDE_DIR}/gui/dialog.h
@@ -594,6 +595,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/creaturestates.cpp
     ${GAME_SOURCE_DIR}/onhit.cpp
     ${GAME_SOURCE_DIR}/traps.cpp
+    ${GAME_SOURCE_DIR}/guestbench.cpp
     ${GAME_SOURCE_DIR}/upgradebench.cpp
     ${GAME_SOURCE_DIR}/gui/conversation.cpp
     ${GAME_SOURCE_DIR}/gui/dialog.cpp
@@ -700,6 +702,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/coopreplication.cpp
     ${GAME_SOURCE_DIR}/coopsession.cpp
     ${GAME_SOURCE_DIR}/coopfree.cpp
+    ${GAME_SOURCE_DIR}/coopbench.cpp
     ${GAME_SOURCE_DIR}/coopinventory.cpp
     ${GAME_SOURCE_DIR}/coopprogress.cpp
     ${GAME_SOURCE_DIR}/coopstandin.cpp)

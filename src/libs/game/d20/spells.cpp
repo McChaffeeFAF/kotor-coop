@@ -252,6 +252,7 @@ void Spells::init() {
         spell->exclusion = exclusion;
         spell->impactScript = impactScript;
         spell->castAnim = castAnim;
+        spell->conjAnim = spells->getString(row, "conjanim");
         spell->castSound = castSound.empty() ? nullptr : _audioClips.get(castSound);
         spell->conjTime = conjTime;
         spell->castTime = castTime;

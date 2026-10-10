@@ -285,6 +285,9 @@ void CoopSession::hostCarryOutUse(HostClient &client, const Command &command, co
     case CoopUse::Placeable:
         hostUsePlaceable(client, actor, target);
         break;
+    case CoopUse::Bench:
+        hostUseBench(client, actor, target);
+        break;
     case CoopUse::Transition: {
         auto door = std::dynamic_pointer_cast<Door>(target);
         if (!door) {

@@ -84,6 +84,10 @@ void main() {
 
     mat3 normalMatrix = transpose(mat3(uModelInv));
     fragNormalWorld = normalize(normalMatrix * N.xyz);
+    if (isFeatureEnabled(FEATURE_SHELL)) {
+        // A programmed body overlay: the surface pushed out along its normal.
+        fragPosWorld.xyz += fragNormalWorld * uSurfaceParams.y;
+    }
 
     fragUV1 = aUV1;
     if (uUVJitterAmplitude > 0.0 && uUVJitterSpeed > 0.0) {

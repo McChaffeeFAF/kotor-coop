@@ -23,6 +23,7 @@
 
 #include "../fixtures/archive.h"
 
+#include "reone/graphics/format/ddsreader.h"
 #include "reone/graphics/format/tgareader.h"
 #include "reone/graphics/format/tgawriter.h"
 #include "reone/graphics/texture.h"
@@ -572,6 +573,7 @@ JobOptions optionsFor(const TempDir &dir, int threads = 2) {
     JobOptions options;
     options.outputDir = dir.path();
     options.threads = threads;
+    options.format = OutputFormat::Tga; // the TGA path; the DDS path has its own tests below
     return options;
 }
 
@@ -762,4 +764,61 @@ TEST(TexgenJob, reads_tpc_textures_with_their_embedded_txi) {
     auto manifest = Manifest::load(dir.path() / kManifestName);
     EXPECT_NE(std::string::npos, manifest.entries.at("bumpy_floor").reason.find("some_bump"));
     EXPECT_EQ("decal", manifest.entries.at("decal_thing").className);
+}
+
+TEST(TexgenJob, writes_dds_maps_by_default_and_they_load_as_bc5_and_bc7) {
+    TempDir dir;
+    SourceSet sources;
+    sources.add(memorySource("tex_wall", ResType::Tga, noisyTga(32, 5)));
+    JobOptions options;
+    options.outputDir = dir.path();
+    options.threads = 1;
+    EXPECT_EQ(OutputFormat::Dds, options.format) << "dds is the default";
+
+    auto summary = runJob(sources, Rules::defaults(), options);
+    ASSERT_EQ(1u, summary.generated);
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "tex_wall_n.dds"));
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "tex_wall_m.dds"));
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "tex_wall_n.tga"));
+
+    auto load = [&](const char *name) {
+        std::ifstream file(dir.path() / name, std::ios::binary);
+        ByteBuffer bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+        MemoryInputStream stream(bytes);
+        graphics::DdsReader reader(stream, name, TextureUsage::BumpMap, true);
+        reader.load();
+        return reader.texture();
+    };
+    auto normal = load("tex_wall_n.dds");
+    auto material = load("tex_wall_m.dds");
+    EXPECT_EQ(PixelFormat::BC5, normal->pixelFormat());
+    EXPECT_EQ(PixelFormat::BC7, material->pixelFormat());
+    EXPECT_EQ(32, normal->width());
+    EXPECT_EQ(5u, normal->layers().front().mipMaps.size());
+}
+
+TEST(TexgenJob, switching_formats_replaces_the_other_files_and_regenerates) {
+    TempDir dir;
+    SourceSet sources;
+    sources.add(memorySource("tex_wall", ResType::Tga, noisyTga(16, 5)));
+    JobOptions dds;
+    dds.outputDir = dir.path();
+    dds.threads = 1;
+    ASSERT_EQ(1u, runJob(sources, Rules::defaults(), dds).generated);
+
+    auto tga = dds;
+    tga.format = OutputFormat::Tga;
+    auto summary = runJob(sources, Rules::defaults(), tga);
+    EXPECT_EQ(1u, summary.generated) << "another format is not up to date";
+    EXPECT_TRUE(std::filesystem::exists(dir.path() / "tex_wall_n.tga"));
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "tex_wall_n.dds")) << "a stale DDS would shadow the new TGA in the engine";
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "tex_wall_m.dds"));
+
+    EXPECT_EQ(1u, runJob(sources, Rules::defaults(), tga).unchanged);
+    EXPECT_EQ(1u, runJob(sources, Rules::defaults(), dds).generated);
+    EXPECT_FALSE(std::filesystem::exists(dir.path() / "tex_wall_n.tga"));
+
+    auto bc1 = dds;
+    bc1.materialCodec = MaterialCodec::BC1;
+    EXPECT_EQ(1u, runJob(sources, Rules::defaults(), bc1).generated) << "another material codec regenerates";
 }

@@ -115,11 +115,11 @@ glibc=$(objdump -T "$stage/bin/engine" "$stage"/lib/*.so* 2>/dev/null | grep -o 
 # shader archive, built from glsl/ in this repo.
 bad=$(find "$stage" -type f \( -iregex '.*\.\(bif\|key\|tlk\|rim\|mod\|erf\|sav\|tpc\|tga\|dds\|txi\|2da\|mdl\|mdx\|wok\|pwk\|dwk\|lyt\|vis\|git\|are\|ifo\|dlg\|ncs\|nss\|utc\|utd\|utp\|uti\|utm\|ute\|uts\|utt\|utw\|jrl\|fac\|gui\|ssf\|wav\|mp3\|bik\|lip\)' \
     -o -iname chitin.key -o -iname dialog.tlk -o -iname swkotor.exe -o -iname swkotor2.exe \) ! -name shaderpack.erf)
-if [ "$WITH_TEXGEN" != 1 ] && [ -n "$(find "$stage" -iname 'texgen*' -o -name '*_n.tga' -o -name '*_m.tga' -o -name 'texgen_manifest.json' | head -n 1)" ]; then
+if [ "$WITH_TEXGEN" != 1 ] && [ -n "$(find "$stage" -iname 'texgen*' -o -name '*_n.tga' -o -name '*_m.tga' -o -name '*_n.dds' -o -name '*_m.dds' -o -name 'texgen_manifest.json' | head -n 1)" ]; then
     echo "package refused: texgen or its output is in the package but --with-texgen was not given" >&2
     exit 1
 fi
-if [ -n "$(find "$stage" -name '*_n.tga' -o -name '*_m.tga' -o -name 'texgen_manifest.json' | head -n 1)" ]; then
+if [ -n "$(find "$stage" -name '*_n.tga' -o -name '*_m.tga' -o -name '*_n.dds' -o -name '*_m.dds' -o -name 'texgen_manifest.json' | head -n 1)" ]; then
     echo "package refused: it would contain texgen output (derived from game files)" >&2
     exit 1
 fi

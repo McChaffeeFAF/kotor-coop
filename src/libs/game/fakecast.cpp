@@ -20,6 +20,7 @@
 #include "reone/audio/mixer.h"
 #include "reone/game/d20/spell.h"
 #include "reone/game/di/services.h"
+#include "reone/game/hitvisuals.h"
 #include "reone/game/object/creature.h"
 
 using namespace reone::scene;
@@ -28,9 +29,13 @@ namespace reone {
 
 namespace game {
 
-// Clip names in the K1 creature supermodel.
-static const char *kConjureAnimation = "handconjure";
-static const char *kCastAnimation = "castout1";
+// The held cast pose when spells.2da names none we know (castanim
+// "monster", "jump"): the "self" loop of the K1 creature supermodel.
+static const char *kCastAnimation = "castoutlp2";
+
+FakeCast::~FakeCast() {
+    hitvisuals::endCastHand(_castHand);
+}
 
 bool FakeCast::update(Creature &caster, const Spell *spell, const glm::vec3 &target, ServicesView &services, float dt) {
     switch (_stage) {
@@ -44,8 +49,9 @@ bool FakeCast::update(Creature &caster, const Spell *spell, const glm::vec3 &tar
         caster.setMovementRestricted(true);
         _elapsed = 0.0f;
         _stage = Stage::Conjure;
-        if (spell->conjTime > 0.0f) {
-            caster.playAnimation(kConjureAnimation, AnimationProperties::fromFlags(AnimationFlags::loopBlend));
+        _anims = forceCastAnimations(spell->conjAnim, spell->castAnim);
+        if (spell->conjTime > 0.0f && _anims) {
+            caster.playAnimation(_anims->conjure, AnimationProperties::fromFlags(AnimationFlags::blend));
         }
         [[fallthrough]];
     case Stage::Conjure:
@@ -55,7 +61,8 @@ bool FakeCast::update(Creature &caster, const Spell *spell, const glm::vec3 &tar
         }
         _elapsed = 0.0f;
         _stage = Stage::Cast;
-        caster.playAnimation(kCastAnimation, AnimationProperties::fromFlags(AnimationFlags::loopBlend));
+        caster.playAnimation(_anims ? _anims->cast : std::string(kCastAnimation), AnimationProperties::fromFlags(AnimationFlags::loopBlend));
+        _castHand = hitvisuals::beginCastHand(caster.game(), services, static_cast<int>(spell->type), caster);
         if (spell->castSound) {
             services.audio.mixer.play(
                 spell->castSound,
@@ -86,6 +93,7 @@ void FakeCast::cancel(Creature &caster) {
 }
 
 void FakeCast::finish(Creature &caster) {
+    hitvisuals::endCastHand(_castHand);
     caster.setMovementRestricted(false);
     caster.resumeStateDrivenAnimation();
     _stage = Stage::Done;

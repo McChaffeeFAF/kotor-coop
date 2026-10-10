@@ -292,7 +292,16 @@ std::vector<UpgradeSlot> UpgradeBench::slots() const {
     return upgradeSlotsFor(*target, _staged, _table);
 }
 
+void UpgradeBench::useHolder(std::shared_ptr<Object> inventory, std::vector<uint32_t> wearers) {
+    _holder = std::move(inventory);
+    _wearers = std::move(wearers);
+    _hasHolder = true;
+}
+
 std::shared_ptr<Object> UpgradeBench::partyInventory() const {
+    if (_hasHolder) {
+        return _holder;
+    }
     auto player = _game.party().actualPlayer();
     if (!player) {
         return nullptr;
@@ -457,6 +466,16 @@ std::vector<std::shared_ptr<Item>> UpgradeBench::partyItems(UpgradeCategory cate
         for (const auto &item : inventory->items()) {
             add(item);
         }
+    }
+    if (_hasHolder) {
+        for (uint32_t id : _wearers) {
+            if (auto wearer = _game.getObjectById<Creature>(id)) {
+                for (const auto &[slot, item] : wearer->equipment()) {
+                    add(item);
+                }
+            }
+        }
+        return result;
     }
     for (int i = 0; i < static_cast<int>(_game.party().getSize()); ++i) {
         auto member = _game.party().getMember(i);

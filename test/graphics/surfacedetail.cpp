@@ -124,6 +124,33 @@ TEST(SurfaceDetailOverride, file_names_are_lower_case_with_suffix) {
     EXPECT_EQ("lsi_floor01_m.tga", mapFileName("lsi_floor01", MapKind::Material));
 }
 
+TEST(SurfaceDetailOverride, compressed_file_names_use_dds) {
+    EXPECT_EQ("lsi_floor01_n.dds", mapFileNameDds("LSI_Floor01", MapKind::Normal));
+    EXPECT_EQ("lsi_floor01_m.dds", mapFileNameDds("lsi_floor01", MapKind::Material));
+}
+
+TEST(SurfaceDetailOverride, a_dds_map_wins_over_a_tga_of_the_same_name) {
+    auto dir = std::filesystem::temp_directory_path() / "reone_test_surface_dds_pref";
+    std::filesystem::remove_all(dir);
+    std::filesystem::create_directories(dir);
+    auto touch = [&](const char *name) { std::ofstream(dir / name) << "x"; };
+
+    EXPECT_FALSE(findMapFile(dir, "wall", MapKind::Normal));
+
+    touch("wall_n.tga");
+    ASSERT_TRUE(findMapFile(dir, "wall", MapKind::Normal));
+    EXPECT_EQ("wall_n.tga", findMapFile(dir, "WALL", MapKind::Normal)->filename().string()) << "TGA still works alone";
+
+    touch("wall_n.dds");
+    EXPECT_EQ("wall_n.dds", findMapFile(dir, "wall", MapKind::Normal)->filename().string()) << "DDS preferred when both exist";
+    EXPECT_FALSE(findMapFile(dir, "wall", MapKind::Material));
+
+    touch("wall_m.dds");
+    EXPECT_EQ("wall_m.dds", findMapFile(dir, "wall", MapKind::Material)->filename().string());
+
+    std::filesystem::remove_all(dir);
+}
+
 TEST(SurfaceDetailOverride, default_folder_is_beside_the_executable) {
     auto exe = std::filesystem::path("C:/games/reone/engine.exe");
     EXPECT_EQ(std::filesystem::path("C:/games/reone") / "enhanced_textures", defaultFolder(exe));

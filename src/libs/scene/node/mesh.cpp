@@ -195,7 +195,7 @@ void MeshSceneNode::updateSaberAnimation(float dt) {
 
 bool MeshSceneNode::shouldRender() const {
     auto mesh = _modelNode.mesh();
-    if (!mesh || !mesh->render || _alpha == 0.0f) {
+    if (!mesh || !mesh->render || effectiveAlpha() == 0.0f) {
         return false;
     }
     // Renderability depends on the diffuse texture effectively bound to this node,
@@ -237,7 +237,7 @@ bool MeshSceneNode::isTransparent() const {
     default:
         break;
     }
-    if (_alpha < 1.0f) {
+    if (effectiveAlpha() < 1.0f) {
         return true;
     }
     if (_nodeTextures.envmap || _nodeTextures.bumpmap) {
@@ -292,7 +292,7 @@ void MeshSceneNode::render(IRenderPass &pass) {
         glm::vec4(1.0f, 0.0f, 0.0f, 0.0f),
         glm::vec4(0.0f, 1.0f, 0.0f, 0.0f),
         glm::vec4(_uvOffset.x, _uvOffset.y, 0.0f, 0.0f));
-    material.color = glm::vec4(glm::vec3(_renderColorScale), _alpha);
+    material.color = glm::vec4(glm::vec3(_renderColorScale), effectiveAlpha());
     material.ambientColor = mesh->ambient;
     material.diffuseColor = mesh->diffuse;
     material.selfIllumColor = _selfIllumColor;
@@ -318,6 +318,60 @@ void MeshSceneNode::render(IRenderPass &pass) {
         material.affectedByFog = true;
     }
     material.faceCulling = _nodeTextures.diffuse->features().decal ? FaceCullMode::None : FaceCullMode::Back;
+    drawMesh(pass, material);
+}
+
+float MeshSceneNode::effectiveAlpha() const {
+    return _alpha * _model.lightingRoot().bodyOpacity();
+}
+
+bool MeshSceneNode::hasOverlays() const {
+    return !_model.lightingRoot().bodyOverlays().empty() && !_modelNode.isSaberMesh();
+}
+
+// Programmed body overlays are pushed out this far along the normals, so
+// they do not fight the body for depth (design note v14_programmed_effects).
+static constexpr float kOverlayInflate = 0.01f;
+
+int overlayCycleFrame(int numX, int numY, float fps, float time) {
+    int count = numX * numY;
+    if (count <= 1 || fps <= 0.0f || time <= 0.0f) {
+        return 0;
+    }
+    return static_cast<int>(time * fps) % count;
+}
+
+void MeshSceneNode::renderOverlays(IRenderPass &pass) {
+    auto mesh = _modelNode.mesh();
+    if (!mesh || _modelNode.isSaberMesh()) {
+        return;
+    }
+    for (const auto &overlay : _model.lightingRoot().bodyOverlays()) {
+        if (!overlay.texture || overlay.strength <= 0.0f) {
+            continue;
+        }
+        // The texture is drawn on the mesh UVs as its TXI says: K1's fx_tex
+        // overlays are additive flipbooks ("proceduretype cycle"), loaded as
+        // a texture array, a frame per 1/fps seconds.
+        Texture &texture = *overlay.texture;
+        const auto &features = texture.features();
+        bool array = texture.is2DArray();
+        Material material;
+        material.type = MaterialType::TransparentModel;
+        material.textures.insert({array ? TextureUnits::bumpMapArray : TextureUnits::mainTex, texture});
+        if (array) {
+            material.bumpMapFrame = overlayCycleFrame(features.numX, features.numY, static_cast<float>(features.fps), overlay.time);
+        }
+        material.color = glm::vec4(1.0f, 1.0f, 1.0f, overlay.strength);
+        bool additive = features.blending == Texture::Blending::Additive;
+        material.shell = glm::vec3(kOverlayInflate, array ? 1.0f : 0.0f, additive ? 1.0f : 0.0f);
+        material.faceCulling = features.decal ? FaceCullMode::None : FaceCullMode::Back;
+        drawMesh(pass, material);
+    }
+}
+
+void MeshSceneNode::drawMesh(IRenderPass &pass, Material &material) {
+    auto mesh = _modelNode.mesh();
     if (_modelNode.isSkinMesh()) {
         const auto &skin = *mesh->skin;
         auto bones = std::vector<glm::mat4>(kMaxBones, glm::mat4(1.0f));

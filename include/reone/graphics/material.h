@@ -78,6 +78,14 @@ public:
     bool surfaceDetail {false};
     float surfaceStrength {1.0f};
 
+    /**
+     * A programmed body overlay pass (FEATURE_SHELL): x the distance the
+     * surface is pushed out along its normal (metres), y 1 when the texture
+     * is an array on TextureUnits::bumpMapArray (frame bumpMapFrame), 0 when
+     * it is on mainTex, z 1 for additive blending, 0 for alpha.
+     */
+    std::optional<glm::vec3> shell;
+
     std::optional<BlendMode> blending;
     std::optional<FaceCullMode> faceCulling;
     std::optional<PolygonMode> polygonMode;

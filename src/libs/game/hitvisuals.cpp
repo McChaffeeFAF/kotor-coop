@@ -71,6 +71,30 @@ static void present(Game &game, ServicesView &services, int row, uint32_t target
     game.visualEffectPresenter().begin(std::move(request));
 }
 
+std::shared_ptr<VisualEffectPresenter::Request> beginCastHand(Game &game, ServicesView &services, int spellRow, const Object &caster) {
+    auto desc = services.game.visualEffects.get(VisualEffectDesc::castHandId(spellRow));
+    if (!desc || !*desc) {
+        return nullptr;
+    }
+    auto request = std::make_shared<VisualEffectPresenter::Request>();
+    request->desc = *desc;
+    request->targetId = caster.id();
+    request->location = caster.position();
+    request->facing = caster.getFacing();
+    if (auto *coop = game.coop()) {
+        coop->onVisualEffectBegin(request);
+    }
+    game.visualEffectPresenter().begin(request);
+    return request;
+}
+
+void endCastHand(std::shared_ptr<VisualEffectPresenter::Request> &request) {
+    if (request) {
+        request->ended = true;
+        request.reset();
+    }
+}
+
 void presentOn(Game &game, ServicesView &services, int row, const Object &target) {
     present(game, services, row, target.id(), target.position(), target.getFacing());
 }

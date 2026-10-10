@@ -375,6 +375,12 @@ std::shared_ptr<Creature> CoopSession::hostSpawnGuest(HostClient &client, const 
                 continue;
             }
             item->setStackSize(entry.stack);
+            if (entry.upgrades != 0) {
+                item->setUpgrades(entry.upgrades);
+            }
+            if (entry.modelVariation >= 0) {
+                item->setModelVariation(entry.modelVariation);
+            }
             if (entry.slot != kGuestInventory) {
                 if (!creature->equip(entry.slot, item)) {
                     creature->addItem(item);
@@ -428,13 +434,15 @@ void CoopSession::hostSyncGuest(HostClient &client, bool sendIt) {
         for (const auto &[slot, item] : creature->equipment()) {
             auto resref = item ? itemResRef(*item) : std::string();
             if (!resref.empty() && slot >= 0 && slot <= 30 && guest.items.size() < kMaxGuestItems) {
-                guest.items.push_back({resref, static_cast<uint16_t>(std::clamp(item->stackSize(), 1, 65535)), static_cast<uint8_t>(slot)});
+                guest.items.push_back({resref, static_cast<uint16_t>(std::clamp(item->stackSize(), 1, 65535)), static_cast<uint8_t>(slot),
+                                       item->upgrades(), static_cast<int16_t>(std::clamp(item->modelVariation(), -1, 1000))});
             }
         }
         for (const auto &item : creature->items()) {
             auto resref = item ? itemResRef(*item) : std::string();
             if (!resref.empty() && guest.items.size() < kMaxGuestItems) {
-                guest.items.push_back({resref, static_cast<uint16_t>(std::clamp(item->stackSize(), 1, 65535)), kGuestInventory});
+                guest.items.push_back({resref, static_cast<uint16_t>(std::clamp(item->stackSize(), 1, 65535)), kGuestInventory,
+                                       item->upgrades(), static_cast<int16_t>(std::clamp(item->modelVariation(), -1, 1000))});
             }
         }
     }
@@ -458,6 +466,10 @@ void CoopSession::hostDespawnGuest(HostClient &client) {
     if (client.storeOpen) {
         hostSendStore(client, false);
         client.storeOpen = 0;
+    }
+    if (client.benchOpen) {
+        hostSendBench(client, false);
+        client.benchOpen = 0;
     }
     if (client.viewing) {
         hostSendContainer(client, false);

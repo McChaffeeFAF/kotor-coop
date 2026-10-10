@@ -425,6 +425,7 @@ void SceneGraph::refresh() {
     _opaqueMeshes.clear();
     _transparentMeshes.clear();
     _glowMeshes.clear();
+    _overlayMeshes.clear();
     _shadowMeshes.clear();
     _lights.clear();
     _emitters.clear();
@@ -465,6 +466,9 @@ void SceneGraph::refreshFromNode(SceneNode &node) {
                 }
             } else {
                 _opaqueMeshes.push_back(&modelNode);
+            }
+            if (modelNode.hasOverlays()) {
+                _overlayMeshes.push_back(&modelNode);
             }
         }
         if (modelNode.shouldCastShadows()) {
@@ -824,6 +828,10 @@ void SceneGraph::renderTransparent(IRenderPass &pass) {
     // Draw transparent leafs (incl. meshes)
     for (auto &[node, leafs] : _transparentLeafs) {
         node->renderLeafs(pass, leafs);
+    }
+    // Programmed body overlays: additive passes over the meshes beneath.
+    for (auto &mesh : _overlayMeshes) {
+        mesh->renderOverlays(pass);
     }
 }
 

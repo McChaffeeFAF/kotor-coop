@@ -52,6 +52,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/fixtures/engine.cpp
     ${TESTS_SOURCE_DIR}/support/nsscomp.cpp
     ${TESTS_SOURCE_DIR}/script/nsscomp.cpp
+    ${TESTS_SOURCE_DIR}/texgen/compress.cpp
     ${TESTS_SOURCE_DIR}/texgen/texgen.cpp
     ${TESTS_SOURCE_DIR}/game/action.cpp
     ${TESTS_SOURCE_DIR}/game/charactermenu.cpp
@@ -160,6 +161,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/graphics/aabb.cpp
     ${TESTS_SOURCE_DIR}/graphics/context.cpp
     ${TESTS_SOURCE_DIR}/graphics/format/bwmreader.cpp
+    ${TESTS_SOURCE_DIR}/graphics/format/ddsreader.cpp
     ${TESTS_SOURCE_DIR}/graphics/format/malformed.cpp
     ${TESTS_SOURCE_DIR}/graphics/format/mdlemitter.cpp
     ${TESTS_SOURCE_DIR}/graphics/format/mdlmdxreader.cpp

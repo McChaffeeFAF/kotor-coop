@@ -60,7 +60,8 @@ public:
         Root,
         Impact,
         HeadConjure,
-        BeamSource /**< a beam model, on its effector's body node */
+        BeamSource, /**< a beam model, on its effector's body node */
+        Hand        /**< a cast-hand visual, on the target's right hand */
     };
 
     struct Context {
@@ -99,6 +100,19 @@ public:
     /** World point a beam ends at: the target's impact node. */
     static glm::vec3 beamTargetPoint(scene::ModelSceneNode &target);
 
+    /**
+     * How strongly a programmed body overlay shows (0-1). A lasting one
+     * (a duration effect still applied when first drawn) fades in and holds
+     * until sinceEnd >= 0, then fades out; any other shows for a fixed time.
+     */
+    static float overlayStrength(bool lasting, float age, float sinceEnd);
+
+    /** Whether a body overlay has faded out for good. */
+    static bool overlayDone(bool lasting, float age, float sinceEnd);
+
+    /** Models the presenter has given body overlays to, by object id. */
+    const std::set<uint32_t> &overlayTargets() const { return _overlayTargets; }
+
 private:
     enum class Phase {
         Impact,    /**< playing impact once */
@@ -124,6 +138,9 @@ private:
         bool sourceLost {false};
         bool endHandled {false};
         bool targetLost {false};
+        bool lasting {false}; /**< a duration effect not ended when first drawn */
+        float age {0.0f};
+        float sinceEnd {-1.0f}; /**< seconds since a lasting effect ended, -1: not yet */
     };
 
     struct Shake {
@@ -138,6 +155,7 @@ private:
     std::vector<Shake> _shakes;
     glm::vec3 _shakeOffset {0.0f};
     scene::ISceneGraph *_graph {nullptr};
+    std::set<uint32_t> _overlayTargets;
 
     void start(const std::shared_ptr<Request> &request, const Context &ctx);
     void place(Presented &presented, const Context &ctx);
@@ -146,6 +164,8 @@ private:
     void finish(Presented &presented, const Context &ctx);
     void removePart(Part &part);
     void updateShake(float dt, const Context &ctx);
+    void updateOverlays(const Context &ctx);
+    bool overlayLive(const Presented &presented) const;
 };
 
 } // namespace game

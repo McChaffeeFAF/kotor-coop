@@ -21,6 +21,52 @@
 namespace reone {
 namespace game {
 
+CastAnimations castActionAnimations(const std::string &conjAnim, const std::string &castAnim,
+                                    bool fromItem, bool grenade, bool itemTargeting) {
+    if (grenade) {
+        return CastAnimations {"throwgren", ""};
+    }
+    if (!fromItem) {
+        if (auto anims = forceCastAnimations(conjAnim, castAnim)) {
+            return *anims;
+        }
+    }
+    return CastAnimations {itemTargeting ? "activate" : "inject", ""};
+}
+
+// The pose number of a spells.2da conjanim/castanim word, 0: none.
+static int castPose(const std::string &anim) {
+    std::string word(boost::to_lower_copy(anim));
+    if (word == "dark") {
+        return 1;
+    }
+    if (word == "self" || word == "hand") {
+        return 2;
+    }
+    if (word == "up") {
+        return 3;
+    }
+    return 0;
+}
+
+std::optional<CastAnimations> forceCastAnimations(const std::string &conjAnim, const std::string &castAnim) {
+    std::string cast(boost::to_lower_copy(castAnim));
+    if (cast == "throw") {
+        return CastAnimations {"throwsab", "throwsablp"};
+    }
+    int castNumber = castPose(cast);
+    if (castNumber == 0) {
+        return std::nullopt;
+    }
+    // A "hand" conjure has no clip of its own in K1: the caster raises
+    // straight into the cast pose. A dark or up conjure raises into its own.
+    int conjNumber = castPose(conjAnim);
+    if (conjNumber == 0 || boost::iequals(conjAnim, "hand")) {
+        conjNumber = castNumber;
+    }
+    return CastAnimations {"castout" + std::to_string(conjNumber), "castoutlp" + std::to_string(castNumber)};
+}
+
 SpellSchedule::State SpellSchedule::update(
     const CombatRound &round, Action &action, float dt) {
 

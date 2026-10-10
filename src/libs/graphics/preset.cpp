@@ -133,7 +133,7 @@ const std::vector<GraphicsFeatureToggle> &graphicsFeatureToggles() {
         {"chromaticaberration", "CB_CHROMATIC", "Chromatic Aberration",
          "lens effects: a slight red/blue split toward the screen edges", &GraphicsOptions::chromaticAberration, false},
         {"normalmaps", "CB_NORMALMAPS", "Surface Detail",
-         "surface detail: generated normal and material maps from the enhanced_textures folder (texgen); no effect while the folder is empty",
+         "surface detail: generated normal and material maps (DDS or TGA) from the enhanced_textures folder (texgen); no effect while the folder is empty",
          &GraphicsOptions::normalMaps, true},
     };
     return toggles;

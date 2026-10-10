@@ -306,7 +306,12 @@ net::CommandReject validateCoopCommand(
             // OnUsed script decides whether it is a story use.
             if (placeable->isUsable() && !placeable->getOnUsed().empty()) {
                 // A workbench or lab opens a screen on whoever runs its
-                // script: the host's, so a client cannot use one yet.
+                // script: the host's. A guest gets its own bench view instead
+                // (the script is not run for it).
+                if (coopScriptBench(game, placeable->getOnUsed()) != CoopBench::None) {
+                    targets.use = CoopUse::Bench;
+                    return CommandReject::None;
+                }
                 if (coopScriptOpensScreen(game, placeable->getOnUsed())) {
                     return CommandReject::NotSupported;
                 }
@@ -722,6 +727,39 @@ bool coopScriptOpensScreen(Game &game, const std::string &script) {
     }
     cache[key] = opens;
     return opens;
+}
+
+CoopBench coopScriptBench(Game &game, const std::string &script) {
+    static std::map<std::string, CoopBench> cache;
+    auto key = boost::to_lower_copy(script);
+    auto cached = cache.find(key);
+    if (cached != cache.end()) {
+        return cached->second;
+    }
+    CoopBench bench = CoopBench::None;
+    try {
+        if (auto program = game.services().resource.scripts.get(key)) {
+            auto &routines = game.routines();
+            for (const auto &instruction : program->instructions()) {
+                if (instruction.type == script::InstructionType::ACTION && instruction.routine >= 0 &&
+                    instruction.routine < routines.getNumRoutines()) {
+                    const auto &name = routines.get(instruction.routine).name();
+                    if (name == "ShowUpgradeScreen") {
+                        bench = CoopBench::Workbench;
+                        break;
+                    }
+                    if (name == "ShowChemicalUpgradeScreen") {
+                        bench = CoopBench::Lab;
+                        break;
+                    }
+                }
+            }
+        }
+    } catch (const std::exception &) {
+        bench = CoopBench::None;
+    }
+    cache[key] = bench;
+    return bench;
 }
 
 bool coopScriptChangesStory(Game &game, const std::string &script) {

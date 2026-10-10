@@ -44,6 +44,17 @@ class Uniforms;
 
 namespace scene {
 
+/**
+ * A programmed body effect (visualeffects.2da progfx 14xx): a second,
+ * slightly inflated, additive pass over every mesh of a model and the models
+ * attached to it. See design note v14_programmed_effects.
+ */
+struct BodyOverlay {
+    graphics::Texture *texture {nullptr}; /**< drawn on the mesh UVs, with its own TXI (cycle, blending, decal) */
+    float strength {0.0f};                /**< 0-1: fade in and out */
+    float time {0.0f};                    /**< seconds since it started: the cycle frame */
+};
+
 class ModelSceneNode : public SceneNode {
 public:
     enum class AnimationBlendMode {
@@ -229,7 +240,25 @@ public:
 
     // END Object lighting
 
+    // Programmed body effects
+
+    /**
+     * Overlays drawn over this model's meshes and its attachments', and the
+     * opacity they leave the model at (a cloak). Presentation only.
+     */
+    void setBodyOverlays(std::vector<BodyOverlay> overlays, float opacity) {
+        _bodyOverlays = std::move(overlays);
+        _bodyOpacity = opacity;
+    }
+    const std::vector<BodyOverlay> &bodyOverlays() const { return _bodyOverlays; }
+    float bodyOpacity() const { return _bodyOpacity; }
+
+    // END Programmed body effects
+
 private:
+    std::vector<BodyOverlay> _bodyOverlays;
+    float _bodyOpacity {1.0f};
+
     graphics::Model *_model;
     ModelUsage _usage;
 

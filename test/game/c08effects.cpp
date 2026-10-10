@@ -469,6 +469,34 @@ TEST_F(C08Test, held_state_effects_hold_the_pose_and_release_it) {
     }
 }
 
+TEST_F(C08Test, a_held_conversation_participant_keeps_the_conversation_s_time) {
+    // k_ptar_calofade: Calo is horrified for good, then waits and resumes
+    // the conversation. The wait runs; a bodily action after it does not.
+    auto footlocker = _game->newPlaceable();
+    auto calo = creature();
+    calo->setIsInConversation(true);
+    calo->addAction(_game->newAction<WaitAction>(0.1f));
+    calo->addAction(_game->newAction<LockObjectAction>(footlocker));
+    calo->applyEffect(std::make_shared<HorrifiedEffect>(), DurationType::Permanent);
+    run(*calo, 0.5f);
+    ASSERT_EQ(1u, calo->actions().size());
+    EXPECT_EQ(ActionType::Lock, calo->actions().front()->type());
+    EXPECT_FALSE(footlocker->isLocked());
+}
+
+TEST_F(C08Test, a_delayed_command_fires_on_time_while_its_owner_is_held) {
+    // k_ptar_calocut: DelayCommand(0.5, death) on a horrified Calo.
+    auto footlocker = _game->newPlaceable();
+    auto calo = creature();
+    calo->applyEffect(std::make_shared<HorrifiedEffect>(), DurationType::Permanent);
+    calo->delayAction(_game->newAction<LockObjectAction>(footlocker), 0.2f);
+    run(*calo, 0.1f);
+    EXPECT_FALSE(footlocker->isLocked());
+    run(*calo, 0.2f);
+    EXPECT_TRUE(footlocker->isLocked());
+    EXPECT_TRUE(calo->actions().empty());
+}
+
 TEST_F(C08Test, held_states_expire_with_their_duration) {
     auto target = creature();
     target->applyEffect(std::make_shared<WhirlWindEffect>(), DurationType::Temporary, 1.0f);

@@ -50,6 +50,7 @@ public:
     uint32_t exclusion {0}; // spells.2da exclusion bits (0x01 droid-only, 0x02 organic-only)
     std::string impactScript;
     std::string castAnim;
+    std::string conjAnim; // spells.2da conjanim (hand, dark, up, throw)
     std::shared_ptr<audio::AudioClip> castSound;
     float conjTime {0.0f};
     float castTime {0.0f};

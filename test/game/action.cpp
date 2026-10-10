@@ -30,6 +30,9 @@
 #include "reone/game/action/startconversation.h"
 #include "reone/game/action/usetalentonobject.h"
 #include "reone/game/action/usefeat.h"
+#include "reone/game/castspell.h"
+#include "reone/game/d20/spell.h"
+#include "reone/game/fakecast.h"
 #include "reone/game/game.h"
 #include "reone/game/attack.h"
 #include "reone/game/object/creature.h"
@@ -1066,4 +1069,83 @@ TEST(Action, get_is_pc_counts_the_companion_the_player_leads) {
         EXPECT_EQ(t3Leads ? 1 : 0, isPC(t3));
         EXPECT_EQ(0, isPC(carth));
     }
+}
+
+// Force-cast animations (design note v14_programmed_effects, section 9).
+
+TEST(CastAnimation, spells_2da_poses_pick_the_k1_cast_clips) {
+    auto self = forceCastAnimations("hand", "self"); // Force Push, heal, most powers
+    ASSERT_TRUE(self);
+    EXPECT_EQ("castout2", self->conjure);
+    EXPECT_EQ("castoutlp2", self->cast);
+    auto choke = forceCastAnimations("dark", "dark");
+    ASSERT_TRUE(choke);
+    EXPECT_EQ("castout1", choke->conjure);
+    EXPECT_EQ("castoutlp1", choke->cast);
+    auto lightning = forceCastAnimations("hand", "dark"); // fear, horror: a hand conjure raises into the dark pose
+    ASSERT_TRUE(lightning);
+    EXPECT_EQ("castout1", lightning->conjure);
+    EXPECT_EQ("castoutlp1", lightning->cast);
+    auto storm = forceCastAnimations("hand", "up");
+    ASSERT_TRUE(storm);
+    EXPECT_EQ("castout3", storm->conjure);
+    EXPECT_EQ("castoutlp3", storm->cast);
+    auto deathField = forceCastAnimations("up", "up");
+    ASSERT_TRUE(deathField);
+    EXPECT_EQ("castout3", deathField->conjure);
+    auto mixed = forceCastAnimations("dark", "self");
+    ASSERT_TRUE(mixed);
+    EXPECT_EQ("castout1", mixed->conjure) << "a dark conjure keeps its own raise";
+    EXPECT_EQ("castoutlp2", mixed->cast);
+    auto saber = forceCastAnimations("throw", "throw");
+    ASSERT_TRUE(saber);
+    EXPECT_EQ("throwsab", saber->conjure);
+    EXPECT_EQ("throwsablp", saber->cast);
+    EXPECT_TRUE(forceCastAnimations("HAND", "Self")) << "the table's case does not matter";
+    EXPECT_FALSE(forceCastAnimations("hand", "jump"));
+    EXPECT_FALSE(forceCastAnimations("", "monster"));
+    EXPECT_FALSE(forceCastAnimations("", ""));
+}
+
+TEST(CastAnimation, items_keep_their_use_and_throw_clips_and_powers_take_poses) {
+    auto medpac = castActionAnimations("hand", "self", /*fromItem=*/true, /*grenade=*/false, /*itemTargeting=*/false);
+    EXPECT_EQ("inject", medpac.conjure) << "an item is used, whatever its spell row says";
+    EXPECT_EQ("", medpac.cast);
+    auto targeted = castActionAnimations("", "", true, false, true);
+    EXPECT_EQ("activate", targeted.conjure);
+    auto grenade = castActionAnimations("throw", "throw", true, true, true);
+    EXPECT_EQ("throwgren", grenade.conjure);
+    EXPECT_EQ("", grenade.cast);
+    auto push = castActionAnimations("hand", "self", false, false, false);
+    EXPECT_EQ("castout2", push.conjure);
+    EXPECT_EQ("castoutlp2", push.cast);
+    auto monster = castActionAnimations("hand", "monster", false, false, false);
+    EXPECT_EQ("inject", monster.conjure) << "no pose named: the old clip";
+    EXPECT_EQ("", monster.cast);
+}
+
+TEST(CastAnimation, a_fake_cast_holds_the_caster_for_conjure_then_cast_time) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(resource::GameID::KotOR, "", engine.options(), engine.services(), console);
+    auto caster = game.newCreature();
+    Spell spell;
+    spell.type = SpellType::ForcePush;
+    spell.conjAnim = "hand";
+    spell.castAnim = "self";
+    spell.conjTime = 0.17f;
+    spell.castTime = 1.33f;
+    FakeCast cast;
+    float elapsed = 0.0f;
+    bool done = false;
+    while (!done && elapsed < 5.0f) {
+        done = cast.update(*caster, &spell, glm::vec3(1.0f, 0.0f, 0.0f), engine.services(), 0.05f);
+        elapsed += 0.05f;
+        if (!done) {
+            EXPECT_TRUE(caster->isMovementRestricted()) << "held while casting, at " << elapsed;
+        }
+    }
+    EXPECT_TRUE(done);
+    EXPECT_NEAR(1.55f, elapsed, 0.11f) << "conjtime + casttime";
+    EXPECT_FALSE(caster->isMovementRestricted());
 }

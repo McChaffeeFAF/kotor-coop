@@ -110,6 +110,9 @@ public:
 
     struct Layer {
         std::shared_ptr<ByteBuffer> pixels;
+
+        /** Pre-built levels 1..n of a block-compressed 2D texture (level 0 is `pixels`); empty to let the GPU generate them. */
+        std::vector<std::shared_ptr<ByteBuffer>> mipMaps;
     };
 
     Texture(std::string name,
@@ -157,6 +160,9 @@ public:
     void applyAnisotropy(float anisotropy);
 
     // Pixels
+
+    /** Whether the GPU takes BC7 (BPTC) data as it is; needs a current GL context. */
+    static bool supportsBC7();
 
     void clear(int w, int h, PixelFormat format, int numLayers = 1, bool refresh = false);
 

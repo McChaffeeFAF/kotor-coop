@@ -131,6 +131,13 @@ public:
         _services(services) {
     }
 
+    /**
+     * Work on one holder instead of the party: its inventory supplies the parts, takes the
+     * returned ones, and the equipped items of `wearers` can be edited too. Co-op guests'
+     * benches (a guest's own bag in Free Mode, the shared inventory in Story Mode).
+     */
+    void useHolder(std::shared_ptr<Object> inventory, std::vector<uint32_t> wearers);
+
     /** Start editing an item (loads upgrade.2da). */
     bool begin(const std::shared_ptr<Item> &item);
     void cancel();
@@ -169,6 +176,9 @@ private:
     UpgradeTable _table;
     ColorCrystalTable _crystals;
     RuntimeObjectRef<Item> _item;
+    std::shared_ptr<Object> _holder;
+    std::vector<uint32_t> _wearers;
+    bool _hasHolder {false};
     uint32_t _staged {0};
     int _stagedModelVariation {-1};
     // Upgrade items staged for consumption, keyed by upgrade row (or -2 for

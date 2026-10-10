@@ -134,7 +134,7 @@ std::unique_ptr<Options> OptionsParser::parse() {
         ("tonemap-op", value<std::string>()->default_value("aces"), "tone-mapping curve with --tonemap: aces or agx") //
         ("sharpen-amount", value<float>()->default_value(options->graphics.sharpenAmount), "image sharpening amount") //
         ("normalmap-strength", value<float>()->default_value(options->graphics.normalMapStrength), "surface detail strength, 0 to 1") //
-        ("normalmap-folder", value<std::string>()->default_value(""), "surface detail: folder of generated <texture>_n.tga / _m.tga maps; default enhanced_textures beside the executable") //
+        ("normalmap-folder", value<std::string>()->default_value(""), "surface detail: folder of generated <texture>_n / _m maps (.dds, or .tga; a .dds wins); default enhanced_textures beside the executable") //
         ("normalmap-test", value<bool>()->default_value(false), "surface detail: procedural test patterns instead of the folder (development)") //
         ("texquality", value<int>()->default_value(static_cast<int>(options->graphics.textureQuality)), "texture quality")      //
         ("shadowres", value<int>()->default_value(glm::log2(options->graphics.shadowResolution) - 10), "shadow map resolution, 1 << (10 + n): 1 is 2048 (default), 2 is 4096") //

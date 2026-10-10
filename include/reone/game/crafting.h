@@ -36,6 +36,7 @@ namespace game {
 class Creature;
 class Game;
 class Item;
+class Object;
 struct ServicesView;
 
 /**
@@ -109,6 +110,13 @@ public:
         _services(services) {
     }
 
+    /**
+     * Work for one holder instead of the party (co-op guests): its inventory is broken down
+     * from and made into, and the material counts are the given variables (the guest's own in
+     * Free Mode) rather than the party's. Both counts must outlive the bench.
+     */
+    void useHolder(std::shared_ptr<Object> inventory, int *components, int *chemicals);
+
     int components() const;
     int chemicals() const;
 
@@ -125,6 +133,13 @@ public:
 private:
     Game &_game;
     ServicesView &_services;
+    std::shared_ptr<Object> _holder;
+    int *_components {nullptr};
+    int *_chemicals {nullptr};
+    bool _hasHolder {false};
+
+    /// The inventory items are taken from and made into.
+    std::shared_ptr<Object> inventoryHolder() const;
 
     /// The template of a recipe: K1's when K1 has one of that name, else
     /// K2's (the "k2:" prefix).

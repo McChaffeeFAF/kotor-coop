@@ -163,6 +163,7 @@ endif()
 
 # Libraries
 
+add_subdirectory(extern/bcenc) # BC1/BC5/BC7 encoders and decoder (vendored bc7enc_rdo)
 add_subdirectory(src/libs/system) # system static library
 add_subdirectory(src/libs/resource) # resource static library
 add_subdirectory(src/libs/graphics) # graphics static library

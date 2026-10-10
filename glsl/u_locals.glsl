@@ -16,6 +16,7 @@ const int FEATURE_STATIC = 1 << 14;
 const int FEATURE_OBJECTLIGHTS = 1 << 15;
 const int FEATURE_SURFACEDETAIL = 1 << 16;
 const int FEATURE_MATERIALMAP = 1 << 17;
+const int FEATURE_SHELL = 1 << 18;
 
 const int MAX_OBJECT_LIGHTS = 3;
 

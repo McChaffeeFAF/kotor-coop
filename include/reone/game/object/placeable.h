@@ -64,6 +64,7 @@ public:
     bool hasInventory() const { return _hasInventory; }
     bool isSelectable() const override { return _usable; }
     bool isUsable() const { return _usable; }
+    void setUsable(bool usable) { _usable = usable; }
     /** PartyInteract: a companion leading the party may talk to it itself. */
     bool isPartyInteract() const { return _partyInteract; }
     const std::string &getOnSpellCastAt() const { return _onSpellCastAt; }

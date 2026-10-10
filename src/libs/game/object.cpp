@@ -208,7 +208,7 @@ void Object::update(float dt) {
     }
     updateActions(dt);
     updateEffects(dt);
-    if (!_dead && canExecuteActions()) {
+    if (!_dead && (canExecuteActions() || currentActionKeepsConversationTime())) {
         executeActions(dt);
     }
     if (_sceneNode && _sceneNode->type() == SceneNodeType::Model) {
@@ -745,19 +745,52 @@ void Object::removeCompletedActions() {
 }
 
 void Object::updateDelayedActions(float dt) {
-    // Iterate in reverse order, so addActionOnTop keeps the original order.
-    for (auto delayed = _delayed.rbegin(), end = _delayed.rend(); delayed != end; ++delayed) {
-        delayed->timer->update(dt);
-        if (delayed->timer->elapsed()) {
-            addActionOnTop(std::move(delayed->action));
+    std::vector<std::shared_ptr<Action>> due;
+    for (auto &delayed : _delayed) {
+        delayed.timer->update(dt);
+        if (delayed.timer->elapsed()) {
+            due.push_back(std::move(delayed.action));
         }
     }
     auto delayedToRemove = std::remove_if(
         _delayed.begin(),
         _delayed.end(),
         [](const DelayedAction &delayed) { return delayed.timer->elapsed(); });
-
     _delayed.erase(delayedToRemove, _delayed.end());
+
+    if (!canExecuteActions()) {
+        // A DelayCommand is a timed event, not an action: it fires on time
+        // while its owner is held. k_ptar_calocut's delayed EffectDeath on
+        // a horrified Calo waited forever on the queue, and the Ebon Hawk's
+        // ramp (k_ptar_ramp) stayed shut while Calo lived.
+        for (auto &action : due) {
+            if (action->runtimeDependenciesLive()) {
+                action->execute(action, *this, 0.0f);
+            }
+        }
+        return;
+    }
+    // In reverse order, so addActionOnTop keeps the original order.
+    for (auto action = due.rbegin(), end = due.rend(); action != end; ++action) {
+        addActionOnTop(std::move(*action));
+    }
+}
+
+bool Object::currentActionKeepsConversationTime() const {
+    // A held conversation participant still keeps the conversation's time:
+    // k_ptar_calofade horrifies Calo for good, then queues pause, wait and
+    // resume on him. Bodily actions stay suspended.
+    if (!_isInConversation || _actions.empty()) {
+        return false;
+    }
+    switch (_actions.front()->type()) {
+    case ActionType::Wait:
+    case ActionType::PauseConversation:
+    case ActionType::ResumeConversation:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void Object::executeActions(float dt) {

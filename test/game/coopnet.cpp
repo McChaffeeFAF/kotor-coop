@@ -17,6 +17,7 @@
 #include "reone/game/d20/classes.h"
 #include "reone/game/action.h"
 #include "reone/game/coopcommand.h"
+#include "reone/script/program.h"
 #include "reone/game/coopflow.h"
 #include "reone/game/coopidmap.h"
 #include "reone/game/cooploot.h"
@@ -31,6 +32,7 @@
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/door.h"
+#include "reone/game/visualeffects.h"
 #include "reone/game/object/item.h"
 #include "reone/game/object/module.h"
 #include "reone/game/object/placeable.h"
@@ -1143,6 +1145,33 @@ TEST_F(CoopSessionTest, events_go_reliably_beside_the_snapshot_of_their_tick) {
     ASSERT_EQ(1u, batches[0].events.size());
     EXPECT_EQ(net::EventKind::Projectile, batches[0].events[0].kind);
     EXPECT_EQ(2, batches[0].events[0].flags);
+}
+
+TEST_F(CoopSessionTest, a_beam_event_names_its_source_so_guests_can_draw_it) {
+    // Design note v14_programmed_effects, section 6.
+    _client.send(hello());
+    exchange();
+    tick();
+    VisualEffectDesc desc;
+    desc.id = 2038;
+    auto request = std::make_shared<VisualEffectPresenter::Request>();
+    request->desc = &desc;
+    request->targetId = _sith->id();
+    request->sourceId = _player->id();
+    request->sourceBodyNode = static_cast<int>(BodyNode::HandRight);
+    _session->onVisualEffectBegin(request);
+    _client.inbox.clear();
+    tick();
+    auto batches = _client.take<net::EventBatch>(net::MessageType::Events);
+    ASSERT_EQ(1u, batches.size());
+    ASSERT_EQ(1u, batches[0].events.size());
+    const auto &event = batches[0].events[0];
+    EXPECT_EQ(net::EventKind::VfxBegin, event.kind);
+    EXPECT_EQ(2038u, event.row);
+    EXPECT_NE(0u, event.a);
+    EXPECT_NE(0u, event.b) << "the beam's source travels";
+    EXPECT_NE(event.a, event.b);
+    EXPECT_EQ(static_cast<int>(BodyNode::HandRight), event.flags);
 }
 
 TEST_F(CoopSessionTest, a_host_that_asks_holds_a_new_player_until_accepted) {
@@ -2314,7 +2343,7 @@ TEST_F(CoopHostileTest, a_mismatched_protocol_or_build_ends_the_join_and_later_t
 TEST_F(CoopHostileTest, every_command_type_from_a_player_with_no_companion_changes_nothing) {
     traskJoins();
     join(1, "Guest");
-    for (int type = static_cast<int>(net::CommandType::MoveTo); type <= static_cast<int>(net::CommandType::DisarmTrap); ++type) {
+    for (int type = static_cast<int>(net::CommandType::MoveTo); type <= static_cast<int>(net::CommandType::BenchClose); ++type) {
         net::Command command;
         command.seq = static_cast<uint32_t>(type);
         command.type = static_cast<net::CommandType>(type);
@@ -3250,4 +3279,216 @@ TEST_F(CoopHostileTest, a_restarted_client_with_its_saved_token_reclaims_its_slo
 
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
+}
+
+// Workbenches and lab stations for guests
+
+namespace {
+
+// A compiled script that only calls one routine, as a placeable's OnUsed that opens a screen.
+std::shared_ptr<script::ScriptProgram> scriptCalling(Game &game, const std::string &name, const std::string &routine) {
+    auto program = std::make_shared<script::ScriptProgram>(name);
+    int index = game.routines().getIndexByName(routine);
+    EXPECT_GE(index, 0) << routine;
+    program->add(script::Instruction::newACTION(index, 0));
+    return program;
+}
+
+} // namespace
+
+TEST_F(CoopNetTest, workbench_and_lab_placeables_are_bench_uses_where_other_screens_stay_refused) {
+    traskJoins();
+    auto makeUsable = [&](const std::string &tag, const std::string &onUsed, float x) {
+        auto placeable = _game->newPlaceable();
+        placeable->setTag(tag);
+        placeable->setPosition(glm::vec3(x, 3.0f, 0.0f));
+        placeable->setUsable(true);
+        placeable->setOnUsed(onUsed);
+        _area->add(placeable);
+        return placeable;
+    };
+    auto program = [&](const std::string &script, const std::string &routine) {
+        EXPECT_CALL(_engine.resourceModule().scripts(), get(script)).WillRepeatedly(Return(scriptCalling(*_game, script, routine)));
+    };
+    program("bench_wb", "ShowUpgradeScreen");
+    program("bench_store", "OpenStore");
+    auto workbench = makeUsable("wb", "bench_wb", 1.0f);
+    auto store = makeUsable("store_console", "bench_store", 3.0f);
+
+    EXPECT_EQ(CoopBench::Workbench, coopScriptBench(*_game, "bench_wb"));
+    EXPECT_EQ(CoopBench::None, coopScriptBench(*_game, "bench_store"));
+    EXPECT_EQ(CoopBench::None, coopScriptBench(*_game, "bench_not_a_script"));
+
+    net::Command use;
+    use.type = net::CommandType::UseObject;
+    use.actor = _trask->id();
+    CoopCommandTargets targets;
+    use.target = workbench->id();
+    EXPECT_EQ(net::CommandReject::None, validateCoopCommand(*_game, use, _trask->id(), targets));
+    EXPECT_EQ(CoopUse::Bench, targets.use);
+    use.target = store->id();
+    EXPECT_EQ(net::CommandReject::NotSupported, validateCoopCommand(*_game, use, _trask->id(), targets)) << "other screens are still the host's";
+    executeCoopCommand(*_game, use, targets);
+    use.target = workbench->id();
+    ASSERT_EQ(net::CommandReject::None, validateCoopCommand(*_game, use, _trask->id(), targets));
+    executeCoopCommand(*_game, use, targets);
+    EXPECT_TRUE(_trask->actions().empty()) << "the session carries a bench use out, not executeCoopCommand";
+}
+
+namespace {
+
+// One command from the guest's end; the host answers it on its next tick.
+net::CommandReject guestCommand(CoopSession &session, RawClient &client, uint32_t actor, net::CommandType type, uint32_t target,
+                                int32_t param, const std::string &item, const std::function<void()> &tick) {
+    static uint32_t seq = 1000;
+    net::Command command;
+    command.seq = ++seq;
+    command.type = type;
+    command.actor = actor;
+    command.target = target;
+    command.param = param;
+    command.item = item;
+    client.send(command);
+    session.pollNetwork();
+    client.inbox.clear();
+    tick();
+    auto results = client.take<net::CommandResult>(net::MessageType::CommandResult);
+    return results.empty() ? net::CommandReject::NotSupported : results.back().reason;
+}
+
+} // namespace
+
+TEST_F(CoopFreeSessionTest, a_guest_opens_a_workbench_through_its_own_view_and_every_bench_command_is_checked) {
+    auto placeable = _game->newPlaceable();
+    placeable->setTag("workbench");
+    placeable->setUsable(true);
+    placeable->setOnUsed("bench_wb");
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("bench_wb"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "bench_wb", "ShowUpgradeScreen")));
+    join(sampleGuest());
+    tick();
+    uint32_t id = guestId();
+    ASSERT_NE(0u, id);
+    auto guest = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(guest);
+    placeable->setPosition(guest->position());
+    _area->add(placeable);
+    auto run = [&](net::CommandType type, uint32_t target, int32_t param, const std::string &item) {
+        // A few ticks per command keep the guest under the host's rate limit.
+        return guestCommand(*_session, _client, id, type, target, param, item, [this]() {
+            tick();
+            tick();
+            tick();
+        });
+    };
+
+    // Nothing is open yet: every bench command is refused.
+    for (auto type : {net::CommandType::BenchUpgrade, net::CommandType::BenchRemove, net::CommandType::BenchCraft,
+                      net::CommandType::BenchBreak, net::CommandType::BenchClose}) {
+        EXPECT_EQ(net::CommandReject::BenchClosed, run(type, placeable->id(), 1, "1")) << net::commandTypeName(type);
+    }
+
+    // Using the workbench is accepted, and the guest's own view comes back.
+    _client.inbox.clear();
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, placeable->id(), 0, ""));
+    std::vector<net::BenchView> views;
+    for (int i = 0; i < 5 && views.empty(); ++i) {
+        guest->update(0.1f); // the walk to the bench and the use are the guest's queued action
+        tick();
+        views = _client.take<net::BenchView>(net::MessageType::BenchView);
+    }
+    ASSERT_FALSE(views.empty()) << "the host sends the bench view once the guest is there";
+    EXPECT_EQ(placeable->id(), views.back().bench);
+    EXPECT_EQ(net::BenchKind::Workbench, views.back().kind);
+    EXPECT_TRUE(views.back().open);
+
+    // The wrong bench id, junk numbers and things the guest does not have.
+    EXPECT_EQ(net::CommandReject::BenchClosed, run(net::CommandType::BenchBreak, placeable->id() + 1, 1, ""));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, placeable->id(), 424242, "515151"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, placeable->id(), 5, "12abc"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, placeable->id(), 0, "5"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, placeable->id(), -3, "5"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, placeable->id(), 5, ""));
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, run(net::CommandType::BenchRemove, placeable->id(), 5, "x"));
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, run(net::CommandType::BenchRemove, placeable->id(), 5, "9"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchRemove, placeable->id(), 424242, "0"));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchCraft, placeable->id(), 0, "no_such_recipe"));
+    EXPECT_EQ(net::CommandReject::BenchClosed, run(net::CommandType::BenchCraft, placeable->id(), 7, "no_such_recipe"));
+    EXPECT_EQ(net::CommandReject::NotBreakable, run(net::CommandType::BenchBreak, placeable->id(), 424242, ""));
+    EXPECT_EQ(net::CommandReject::NotBreakable, run(net::CommandType::BenchBreak, placeable->id(), 0, ""));
+
+    // Closing it closes the view; commands after that are refused again.
+    _client.inbox.clear();
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::BenchClose, placeable->id(), 0, ""));
+    auto closed = _client.take<net::BenchView>(net::MessageType::BenchView);
+    ASSERT_FALSE(closed.empty());
+    EXPECT_FALSE(closed.back().open);
+    EXPECT_EQ(net::CommandReject::BenchClosed, run(net::CommandType::BenchBreak, placeable->id(), 1, ""));
+}
+
+TEST_F(CoopFreeSessionTest, a_guests_upgrades_and_crafting_material_survive_in_its_character) {
+    auto guest = sampleGuest();
+    guest.items[1].upgrades = 0x14;
+    guest.items[1].modelVariation = 3;
+    guest.components = 12;
+    guest.chemicals = 34;
+    net::GuestCharacter back;
+    ASSERT_TRUE(net::decode(net::encode(guest), back));
+    EXPECT_EQ(0x14u, back.items[1].upgrades);
+    EXPECT_EQ(3, back.items[1].modelVariation);
+    EXPECT_EQ(12, back.components);
+    EXPECT_EQ(34, back.chemicals);
+    join(guest);
+    tick();
+    auto creature = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(creature);
+    _client.inbox.clear();
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    auto saved = _client.take<net::GuestCharacter>(net::MessageType::GuestCharacter);
+    ASSERT_FALSE(saved.empty());
+    EXPECT_EQ(12, saved.back().components) << "the material goes back to the guest's machine";
+    EXPECT_EQ(34, saved.back().chemicals);
+}
+
+TEST_F(CoopStandInSessionTest, a_story_mode_guest_uses_a_workbench_with_the_partys_material) {
+    auto placeable = _game->newPlaceable();
+    placeable->setTag("workbench");
+    placeable->setUsable(true);
+    placeable->setOnUsed("bench_wb");
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("bench_wb"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "bench_wb", "ShowUpgradeScreen")));
+    _game->party().setCraftingMaterials(7, 9);
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    placeable->setPosition(standIn->position());
+    _area->add(placeable);
+    auto run = [&](net::CommandType type, uint32_t target, int32_t param, const std::string &item) {
+        return guestCommand(*_session, _client, id, type, target, param, item, [this]() {
+            tick();
+            tick();
+            tick();
+        });
+    };
+    EXPECT_EQ(net::CommandReject::BenchClosed, run(net::CommandType::BenchBreak, placeable->id(), 1, ""));
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, placeable->id(), 0, ""));
+    std::vector<net::BenchView> views;
+    for (int i = 0; i < 5 && views.empty(); ++i) {
+        standIn->update(0.1f);
+        tick();
+        views = _client.take<net::BenchView>(net::MessageType::BenchView);
+    }
+    ASSERT_FALSE(views.empty());
+    EXPECT_EQ(7, views.back().components) << "the party's material, not a guest's own";
+    EXPECT_EQ(9, views.back().chemicals);
+    EXPECT_EQ(net::CommandReject::NotBreakable, run(net::CommandType::BenchBreak, placeable->id(), 424242, ""));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchCraft, placeable->id(), 0, "no_such_recipe"));
+    EXPECT_EQ(7u, _game->party().persistedState().itemComponent) << "refusals spend nothing";
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::BenchClose, placeable->id(), 0, ""));
 }

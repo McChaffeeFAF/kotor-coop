@@ -17,6 +17,7 @@ set(TEXGEN_INCLUDE_DIR ${REONE_INCLUDE_DIR}/reone/texgen)
 set(TEXGEN_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/libs/texgen)
 
 set(TEXGEN_HEADERS
+    ${TEXGEN_INCLUDE_DIR}/compress.h
     ${TEXGEN_INCLUDE_DIR}/generate.h
     ${TEXGEN_INCLUDE_DIR}/image.h
     ${TEXGEN_INCLUDE_DIR}/job.h
@@ -25,6 +26,7 @@ set(TEXGEN_HEADERS
     ${TEXGEN_INCLUDE_DIR}/sources.h)
 
 set(TEXGEN_SOURCES
+    ${TEXGEN_SOURCE_DIR}/compress.cpp
     ${TEXGEN_SOURCE_DIR}/generate.cpp
     ${TEXGEN_SOURCE_DIR}/image.cpp
     ${TEXGEN_SOURCE_DIR}/job.cpp

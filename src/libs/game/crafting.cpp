@@ -120,15 +120,47 @@ std::vector<Recipe> loadRecipes(ITwoDAs &twoDas) {
 
 } // namespace crafting
 
+void CraftingBench::useHolder(std::shared_ptr<Object> inventory, int *components, int *chemicals) {
+    _holder = std::move(inventory);
+    _components = components;
+    _chemicals = chemicals;
+    _hasHolder = true;
+}
+
+std::shared_ptr<Object> CraftingBench::inventoryHolder() const {
+    if (_hasHolder) {
+        return _holder;
+    }
+    auto player = _game.party().player();
+    if (!player) {
+        return nullptr;
+    }
+    auto holder = _game.party().sharedInventoryReceiver(player);
+    return holder ? holder : std::static_pointer_cast<Object>(player);
+}
+
 int CraftingBench::components() const {
+    if (_hasHolder) {
+        return _components ? *_components : 0;
+    }
     return static_cast<int>(_game.party().persistedState().itemComponent);
 }
 
 int CraftingBench::chemicals() const {
+    if (_hasHolder) {
+        return _chemicals ? *_chemicals : 0;
+    }
     return static_cast<int>(_game.party().persistedState().itemChemical);
 }
 
 void CraftingBench::addMaterial(crafting::Material material, int amount) {
+    if (_hasHolder) {
+        int *count = material == crafting::Material::Chemicals ? _chemicals : _components;
+        if (count) {
+            *count = std::max(0, *count + amount);
+        }
+        return;
+    }
     auto &party = _game.party();
     uint32_t components = party.persistedState().itemComponent;
     uint32_t chemicals = party.persistedState().itemChemical;
@@ -142,13 +174,11 @@ void CraftingBench::addMaterial(crafting::Material material, int amount) {
 
 std::vector<std::shared_ptr<Item>> CraftingBench::breakdownCandidates() const {
     std::vector<std::shared_ptr<Item>> result;
-    auto player = _game.party().player();
-    if (!player) {
+    auto owner = inventoryHolder();
+    if (!owner) {
         return result;
     }
-    auto holder = _game.party().sharedInventoryReceiver(player);
-    const Object &owner = holder ? *holder : static_cast<const Object &>(*player);
-    for (const auto &item : owner.items()) {
+    for (const auto &item : owner->items()) {
         if (!item || item->isEquipped() || item->plotFlag() ||
             !crafting::isBreakableBaseItem(item->baseItemType())) {
             continue;
@@ -174,11 +204,12 @@ bool CraftingBench::breakDown(const std::shared_ptr<Item> &item, const Creature 
     }
     int yield = breakdownYieldFor(*item, crafter);
     auto material = crafting::materialOfBaseItem(item->baseItemType());
-    auto player = _game.party().player();
-    auto holder = _game.party().sharedInventoryReceiver(player);
-    Object &owner = holder ? *holder : static_cast<Object &>(*player);
+    auto owner = inventoryHolder();
+    if (!owner) {
+        return false;
+    }
     bool last = false;
-    if (!owner.removeItem(item, last)) {
+    if (!owner->removeItem(item, last)) {
         return false;
     }
     addMaterial(material, yield);
@@ -226,13 +257,11 @@ bool CraftingBench::create(const crafting::Recipe &recipe, const Creature &craft
     if (entry == entries.end() || !entry->skilled || !entry->affordable) {
         return false;
     }
-    auto player = _game.party().player();
-    if (!player) {
+    auto owner = inventoryHolder();
+    if (!owner) {
         return false;
     }
-    auto holder = _game.party().sharedInventoryReceiver(player);
-    Object &owner = holder ? *holder : static_cast<Object &>(*player);
-    auto item = owner.addItem(resolveTemplate(recipe.templateResRef), 1, true);
+    auto item = owner->addItem(resolveTemplate(recipe.templateResRef), 1, true);
     if (!item) {
         return false;
     }

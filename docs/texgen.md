@@ -15,7 +15,7 @@ The maps are derived from game assets. They are therefore:
 The tool itself is built with the engine (`-DBUILD_TEXGEN=ON`, the default) but the
 player packages contain the engine only. The Linux package script adds `bin/texgen` only
 on request (`--with-texgen`), and refuses to build a package that holds texgen output
-(`*_n.tga`, `*_m.tga`, `texgen_manifest.json`) whatever the flags are. Tests use
+(`*_n.tga`, `*_m.tga`, `*_n.dds`, `*_m.dds`, `texgen_manifest.json`) whatever the flags are. Tests use
 synthetic textures only; no game data is in the repository.
 
 ## Usage
@@ -59,11 +59,22 @@ Everything lands flat in `--out`:
 
 | file | what |
 |---|---|
-| `<name>_n.tga` | tangent-space normal map, 24-bit TGA |
-| `<name>_m.tga` | packed material map, 24-bit TGA |
+| `<name>_n.dds` | tangent-space normal map, BC5 (x and y; the shader rebuilds z), full mip chain |
+| `<name>_m.dds` | packed material map, BC7 (or BC1 with `--material-codec bc1`), full mip chain |
 | `texgen_manifest.json` | what was done, per texture |
 
-Both TGAs have the size of the source texture and use the engine's row order (bottom row first).
+`--format tga` writes `<name>_n.tga` and `<name>_m.tga` (24-bit, no mip maps) instead. Maps have
+the size of the source texture and use the engine's row order (the first row stored is v = 0,
+the bottom row of a TGA; this is the reverse of what DDS viewers assume, so a viewer shows the
+image upside down). Mip levels are 2x2 box averages; normal-map levels are averaged as vectors
+and renormalised. The encoders are the vendored bc7enc_rdo ones (`extern/bcenc`, MIT or public
+domain). Switching format regenerates the maps and deletes the other format's files, so a stale
+file never shadows a new one; the engine prefers a `.dds` when both exist.
+
+**Size.** For a texture of N pixels a 24-bit TGA map is 3N bytes; a BC5 or BC7 map is N bytes
+(8 bits per pixel) and BC1 is N/2, plus a third more for the mip chain. A normal plus a
+material map is therefore about 2.2x smaller with BC5+BC7 and 3x smaller with BC5+BC1; without
+the mip chains 3x and 4x. BC7 is the default because it keeps roughness gradients without banding.
 
 **Normal map.** Height comes from the texture's luma: a blur separates the low frequencies from the
 detail, and the height is the detail plus a quarter of the low frequencies. A 3x3 Sobel filter gives

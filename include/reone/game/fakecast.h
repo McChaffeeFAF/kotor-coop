@@ -18,6 +18,10 @@
 #pragma once
 
 #include <glm/vec3.hpp>
+#include <memory>
+
+#include "reone/game/castspell.h"
+#include "reone/game/visualeffectpresenter.h"
 
 namespace reone {
 
@@ -36,6 +40,8 @@ class Spell;
  */
 class FakeCast {
 public:
+    ~FakeCast();
+
     /** Advance by dt. Returns true once the cast is over. */
     bool update(Creature &caster, const Spell *spell, const glm::vec3 &target, ServicesView &services, float dt);
 
@@ -52,6 +58,8 @@ private:
 
     Stage _stage {Stage::Start};
     float _elapsed {0.0f};
+    std::shared_ptr<VisualEffectPresenter::Request> _castHand; /**< spells.2da casthandvisual */
+    std::optional<CastAnimations> _anims;                      /**< from spells.2da conjanim/castanim */
 
     void finish(Creature &caster);
 };

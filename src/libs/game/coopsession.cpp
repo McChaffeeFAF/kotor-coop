@@ -818,6 +818,8 @@ void CoopSession::hostDetectModuleChange() {
         client.standInHp = 0;
         client.guestId = 0;
         client.storeOpen = 0;
+        client.benchOpen = 0;
+        client.benchSent.clear();
         // The client loads the new module: resend what its screens show.
         client.inventorySent.clear();
         client.sheetSent.clear();
@@ -1314,6 +1316,9 @@ void CoopSession::beforeTick() {
                     reason = hostStoreCommand(client, command, session);
                 }
                 if (!session) {
+                    reason = hostBenchCommand(client, command, session);
+                }
+                if (!session) {
                     reason = hostOfferCommand(client, command, session);
                 }
                 if (!session) {
@@ -1530,6 +1535,9 @@ void CoopSession::onVisualEffectBegin(const std::shared_ptr<VisualEffectPresente
     event.a = request->targetId;
     event.location = {request->location.x, request->location.y, request->location.z};
     event.facing = request->facing;
+    // A beam's effector, so a guest can draw it (design note v14_programmed_effects, section 6).
+    event.b = request->sourceId;
+    event.flags = static_cast<uint8_t>(std::clamp(request->sourceBodyNode, 0, static_cast<int>(net::kMaxVfxBodyNode)));
     _pendingEvents.push_back(event);
     _hostVfx.push_back({event.handle, request});
 }
@@ -2010,6 +2018,14 @@ void CoopSession::clientHandleMessage(const std::vector<uint8_t> &data) {
         ok = decode(data, view);
         if (ok) {
             clientHandleStore(view);
+        }
+        break;
+    }
+    case MessageType::BenchView: {
+        BenchView view;
+        ok = decode(data, view);
+        if (ok) {
+            clientHandleBench(view);
         }
         break;
     }
@@ -2555,6 +2571,13 @@ void CoopSession::clientApplyEvent(const NetEvent &event) {
                 break;
             }
             request->targetId = *local;
+        }
+        if (event.b) {
+            // The beam's source; without it the row still shows on the target.
+            if (auto source = _ids.local(event.b)) {
+                request->sourceId = *source;
+                request->sourceBodyNode = event.flags;
+            }
         }
         _game.visualEffectPresenter().begin(request);
         _clientVfx[event.handle] = request;
@@ -3123,6 +3146,20 @@ json::object CoopSession::statusJson() const {
             store["stock"] = std::move(stock);
             store["sellable"] = _storeView.sellable.size();
             root["store"] = std::move(store);
+        }
+        {
+            // Workbenches and labs: the same view for Free and Story Mode guests.
+            json::object bench;
+            bench["id"] = _benchView.bench;
+            bench["open"] = _benchView.open;
+            bench["kind"] = _benchView.kind == BenchKind::Lab ? "lab" : "workbench";
+            bench["components"] = _benchView.components;
+            bench["chemicals"] = _benchView.chemicals;
+            bench["items"] = _benchView.items.size();
+            bench["parts"] = _benchView.parts.size();
+            bench["breakdown"] = _benchView.breakdown.size();
+            bench["recipes"] = _benchView.recipes.size();
+            root["bench"] = std::move(bench);
         }
         if (freeMode()) {
             json::array list;

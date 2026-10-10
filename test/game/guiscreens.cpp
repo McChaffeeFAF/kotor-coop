@@ -27,6 +27,7 @@
 #include "../fixtures/resource.h"
 
 #include "reone/game/game.h"
+#include "reone/game/guestbench.h"
 #include "reone/game/modulesnapshot.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
@@ -453,4 +454,262 @@ TEST_F(GuiScreensTest, open_store_and_the_movie_routines_do_not_throw) {
     call("QueueMovie", {Variable::ofString("55"), Variable::ofInt(1)});
     call("PlayMovieQueue", {Variable::ofInt(1)});
     EXPECT_FALSE(_game->isMoviePlaying()); // no movie resource in the test
+}
+
+// --- Guest workbenches and labs -----------------------------------------------
+
+namespace {
+
+constexpr int kGrenade = 27; // a chemical item (grenades are 25-34)
+
+std::shared_ptr<TwoDA> makeItemCreateTable() {
+    TwoDA::Builder builder;
+    builder.columns({"label", "group", "base_skill", "skill"});
+    builder.row({"g_w_crafted01", "4", "5", "4"}); // Repair 4
+    builder.row({"g_w_hardcraft", "4", "5", "30"}); // Repair 30
+    builder.row({"g_w_upgradepart", "1", "5", "1"}); // an upgrade-part group: not offered
+    return std::shared_ptr<TwoDA>(builder.build());
+}
+
+std::shared_ptr<TwoDA> makeChemicalCreateTable() {
+    TwoDA::Builder builder;
+    builder.columns({"label", "group", "base_skill", "skilllevel"});
+    builder.row({"g_i_medkit01", "0", "7", "2"}); // Treat Injury 2
+    return std::shared_ptr<TwoDA>(builder.build());
+}
+
+class GuestBenchTest : public GuiScreensTest {
+protected:
+    void SetUp() override {
+        GuiScreensTest::SetUp();
+        ON_CALL(_engine.resourceModule().twoDas(), get("itemcreate")).WillByDefault(Return(makeItemCreateTable()));
+        ON_CALL(_engine.resourceModule().twoDas(), get("chemicalcreate")).WillByDefault(Return(makeChemicalCreateTable()));
+        for (const auto &[tag, base, cost] : std::vector<std::tuple<std::string, int, int>> {
+                 {"g_w_crafted01", kPistol, 400}, {"g_w_hardcraft", kPistol, 4000}, {"g_i_medkit01", kGrenade, 100},
+                 {"g_i_upgrade001", kUpgradeItem, 200}, {"g_i_upgrade002", kUpgradeItem, 200}}) {
+            ON_CALL(_engine.resourceModule().gffs(), get(tag, ResType::Uti)).WillByDefault(Return(itemGff(tag, base, cost)));
+        }
+        _guest = _game->newCreature();
+        _guest->setTag("guest");
+        _area->add(_guest);
+    }
+
+    GuestBench::Context story() {
+        GuestBench::Context context;
+        context.crafter = _player;
+        return context;
+    }
+
+    GuestBench::Context own() {
+        GuestBench::Context context;
+        context.crafter = _guest;
+        context.own = true;
+        context.inventory = _guest;
+        context.wearers = {_guest->id()};
+        context.components = &_components;
+        context.chemicals = &_chemicals;
+        return context;
+    }
+
+    GuestBench bench(GuestBench::Context context, net::BenchKind kind = net::BenchKind::Workbench) {
+        return GuestBench(*_game, _engine.services(), kind, std::move(context));
+    }
+
+    std::shared_ptr<Item> giveGuest(const std::string &tag, int baseItem, int cost, bool plot = false,
+                                    std::vector<PropertySpec> properties = {}, int stack = 1) {
+        _guest->addItem(makeItem(tag, baseItem, cost, plot, std::move(properties), stack));
+        return _guest->getItemByTag(tag);
+    }
+
+    std::shared_ptr<Creature> _guest;
+    int _components {0};
+    int _chemicals {0};
+};
+
+} // namespace
+
+TEST_F(GuestBenchTest, the_view_lists_upgradeable_items_with_their_slots_and_the_parts_that_fit) {
+    auto blaster = give("blaster", kPistol, 100, false, {{38, 1, 2}, {11, 1, 3}});
+    auto scope = give("g_i_upgrade001", kUpgradeItem, 200);
+    give("plain", kPistol, 50);
+    auto view = bench(story()).view(77);
+    EXPECT_EQ(77u, view.bench);
+    EXPECT_TRUE(view.open);
+    ASSERT_EQ(1u, view.items.size());
+    EXPECT_EQ(blaster->id(), view.items[0].id);
+    EXPECT_EQ(2, view.items[0].category);
+    ASSERT_EQ(2u, view.items[0].slots.size());
+    EXPECT_EQ(4, view.items[0].slots[0].type);
+    EXPECT_EQ(std::vector<uint32_t>({scope->id()}), view.items[0].slots[0].candidates);
+    EXPECT_TRUE(view.items[0].slots[1].candidates.empty());
+    ASSERT_EQ(1u, view.parts.size());
+    EXPECT_EQ(scope->id(), view.parts[0].id);
+    EXPECT_EQ("g_i_upgrade001", view.parts[0].resref);
+    EXPECT_FALSE(view.recipes.empty()) << "a workbench also crafts";
+}
+
+TEST_F(GuestBenchTest, free_mode_shows_only_the_guests_own_bag_and_story_mode_the_shared_one) {
+    give("host_blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto mine = giveGuest("guest_blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto own = bench(this->own()).view(1);
+    ASSERT_EQ(1u, own.items.size());
+    EXPECT_EQ(mine->id(), own.items[0].id);
+    auto shared = bench(story()).view(1);
+    ASSERT_EQ(1u, shared.items.size());
+    EXPECT_NE(mine->id(), shared.items[0].id);
+}
+
+TEST_F(GuestBenchTest, a_lab_offers_chemicals_only) {
+    give("blaster", kPistol, 100, false, {{38, 1, 2}});
+    give("grenade", kGrenade, 100);
+    give("pistol", kPistol, 100);
+    _game->party().setCraftingMaterials(50, 50);
+    auto view = bench(story(), net::BenchKind::Lab).view(5);
+    EXPECT_EQ(net::BenchKind::Lab, view.kind);
+    EXPECT_TRUE(view.items.empty()) << "no upgrades at a lab";
+    ASSERT_EQ(1u, view.breakdown.size());
+    EXPECT_EQ(1, view.breakdown[0].material);
+    ASSERT_EQ(1u, view.recipes.size());
+    EXPECT_EQ("g_i_medkit01", view.recipes[0].resref);
+}
+
+TEST_F(GuestBenchTest, upgrading_installs_the_part_for_a_free_mode_guest) {
+    auto blaster = giveGuest("blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto scope = giveGuest("g_i_upgrade001", kUpgradeItem, 200);
+    auto guestBench = bench(own());
+    EXPECT_EQ(net::CommandReject::None, guestBench.upgrade(blaster->id(), scope->id()));
+    EXPECT_EQ(1u << 2, blaster->upgrades());
+    EXPECT_FALSE(_guest->getItemByTag("g_i_upgrade001")) << "the part is used up";
+}
+
+TEST_F(GuestBenchTest, upgrading_uses_the_shared_inventory_in_story_mode) {
+    auto blaster = give("blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto scope = give("g_i_upgrade001", kUpgradeItem, 200);
+    EXPECT_EQ(net::CommandReject::None, bench(story()).upgrade(blaster->id(), scope->id()));
+    EXPECT_EQ(1u << 2, blaster->upgrades());
+}
+
+TEST_F(GuestBenchTest, an_upgrade_is_refused_for_an_item_a_part_or_a_bench_that_does_not_fit) {
+    auto mine = giveGuest("blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto hosts = give("host_blaster", kPistol, 100, false, {{38, 1, 2}});
+    auto scope = giveGuest("g_i_upgrade001", kUpgradeItem, 200);
+    auto cell = giveGuest("g_i_upgrade002", kUpgradeItem, 200);
+    auto armor = giveGuest("armor", kArmor, 100, false, {{38, 1, 4}});
+    auto guestBench = bench(own());
+
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.upgrade(hosts->id(), scope->id())) << "the host's item is not the guest's";
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.upgrade(99999, scope->id())) << "no such item";
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.upgrade(mine->id(), 99999)) << "no such part";
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.upgrade(mine->id(), cell->id())) << "the blaster has no energy cell slot";
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.upgrade(armor->id(), scope->id())) << "a scope is not armour plating";
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.upgrade(mine->id(), mine->id())) << "the item is not a part";
+    EXPECT_EQ(0u, mine->upgrades());
+    EXPECT_EQ(0u, armor->upgrades());
+    EXPECT_TRUE(_guest->getItemByTag("g_i_upgrade001")) << "a refusal keeps the part";
+
+    EXPECT_EQ(net::CommandReject::BenchClosed, bench(own(), net::BenchKind::Lab).upgrade(mine->id(), scope->id())) << "a lab does not upgrade";
+    EXPECT_EQ(net::CommandReject::None, guestBench.upgrade(mine->id(), scope->id()));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.upgrade(mine->id(), scope->id())) << "the scope was used up";
+}
+
+TEST_F(GuestBenchTest, removing_an_upgrade_returns_the_part_and_refuses_empty_or_missing_slots) {
+    auto blaster = giveGuest("blaster", kPistol, 100, false, {{38, 1, 2}, {11, 1, 3}});
+    blaster->setUpgrades(1u << 2);
+    auto guestBench = bench(own());
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.remove(blaster->id(), 1)) << "nothing in the second slot";
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.remove(blaster->id(), 7)) << "no such slot";
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.remove(blaster->id(), -1));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.remove(424242, 0));
+    EXPECT_EQ(net::CommandReject::BenchClosed, bench(own(), net::BenchKind::Lab).remove(blaster->id(), 0));
+    EXPECT_EQ(1u << 2, blaster->upgrades());
+
+    EXPECT_EQ(net::CommandReject::None, guestBench.remove(blaster->id(), 0));
+    EXPECT_EQ(0u, blaster->upgrades());
+    EXPECT_TRUE(_guest->getItemByTag("g_i_upgrade001")) << "the part is back in the bag";
+}
+
+TEST_F(GuestBenchTest, a_saber_keeps_its_colour_crystal_but_swaps_it_for_another) {
+    auto saber = giveGuest("saber", kSaber, 900, false, {{38, 1, 0}});
+    saber->setModelVariation(1);
+    auto red = giveGuest("g_w_sbrcrstl18", 11, 100);
+    auto guestBench = bench(own());
+    EXPECT_EQ(net::CommandReject::UpgradeIncompatible, guestBench.remove(saber->id(), 0)) << "the colour slot is swapped, not emptied";
+    EXPECT_EQ(net::CommandReject::None, guestBench.upgrade(saber->id(), red->id()));
+    EXPECT_EQ(2, saber->modelVariation());
+}
+
+TEST_F(GuestBenchTest, crafting_spends_the_guests_own_material_in_free_mode) {
+    _guest->attributes().setSkillRank(SkillType::Repair, 5);
+    _components = 25;
+    EXPECT_EQ(net::CommandReject::None, bench(own()).craft("g_w_crafted01", 0));
+    EXPECT_EQ(5, _components) << "400 credits of item is 20 components";
+    EXPECT_TRUE(_guest->getItemByTag("g_w_crafted01"));
+    EXPECT_FALSE(_player->getItemByTag("g_w_crafted01"));
+    EXPECT_EQ(0u, _game->party().persistedState().itemComponent) << "the party's material is untouched";
+}
+
+TEST_F(GuestBenchTest, crafting_spends_the_partys_material_in_story_mode) {
+    _player->attributes().setSkillRank(SkillType::Repair, 5);
+    _game->party().setCraftingMaterials(30, 0);
+    EXPECT_EQ(net::CommandReject::None, bench(story()).craft("g_w_crafted01", 0));
+    EXPECT_EQ(10u, _game->party().persistedState().itemComponent);
+    EXPECT_TRUE(_player->getItemByTag("g_w_crafted01"));
+}
+
+TEST_F(GuestBenchTest, crafting_is_refused_without_the_skill_the_material_or_a_recipe) {
+    _guest->attributes().setSkillRank(SkillType::Repair, 5);
+    _components = 25;
+    auto guestBench = bench(own());
+    EXPECT_EQ(net::CommandReject::SkillTooLow, guestBench.craft("g_w_hardcraft", 0));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.craft("g_w_nosuchthing", 0));
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.craft("g_w_upgradepart", 0)) << "not a recipe this game offers";
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, guestBench.craft("g_w_crafted01", 1)) << "right item, wrong material";
+    EXPECT_EQ(net::CommandReject::BenchClosed, guestBench.craft("g_w_crafted01", 2));
+    EXPECT_EQ(net::CommandReject::BenchClosed, guestBench.craft("g_w_crafted01", -1));
+    _components = 19;
+    EXPECT_EQ(net::CommandReject::NotEnoughMaterial, guestBench.craft("g_w_crafted01", 0));
+    EXPECT_EQ(19, _components);
+    EXPECT_FALSE(_guest->getItemByTag("g_w_crafted01"));
+    EXPECT_EQ(net::CommandReject::BenchClosed, bench(own(), net::BenchKind::Lab).craft("g_w_crafted01", 0)) << "a lab makes chemicals only";
+}
+
+TEST_F(GuestBenchTest, a_lab_makes_chemical_items_from_chemicals_and_the_treat_injury_skill) {
+    _guest->attributes().setSkillRank(SkillType::TreatInjury, 1);
+    _chemicals = 10;
+    auto lab = bench(own(), net::BenchKind::Lab);
+    EXPECT_EQ(net::CommandReject::SkillTooLow, lab.craft("g_i_medkit01", 1));
+    _guest->attributes().setSkillRank(SkillType::TreatInjury, 3);
+    EXPECT_EQ(net::CommandReject::None, lab.craft("g_i_medkit01", 1));
+    EXPECT_EQ(5, _chemicals) << "100 credits of item is 5 chemicals";
+    EXPECT_TRUE(_guest->getItemByTag("g_i_medkit01"));
+}
+
+TEST_F(GuestBenchTest, breaking_an_item_down_gives_material_by_the_crafters_skill) {
+    _guest->attributes().setSkillRank(SkillType::Repair, 10);
+    auto pistol = giveGuest("pistol", kPistol, 400);
+    EXPECT_EQ(net::CommandReject::None, bench(own()).breakDown(pistol->id()));
+    EXPECT_EQ(10, _components) << "20 components at half the skill needed";
+    EXPECT_FALSE(_guest->getItemByTag("pistol"));
+}
+
+TEST_F(GuestBenchTest, a_chemical_item_breaks_down_into_chemicals_with_treat_injury) {
+    _guest->attributes().setSkillRank(SkillType::TreatInjury, 20);
+    auto grenade = giveGuest("grenade", kGrenade, 400);
+    EXPECT_EQ(net::CommandReject::None, bench(own(), net::BenchKind::Lab).breakDown(grenade->id()));
+    EXPECT_EQ(20, _chemicals);
+    EXPECT_EQ(0, _components);
+}
+
+TEST_F(GuestBenchTest, breaking_down_is_refused_for_plot_items_missing_items_other_bags_and_the_wrong_bench) {
+    auto plot = giveGuest("plot_gun", kPistol, 400, true);
+    auto pistol = giveGuest("pistol", kPistol, 400);
+    auto hosts = give("host_pistol", kPistol, 400);
+    auto guestBench = bench(own());
+    EXPECT_EQ(net::CommandReject::NotBreakable, guestBench.breakDown(plot->id()));
+    EXPECT_EQ(net::CommandReject::NotBreakable, guestBench.breakDown(hosts->id())) << "it is in the host's bag";
+    EXPECT_EQ(net::CommandReject::NotBreakable, guestBench.breakDown(31337));
+    EXPECT_EQ(net::CommandReject::NotBreakable, bench(own(), net::BenchKind::Lab).breakDown(pistol->id())) << "a lab breaks down chemicals only";
+    EXPECT_EQ(0, _components);
+    EXPECT_TRUE(_guest->getItemByTag("pistol"));
+    EXPECT_TRUE(_player->getItemByTag("host_pistol"));
 }

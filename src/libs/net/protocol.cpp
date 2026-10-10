@@ -74,11 +74,11 @@ bool validSlotStatus(uint8_t value) {
 
 bool validCommandType(uint8_t value) {
     return value >= static_cast<uint8_t>(CommandType::MoveTo) &&
-           value <= static_cast<uint8_t>(CommandType::DisarmTrap);
+           value <= static_cast<uint8_t>(CommandType::BenchClose);
 }
 
 bool validCommandReject(uint8_t value) {
-    return value <= static_cast<uint8_t>(CommandReject::ClassSlotsFull);
+    return value <= static_cast<uint8_t>(CommandReject::NotBreakable);
 }
 
 bool validEventKind(uint8_t value) {
@@ -372,6 +372,7 @@ bool isHostMessage(MessageType type) {
     case MessageType::StoreView:
     case MessageType::GuestRoster:
     case MessageType::Offer:
+    case MessageType::BenchView:
         return true;
     default:
         return false;
@@ -384,7 +385,7 @@ std::optional<MessageType> peekType(const std::vector<uint8_t> &bytes) {
     }
     uint8_t value = bytes.front();
     bool completeness = value >= static_cast<uint8_t>(MessageType::SharedInventory) &&
-                        value <= static_cast<uint8_t>(MessageType::Offer);
+                        value <= static_cast<uint8_t>(MessageType::BenchView);
     if (!completeness && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
         return std::nullopt;
     }
@@ -437,6 +438,8 @@ const char *messageTypeName(MessageType type) {
         return "guest_roster";
     case MessageType::Offer:
         return "offer";
+    case MessageType::BenchView:
+        return "bench_view";
     }
     return "unknown";
 }
@@ -537,6 +540,16 @@ const char *commandTypeName(CommandType type) {
         return "set_mine";
     case CommandType::DisarmTrap:
         return "disarm_trap";
+    case CommandType::BenchUpgrade:
+        return "bench_upgrade";
+    case CommandType::BenchRemove:
+        return "bench_remove";
+    case CommandType::BenchCraft:
+        return "bench_craft";
+    case CommandType::BenchBreak:
+        return "bench_break";
+    case CommandType::BenchClose:
+        return "bench_close";
     }
     return "unknown";
 }
@@ -609,6 +622,16 @@ const char *commandRejectName(CommandReject reason) {
         return "class_alignment";
     case CommandReject::ClassSlotsFull:
         return "class_slots_full";
+    case CommandReject::BenchClosed:
+        return "bench_closed";
+    case CommandReject::UpgradeIncompatible:
+        return "upgrade_incompatible";
+    case CommandReject::NotEnoughMaterial:
+        return "not_enough_material";
+    case CommandReject::SkillTooLow:
+        return "skill_too_low";
+    case CommandReject::NotBreakable:
+        return "not_breakable";
     }
     return "unknown";
 }
@@ -872,6 +895,8 @@ std::vector<uint8_t> encode(const EventBatch &m) {
             w.u32(event.a);
             writeVec3(w, event.location);
             w.f32(event.facing);
+            w.u32(event.b);
+            w.u8(event.flags);
             break;
         case EventKind::VfxEnd:
             break;
@@ -914,6 +939,11 @@ bool decode(const std::vector<uint8_t> &bytes, EventBatch &out) {
             event.a = r.u32();
             event.location = readVec3(r);
             event.facing = r.f32();
+            event.b = r.u32();
+            event.flags = r.u8();
+            if (event.flags > kMaxVfxBodyNode) {
+                return false;
+            }
             break;
         case EventKind::VfxEnd:
             break;
@@ -1530,6 +1560,15 @@ std::vector<uint8_t> encode(const GuestCharacter &m) {
         w.u16(item.stack);
         w.u8(item.slot);
     }
+    // Added with the workbenches: what a guest's items had installed, and its crafting
+    // material. Older files end before it and decode with none.
+    w.u8(1);
+    w.i32(m.components);
+    w.i32(m.chemicals);
+    for (const auto &item : m.items) {
+        w.u32(item.upgrades);
+        w.i16(item.modelVariation);
+    }
     return w.take();
 }
 
@@ -1600,6 +1639,23 @@ bool decode(const std::vector<uint8_t> &bytes, GuestCharacter &out) {
             return false;
         }
         out.items.push_back(std::move(item));
+    }
+    if (r.ok() && r.remaining() > 0) {
+        if (r.u8() != 1) {
+            return false;
+        }
+        out.components = r.i32();
+        out.chemicals = r.i32();
+        for (auto &item : out.items) {
+            item.upgrades = r.u32();
+            item.modelVariation = r.i16();
+            if (!r.ok() || item.modelVariation < -1 || item.modelVariation > 1000) {
+                return false;
+            }
+        }
+        if (!r.ok() || out.components < 0 || out.chemicals < 0) {
+            return false;
+        }
     }
     return finish(r);
 }
@@ -1688,6 +1744,139 @@ bool decode(const std::vector<uint8_t> &bytes, Offer &out) {
         return false;
     }
     out.kind = static_cast<OfferKind>(kind);
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const BenchView &m) {
+    auto w = begin(MessageType::BenchView);
+    w.u32(m.bench);
+    w.u8(static_cast<uint8_t>(m.kind));
+    w.boolean(m.open);
+    w.i32(m.components);
+    w.i32(m.chemicals);
+    w.u16(static_cast<uint16_t>(m.items.size()));
+    for (const auto &item : m.items) {
+        w.u32(item.id);
+        w.str(item.resref);
+        w.u8(item.category);
+        w.boolean(item.equipped);
+        w.u32(item.upgrades);
+        w.i16(item.modelVariation);
+        w.u8(static_cast<uint8_t>(item.slots.size()));
+        for (const auto &slot : item.slots) {
+            w.u8(slot.type);
+            w.boolean(slot.color);
+            w.i16(slot.installedRow);
+            w.u16(static_cast<uint16_t>(slot.candidates.size()));
+            for (uint32_t id : slot.candidates) {
+                w.u32(id);
+            }
+        }
+    }
+    writeStoreEntries(w, m.parts);
+    w.u16(static_cast<uint16_t>(m.breakdown.size()));
+    for (const auto &entry : m.breakdown) {
+        w.u32(entry.id);
+        w.str(entry.resref);
+        w.u16(entry.stack);
+        w.u16(entry.yield);
+        w.u8(entry.material);
+    }
+    w.u16(static_cast<uint16_t>(m.recipes.size()));
+    for (const auto &recipe : m.recipes) {
+        w.str(recipe.resref);
+        w.u8(recipe.material);
+        w.i32(recipe.cost);
+        w.boolean(recipe.skilled);
+        w.boolean(recipe.affordable);
+    }
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, BenchView &out) {
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::BenchView)) {
+        return false;
+    }
+    out = BenchView();
+    out.bench = r.u32();
+    uint8_t kind = r.u8();
+    out.open = r.boolean();
+    out.components = r.i32();
+    out.chemicals = r.i32();
+    uint16_t items = r.u16();
+    if (!r.ok() || out.bench == 0 || (kind != 1 && kind != 2) || out.components < 0 || out.chemicals < 0 || items > kMaxBenchItems) {
+        return false;
+    }
+    out.kind = static_cast<BenchKind>(kind);
+    for (uint16_t i = 0; i < items; ++i) {
+        BenchItem item;
+        item.id = r.u32();
+        item.resref = r.str();
+        item.category = r.u8();
+        item.equipped = r.boolean();
+        item.upgrades = r.u32();
+        item.modelVariation = r.i16();
+        uint8_t slots = r.u8();
+        if (!r.ok() || item.id == 0 || !validResRef(item.resref) || item.category < 1 || item.category > 4 ||
+            item.modelVariation < -1 || item.modelVariation > 1000 || slots > kMaxBenchSlots) {
+            return false;
+        }
+        for (uint8_t s = 0; s < slots; ++s) {
+            BenchSlot slot;
+            slot.type = r.u8();
+            slot.color = r.boolean();
+            slot.installedRow = r.i16();
+            uint16_t candidates = r.u16();
+            if (!r.ok() || slot.installedRow < -1 || slot.installedRow > 31 || candidates > kMaxBenchCandidates) {
+                return false;
+            }
+            for (uint16_t c = 0; c < candidates; ++c) {
+                uint32_t id = r.u32();
+                if (!r.ok() || id == 0) {
+                    return false;
+                }
+                slot.candidates.push_back(id);
+            }
+            item.slots.push_back(std::move(slot));
+        }
+        out.items.push_back(std::move(item));
+    }
+    if (!readStoreEntries(r, out.parts) || out.parts.size() > kMaxBenchParts) {
+        return false;
+    }
+    uint16_t breakdown = r.u16();
+    if (!r.ok() || breakdown > kMaxBenchBreakdown) {
+        return false;
+    }
+    for (uint16_t i = 0; i < breakdown; ++i) {
+        BenchBreakdown entry;
+        entry.id = r.u32();
+        entry.resref = r.str();
+        entry.stack = r.u16();
+        entry.yield = r.u16();
+        entry.material = r.u8();
+        if (!r.ok() || entry.id == 0 || !validResRef(entry.resref) || entry.stack == 0 || entry.material > 1) {
+            return false;
+        }
+        out.breakdown.push_back(std::move(entry));
+    }
+    uint16_t recipes = r.u16();
+    if (!r.ok() || recipes > kMaxBenchRecipes) {
+        return false;
+    }
+    for (uint16_t i = 0; i < recipes; ++i) {
+        BenchRecipe recipe;
+        recipe.resref = r.str();
+        recipe.material = r.u8();
+        recipe.cost = r.i32();
+        recipe.skilled = r.boolean();
+        recipe.affordable = r.boolean();
+        if (!r.ok() || !validResRef(recipe.resref) || recipe.material > 1 || recipe.cost < 0) {
+            return false;
+        }
+        out.recipes.push_back(std::move(recipe));
+    }
     return finish(r);
 }
 

@@ -495,6 +495,7 @@ protected:
 
     virtual void updateTransform();
     virtual bool canExecuteActions() const { return true; }
+    bool currentActionKeepsConversationTime() const;
 
     void deserializeOwnedItems(
         const resource::Gff &gff,

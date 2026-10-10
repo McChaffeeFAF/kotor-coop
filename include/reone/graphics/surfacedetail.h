@@ -39,16 +39,20 @@ namespace graphics {
 namespace surfacedetail {
 
 enum class MapKind {
-    Normal,  /**< <texture>_n.tga: tangent-space normal, +X along +u, +Y along +v */
+    Normal,  /**< <texture>_n.tga or .dds (BC5: X and Y only, Z is rebuilt in the shader): tangent-space normal, +X along +u, +Y along +v */
     Material /**< <texture>_m.tga: R roughness, G specular / metal hint, B unused */
 };
 
 /** The file a map of a texture is read from: lower-case name plus _n.tga or _m.tga. */
 std::string mapFileName(const std::string &texture, MapKind kind);
 
+/** The compressed variant of the same map: lower-case name plus _n.dds or _m.dds. */
+std::string mapFileNameDds(const std::string &texture, MapKind kind);
+
 /**
- * The map file of a texture in the override folder, if there is one (a
- * regular file named by mapFileName). Only ever reads the folder.
+ * The map file of a texture in the override folder, if there is one: a regular file named
+ * by mapFileNameDds, else one named by mapFileName (the DDS is preferred when both exist).
+ * Only ever reads the folder.
  */
 std::optional<std::filesystem::path> findMapFile(const std::filesystem::path &folder, const std::string &texture, MapKind kind);
 

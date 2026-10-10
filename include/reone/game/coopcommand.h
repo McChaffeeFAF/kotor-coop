@@ -29,7 +29,8 @@ enum class CoopUse {
     Normal,     // an action queued on the creature (executeCoopCommand)
     Container,  // walk there, then the client opens its own container screen
     Transition, // an area exit: the ready check
-    Placeable   // a placeable with no conversation (a console): walk there and use it
+    Placeable,  // a placeable with no conversation (a console): walk there and use it
+    Bench       // a workbench or lab station: walk there, then the guest's bench view opens
 };
 
 /** What a validated command acts on. */
@@ -51,6 +52,15 @@ bool coopScriptChangesStory(Game &game, const std::string &script);
 
 /** Does this compiled script open a screen (workbench, store, party selection, galaxy map, Pazaak)? */
 bool coopScriptOpensScreen(Game &game, const std::string &script);
+
+/** Which bench screen a compiled script opens: ShowUpgradeScreen is a workbench, ShowChemicalUpgradeScreen a lab. */
+enum class CoopBench {
+    None,
+    Workbench,
+    Lab
+};
+
+CoopBench coopScriptBench(Game &game, const std::string &script);
 
 /**
  * Does any node of this dialog open a store, start Pazaak or load a

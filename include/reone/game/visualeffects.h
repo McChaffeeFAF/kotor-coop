@@ -23,7 +23,8 @@ namespace reone {
 
 namespace graphics {
 class Model;
-}
+class Texture;
+} // namespace graphics
 
 namespace audio {
 class AudioClip;
@@ -35,6 +36,7 @@ class ITwoDAs;
 class TwoDA;
 class AudioClips;
 class Models;
+class Textures;
 } // namespace resource
 
 namespace game {
@@ -100,6 +102,32 @@ struct VisualEffectDesc {
     /** The model K1 ships for a programmed beam number, or empty. */
     static std::string beamModelResRef(int progfx);
 
+    /**
+     * A programmed body effect (progfx 14xx, the cloaks 1800/2000/2001): an
+     * overlay drawn over the target's own meshes, and how see-through it
+     * leaves them. See design note v14_programmed_effects.
+     */
+    struct BodyLook {
+        std::string texture;  /**< fx_tex_NN, fx_tex_stealth, fx_distortion */
+        float opacity {1.0f}; /**< a cloak leaves the body this opaque */
+    };
+
+    /** The body look of a programmed effect number, or none. */
+    static std::optional<BodyLook> bodyLookFor(int progfx);
+
+    std::optional<BodyLook> bodyLook;
+    std::shared_ptr<graphics::Texture> bodyTexture;
+
+    /**
+     * A spell's cast-hand visual (spells.2da casthandvisual), presented as a
+     * visual effect of its own so that co-op guests get it through the same
+     * events. Its id is castHandId(spell row); it is not a visualeffects row.
+     */
+    std::shared_ptr<graphics::Model> handModel;
+
+    static constexpr uint32_t kCastHandBase = 0x40000000u;
+    static uint32_t castHandId(int spellRow) { return kCastHandBase + static_cast<uint32_t>(spellRow); }
+
     /** The root model for the target's size (medium in every K1 row). */
     std::shared_ptr<graphics::Model> rootModel() const;
 };
@@ -113,13 +141,16 @@ class VisualEffects : public IVisualEffects {
 public:
     using ModelLoader = std::function<std::shared_ptr<graphics::Model>(const std::string &)>;
     using SoundLoader = std::function<std::shared_ptr<audio::AudioClip>(const std::string &)>;
+    using TextureLoader = std::function<std::shared_ptr<graphics::Texture>(const std::string &)>;
 
     VisualEffects(resource::ITwoDAs &twoDas,
                   resource::AudioClips &audioClips,
-                  resource::Models &models) :
+                  resource::Models &models,
+                  resource::Textures *textures = nullptr) :
         _twoDas(twoDas),
         _audioClips(audioClips),
-        _models(models) {}
+        _models(models),
+        _textures(textures) {}
 
     void init();
     void clear();
@@ -133,12 +164,23 @@ public:
     static std::map<uint32_t, VisualEffectDesc> parse(
         const resource::TwoDA &twoDa,
         const ModelLoader &loadModel,
-        const SoundLoader &loadSound);
+        const SoundLoader &loadSound,
+        const TextureLoader &loadTexture = nullptr);
+
+    /**
+     * The cast-hand visuals of spells.2da (casthandvisual, else
+     * conjhandvisual), one per spell row that names a model that loads,
+     * keyed by VisualEffectDesc::castHandId.
+     */
+    static std::map<uint32_t, VisualEffectDesc> parseCastHands(
+        const resource::TwoDA &spells,
+        const ModelLoader &loadModel);
 
 private:
     resource::ITwoDAs &_twoDas;
     resource::AudioClips &_audioClips;
     resource::Models &_models;
+    resource::Textures *_textures;
     std::map<uint32_t, VisualEffectDesc> _effects;
 };
 

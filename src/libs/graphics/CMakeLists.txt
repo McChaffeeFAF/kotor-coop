@@ -29,10 +29,13 @@ set(GRAPHICS_HEADERS
     ${GRAPHICS_INCLUDE_DIR}/cursor.h
     ${GRAPHICS_INCLUDE_DIR}/di/module.h
     ${GRAPHICS_INCLUDE_DIR}/di/services.h
+    ${GRAPHICS_INCLUDE_DIR}/bcutil.h
     ${GRAPHICS_INCLUDE_DIR}/dxtutil.h
     ${GRAPHICS_INCLUDE_DIR}/font.h
     ${GRAPHICS_INCLUDE_DIR}/format/bwmreader.h
     ${GRAPHICS_INCLUDE_DIR}/format/curreader.h
+    ${GRAPHICS_INCLUDE_DIR}/format/ddsreader.h
+    ${GRAPHICS_INCLUDE_DIR}/format/ddswriter.h
     ${GRAPHICS_INCLUDE_DIR}/format/lipreader.h
     ${GRAPHICS_INCLUDE_DIR}/format/lipwriter.h
     ${GRAPHICS_INCLUDE_DIR}/format/mdlmdxreader.h
@@ -80,10 +83,13 @@ set(GRAPHICS_SOURCES
     ${GRAPHICS_SOURCE_DIR}/context.cpp
     ${GRAPHICS_SOURCE_DIR}/cursor.cpp
     ${GRAPHICS_SOURCE_DIR}/di/module.cpp
+    ${GRAPHICS_SOURCE_DIR}/bcutil.cpp
     ${GRAPHICS_SOURCE_DIR}/dxtutil.cpp
     ${GRAPHICS_SOURCE_DIR}/font.cpp
     ${GRAPHICS_SOURCE_DIR}/format/bwmreader.cpp
     ${GRAPHICS_SOURCE_DIR}/format/curreader.cpp
+    ${GRAPHICS_SOURCE_DIR}/format/ddsreader.cpp
+    ${GRAPHICS_SOURCE_DIR}/format/ddswriter.cpp
     ${GRAPHICS_SOURCE_DIR}/format/lipreader.cpp
     ${GRAPHICS_SOURCE_DIR}/format/lipwriter.cpp
     ${GRAPHICS_SOURCE_DIR}/format/mdlmdxreader.cpp
@@ -122,6 +128,7 @@ set_source_files_properties(${CMAKE_SOURCE_DIR}/extern/glad/src/gl.c PROPERTIES 
 target_precompile_headers(graphics PRIVATE ${CMAKE_SOURCE_DIR}/src/pch.h)
 target_include_directories(graphics PRIVATE ${GLAD_INCLUDE_DIR})
 target_link_libraries(graphics PRIVATE ${OPENGL_LIBRARIES} ${CMAKE_DL_LIBS})
+target_link_libraries(graphics PUBLIC bcenc)
 
 if(MSVC)
     target_link_libraries(graphics PRIVATE SDL3::SDL3)

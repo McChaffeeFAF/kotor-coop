@@ -304,6 +304,12 @@ void PBRRenderPass::applyMaterialToLocals(const Material &material,
     if (material.surfaceDetail) {
         locals.surfaceParams.x = material.surfaceStrength;
     }
+    if (material.shell) {
+        locals.featureMask |= UniformsFeatureFlags::shell;
+        locals.surfaceParams.y = material.shell->x;
+        locals.surfaceParams.z = material.shell->y;
+        locals.surfaceParams.w = material.shell->z;
+    }
     locals.uvJitterAmplitude = material.uvJitterAmplitude;
     locals.uvJitterSpeed = material.uvJitterSpeed;
     locals.uvJitterTime = material.uvJitterTime;

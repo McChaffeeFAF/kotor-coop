@@ -321,6 +321,14 @@ public:
     bool clientStoreSell(uint32_t localItemId);
     bool clientStoreClosed();
     bool clientStoreOpen() const { return isClient() && _storeView.store != 0 && _storeView.open; }
+    /** Client: the workbench or lab screen's buttons for a guest's bench. True when a request went out. */
+    bool clientBenchOpen() const { return isClient() && _benchView.bench != 0 && _benchView.open; }
+    const net::BenchView &benchView() const { return _benchView; }
+    bool clientBenchUpgrade(uint32_t itemId, uint32_t partId);
+    bool clientBenchRemove(uint32_t itemId, int slotIndex);
+    bool clientBenchCraft(const std::string &resref, int material);
+    bool clientBenchBreak(uint32_t itemId);
+    bool clientBenchClose();
     /** Where this player's guest character file lives. */
     std::filesystem::path guestPath() const;
 
@@ -446,6 +454,10 @@ private:
         uint32_t guestId {0};
         uint32_t storeOpen {0};
         std::vector<uint8_t> storeSent;
+        // The workbench or lab this player has open (either mode), and what it was last sent.
+        uint32_t benchOpen {0};
+        net::BenchKind benchKind {net::BenchKind::Workbench};
+        std::vector<uint8_t> benchSent;
         std::vector<uint8_t> guestSent;
         uint64_t guestSyncTick {0};
         bool levelFloorChecked {false};
@@ -575,6 +587,7 @@ private:
     bool _moduleHeld {false}; // a ModuleInfo waiting for the guest character
     net::GuestCharacter _guest;
     net::StoreView _storeView;
+    net::BenchView _benchView;
     std::shared_ptr<Object> _localStore;
     std::map<uint32_t, uint32_t> _storeLocal; // local store item id -> host item id
     uint64_t _guestSaves {0};
@@ -750,6 +763,12 @@ private:
     bool hostOpenGuestStore(HostClient &client, const std::shared_ptr<Object> &merchant);
     void hostSendStore(HostClient &client, bool open);
     net::CommandReject hostStoreCommand(HostClient &client, const net::Command &command, bool &handled);
+    // Workbenches and lab stations: a guest uses one through its own view (GuestBench).
+    void hostUseBench(HostClient &client, const std::shared_ptr<Creature> &actor, const std::shared_ptr<Object> &bench);
+    bool hostOpenGuestBench(HostClient &client, const std::shared_ptr<Object> &bench);
+    void hostSendBench(HostClient &client, bool open);
+    net::CommandReject hostBenchCommand(HostClient &client, const net::Command &command, bool &handled);
+    void clientHandleBench(const net::BenchView &view);
     void hostSendGuestInventory(HostClient &client);
     void hostSendRoster();
     bool hostOfferGuest(HostClient &client, const std::shared_ptr<Object> &npc);

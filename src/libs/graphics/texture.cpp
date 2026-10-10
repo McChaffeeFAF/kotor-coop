@@ -53,7 +53,10 @@ static uint32_t getPixelFormatGL(PixelFormat format) {
     case PixelFormat::RGBA16F:
     case PixelFormat::DXT1:
     case PixelFormat::DXT5:
+    case PixelFormat::BC7:
         return GL_RGBA;
+    case PixelFormat::BC5:
+        return GL_RG;
     case PixelFormat::BGR8:
         return GL_BGR;
     case PixelFormat::BGRA8:
@@ -197,6 +200,21 @@ void Texture::configureCubeMap() {
     }
 }
 
+bool Texture::supportsBC7() {
+    static const bool supported = []() {
+        GLint count = 0;
+        glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+        for (GLint i = 0; i < count; ++i) {
+            const auto *name = reinterpret_cast<const char *>(glGetStringi(GL_EXTENSIONS, i));
+            if (name && std::strcmp(name, "GL_ARB_texture_compression_bptc") == 0) {
+                return true;
+            }
+        }
+        return false;
+    }();
+    return supported;
+}
+
 static float maxAnisotropy() {
     static float max = []() {
         GLfloat value = 1.0f;
@@ -231,7 +249,15 @@ void Texture::refresh() {
     } else {
         throw NotImplementedException("Unsupported texture type: " + std::to_string(static_cast<int>(_type)));
     }
-    if (isMipmapFilter(_properties.minFilter)) {
+    bool hasMipMaps = is2D() && !_layers.empty() && !_layers.front().mipMaps.empty();
+    if (hasMipMaps) {
+        // A chain from the file: sample exactly the levels it holds.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, static_cast<GLint>(_layers.front().mipMaps.size()));
+        if (isMipmapFilter(_properties.minFilter) && _properties.anisotropy > 1.0f) {
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, _properties.anisotropy);
+        }
+    } else if (isMipmapFilter(_properties.minFilter)) {
         auto target = getTargetGL();
         glGenerateMipmap(target);
         if (_properties.anisotropy > 1.0f) {
@@ -254,6 +280,8 @@ void Texture::refresh2D() {
     switch (_pixelFormat) {
     case PixelFormat::DXT1:
     case PixelFormat::DXT5:
+    case PixelFormat::BC5:
+    case PixelFormat::BC7: {
         glCompressedTexImage2D(
             GL_TEXTURE_2D,
             0,
@@ -261,7 +289,25 @@ void Texture::refresh2D() {
             _width, _height,
             0,
             pixelsSize, pixelsData);
+        const auto *mips = _layers.empty() ? nullptr : &_layers.front().mipMaps;
+        if (mips) {
+            int level = 1;
+            for (const auto &mip : *mips) {
+                if (!mip) {
+                    break;
+                }
+                glCompressedTexImage2D(
+                    GL_TEXTURE_2D,
+                    level,
+                    getInternalPixelFormatGL(_pixelFormat),
+                    std::max(1, _width >> level), std::max(1, _height >> level),
+                    0,
+                    static_cast<GLsizei>(mip->size()), mip->data());
+                ++level;
+            }
+        }
         break;
+    }
     default:
         glTexImage2D(
             GL_TEXTURE_2D,
@@ -272,6 +318,24 @@ void Texture::refresh2D() {
             getPixelFormatGL(_pixelFormat),
             getPixelTypeGL(_pixelFormat),
             pixelsData);
+        if (!_layers.empty()) {
+            int level = 1;
+            for (const auto &mip : _layers.front().mipMaps) {
+                if (!mip) {
+                    break;
+                }
+                glTexImage2D(
+                    GL_TEXTURE_2D,
+                    level,
+                    getInternalPixelFormatGL(_pixelFormat),
+                    std::max(1, _width >> level), std::max(1, _height >> level),
+                    0,
+                    getPixelFormatGL(_pixelFormat),
+                    getPixelTypeGL(_pixelFormat),
+                    mip->data());
+                ++level;
+            }
+        }
         break;
     }
 }

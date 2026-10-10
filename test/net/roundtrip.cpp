@@ -275,7 +275,7 @@ TEST(NetRoundTrip, snapshot_ack) {
 }
 
 TEST(NetRoundTrip, every_command_type_with_extreme_values) {
-    for (int type = static_cast<int>(CommandType::MoveTo); type <= static_cast<int>(CommandType::DisarmTrap); ++type) {
+    for (int type = static_cast<int>(CommandType::MoveTo); type <= static_cast<int>(CommandType::BenchClose); ++type) {
         Command c;
         c.seq = UINT32_MAX;
         c.type = static_cast<CommandType>(type);
@@ -369,7 +369,7 @@ TEST(NetRoundTrip, non_finite_floats_are_rejected_wherever_they_appear) {
 }
 
 TEST(NetRoundTrip, command_result_for_every_reason) {
-    for (int reason = 0; reason <= static_cast<int>(CommandReject::ClassSlotsFull); ++reason) {
+    for (int reason = 0; reason <= static_cast<int>(CommandReject::NotBreakable); ++reason) {
         CommandResult r;
         r.seq = UINT32_MAX;
         r.accepted = reason == 0;
@@ -480,9 +480,129 @@ TEST(NetRoundTrip, guest_character_at_its_limits) {
     // test (two 1024-entry lists); trim it so the edge under test is the item list.
     g.feats.resize(64);
     g.spells.resize(64);
-    expectRoundTrip(g, "full guest");
-    EXPECT_LE(encode(g).size(), kMaxGuestCharacterBytes);
+    for (size_t i = 0; i < g.items.size(); ++i) {
+        g.items[i].upgrades = UINT32_MAX - static_cast<uint32_t>(i);
+        g.items[i].modelVariation = static_cast<int16_t>(i % 6) - 1;
+    }
+    g.components = INT32_MAX;
+    g.chemicals = 1;
+    auto full = encode(g);
+    GuestCharacter back;
+    ASSERT_TRUE(decode(full, back));
+    EXPECT_EQ(full, encode(back));
+    EXPECT_EQ(g.items.back().upgrades, back.items.back().upgrades);
+    EXPECT_EQ(INT32_MAX, back.components);
+    EXPECT_LE(full.size(), kMaxGuestCharacterBytes);
+    // Every prefix is refused, except the one that ends where files saved before workbenches
+    // end: those stay valid, with no upgrades and no material.
+    size_t legacy = full.size() - (1 + 4 + 4 + g.items.size() * 6);
+    for (size_t n = 0; n < full.size(); n += 7) {
+        std::vector<uint8_t> prefix(full.begin(), full.begin() + n);
+        GuestCharacter partial;
+        EXPECT_FALSE(decode(prefix, partial)) << "prefix of " << n;
+    }
+    std::vector<uint8_t> old(full.begin(), full.begin() + legacy);
+    GuestCharacter oldBack;
+    ASSERT_TRUE(decode(old, oldBack)) << "a file from before the workbenches";
+    EXPECT_EQ(g.items.size(), oldBack.items.size());
+    EXPECT_EQ(0u, oldBack.items[0].upgrades);
+    EXPECT_EQ(-1, oldBack.items[0].modelVariation);
+    EXPECT_EQ(0, oldBack.components);
+    auto longer = full;
+    longer.push_back(0);
+    EXPECT_FALSE(decode(longer, back)) << "a trailing byte";
+    auto wrongTag = full;
+    wrongTag[legacy] = 2;
+    EXPECT_FALSE(decode(wrongTag, back)) << "an unknown extension";
     (void)bytes;
+}
+
+TEST(NetRoundTrip, bench_view_at_its_limits_and_closed) {
+    BenchView v;
+    v.bench = UINT32_MAX;
+    v.kind = BenchKind::Lab;
+    v.open = true;
+    v.components = INT32_MAX;
+    v.chemicals = INT32_MAX;
+    for (size_t i = 0; i < kMaxBenchItems; ++i) {
+        BenchItem item;
+        item.id = UINT32_MAX - static_cast<uint32_t>(i);
+        item.resref = kResRefMax;
+        item.category = 1 + i % 4;
+        item.equipped = i % 2 == 0;
+        item.upgrades = UINT32_MAX;
+        item.modelVariation = 1000;
+        for (size_t s = 0; s < kMaxBenchSlots; ++s) {
+            BenchSlot slot;
+            slot.type = static_cast<uint8_t>(s);
+            slot.color = s == 0;
+            slot.installedRow = static_cast<int16_t>(s % 2 ? 31 : -1);
+            for (size_t c = 0; c < 8; ++c) {
+                slot.candidates.push_back(UINT32_MAX - static_cast<uint32_t>(c));
+            }
+            item.slots.push_back(std::move(slot));
+        }
+        v.items.push_back(std::move(item));
+    }
+    for (size_t i = 0; i < kMaxBenchParts; ++i) {
+        v.parts.push_back({UINT32_MAX - static_cast<uint32_t>(i), kResRefMax, UINT16_MAX, 0});
+    }
+    for (size_t i = 0; i < kMaxBenchBreakdown; ++i) {
+        v.breakdown.push_back({UINT32_MAX - static_cast<uint32_t>(i), kResRefMax, UINT16_MAX, UINT16_MAX, static_cast<uint8_t>(i % 2)});
+    }
+    for (size_t i = 0; i < kMaxBenchRecipes; ++i) {
+        v.recipes.push_back({kResRefMax, static_cast<uint8_t>(i % 2), INT32_MAX, i % 2 == 0, i % 3 == 0});
+    }
+    expectRoundTrip(v, "full bench");
+    v.kind = BenchKind::Workbench;
+    v.open = false;
+    v.items.clear();
+    v.parts.clear();
+    v.breakdown.clear();
+    v.recipes.clear();
+    expectRoundTrip(v, "closed bench");
+}
+
+TEST(NetRoundTrip, bench_view_rejects_what_the_host_would_never_send) {
+    BenchView good;
+    good.bench = 5;
+    good.items.push_back({7, "g_w_blaster", 2, false, 0, -1, {}});
+    good.breakdown.push_back({8, "g_w_blaster", 1, 3, 0});
+    good.recipes.push_back({"g_w_crafted", 0, 4, true, true});
+    BenchView out;
+    ASSERT_TRUE(decode(encode(good), out));
+
+    auto bad = [&](const char *what, auto change) {
+        auto v = good;
+        change(v);
+        EXPECT_FALSE(decode(encode(v), out)) << what;
+    };
+    bad("no bench", [](BenchView &v) { v.bench = 0; });
+    bad("negative material", [](BenchView &v) { v.components = -1; });
+    bad("negative chemicals", [](BenchView &v) { v.chemicals = -1; });
+    bad("item without id", [](BenchView &v) { v.items[0].id = 0; });
+    bad("item category 0", [](BenchView &v) { v.items[0].category = 0; });
+    bad("item category 5", [](BenchView &v) { v.items[0].category = 5; });
+    bad("bad resref", [](BenchView &v) { v.items[0].resref = "has space"; });
+    bad("too many slots", [](BenchView &v) { v.items[0].slots.resize(kMaxBenchSlots + 1); });
+    bad("candidate id 0", [](BenchView &v) { v.items[0].slots = {BenchSlot {0, false, -1, {0}}}; });
+    bad("installed row out of range", [](BenchView &v) { v.items[0].slots = {BenchSlot {0, false, 32, {}}}; });
+    bad("too many items", [](BenchView &v) { v.items.resize(kMaxBenchItems + 1, v.items[0]); });
+    bad("too many candidates", [](BenchView &v) { v.items[0].slots = {BenchSlot {0, false, -1, std::vector<uint32_t>(kMaxBenchCandidates + 1, 1)}}; });
+    bad("zero stack", [](BenchView &v) { v.breakdown[0].stack = 0; });
+    bad("breakdown material 2", [](BenchView &v) { v.breakdown[0].material = 2; });
+    bad("recipe material 2", [](BenchView &v) { v.recipes[0].material = 2; });
+    bad("negative cost", [](BenchView &v) { v.recipes[0].cost = -1; });
+    bad("too many recipes", [](BenchView &v) { v.recipes.resize(kMaxBenchRecipes + 1, v.recipes[0]); });
+    bad("too many parts", [](BenchView &v) { v.parts.resize(kMaxBenchParts + 1, StoreEntry {1, "g_i_up", 1, 0}); });
+    auto bytes = encode(good);
+    bytes[5] = 9; // the kind byte
+    EXPECT_FALSE(decode(bytes, out)) << "unknown kind";
+    EXPECT_TRUE(isHostMessage(MessageType::BenchView));
+    EXPECT_FALSE(isClientMessage(MessageType::BenchView));
+    EXPECT_STREQ("bench_view", messageTypeName(MessageType::BenchView));
+    ASSERT_TRUE(peekType(encode(good)));
+    EXPECT_EQ(MessageType::BenchView, *peekType(encode(good)));
 }
 
 TEST(NetRoundTrip, store_view_at_its_limits) {
