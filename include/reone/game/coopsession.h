@@ -21,7 +21,9 @@
 #include "coopcommand.h"
 #include "cooploot.h"
 #include "coopflow.h"
+#include "coopminigame.h"
 #include "coopidmap.h"
+#include "guestbenchscreen.h"
 #include "visualeffectpresenter.h"
 
 namespace reone {
@@ -69,6 +71,10 @@ struct CoopConfig {
     bool noPause {false};             // "No pause in co-op"
     float pauseCooldown {0.0f};       // seconds between one player's pauses
     float enemyScaling {1.0f};        // strength of the per-player enemy curve; 0 off
+    // Guest minigames (swoop races a guest starts, turrets the host hands over)
+    bool guestMinigames {true};            // Free Mode: a guest may start a minigame from an NPC's prompt
+    int guestRacePrize {100};              // credits a swoop race a guest finishes pays that guest
+    bool guestMinigamesAffectStory {false}; // keep the story changes a guest's minigame scripts make (off: undone)
     // Host: every new player waits for the host's Accept / Decline (design,
     // "Handshake" step 4). Off in headless runs unless asked for; a player
     // rejoining with their rejoin token is let back in without asking.
@@ -144,6 +150,8 @@ using CoopTransportFactory = std::function<std::unique_ptr<net::ITransport>(std:
  *
  * With no session, Game behaves exactly as single-player.
  */
+class TestCoopSession;
+
 class CoopSession {
 public:
     CoopSession(Game &game, CoopConfig config, std::unique_ptr<net::ITransport> transport);
@@ -269,6 +277,51 @@ public:
     /** Host: hand a story terminal or console to a player, or take it back ("Hand over terminal"). */
     bool handOver(uint32_t clientId, uint32_t objectId, bool on);
 
+    // Minigames (swoop races, turrets). The host simulates; a guest who owns the running
+    // minigame steers it with MiniGameControl messages.
+
+    /** Host: give the running minigame (a turret, usually) to a guest, or take it back with on false. */
+    bool handMiniGame(uint32_t clientId, bool on);
+    /** Host: the game started / ended a minigame; the session decides who drives it and what its end means. */
+    void onMiniGameStarted(MinigameType type, const std::string &module);
+    void onMiniGameEnded(const MiniGameSession &session);
+    /** Host: a guest drives the running minigame, so the host's own keys are ignored. */
+    bool miniGameRemoteOwned() const { return isHost() && _miniGame.remoteOwned(); }
+    /** Host: once per minigame tick, before the simulation reads its input. */
+    void applyMiniGameInput(MiniGameInput &input);
+    const CoopMiniGame &miniGame() const { return _miniGame; }
+    /** Client: the newest state of the running minigame the host sent (active false once it ended). */
+    const net::MiniGameState &miniGameState() const { return _miniGameState; }
+    /** Client: send the owner's input; false unless this player drives the running minigame. */
+    bool clientSendMiniGameControl(net::MiniGameControl control);
+    bool clientQuitMiniGame();
+    /** Client: the host's states, for drawing the running minigame. */
+    MiniGameReplay &miniGameReplay() { return _miniGameReplay; }
+    /** Client: the result line drawn over a minigame that has just ended, while it is held on screen. */
+    const std::string &clientMiniGameBanner() const {
+        static const std::string none;
+        return isClient() && (_miniGameResultHold > 0.0f || _moduleHeldForResult) ? _miniGameResult : none;
+    }
+    /** Client: this player drives the running minigame. */
+    bool clientOwnsMiniGame() const;
+    /**
+     * Client, once a tick: the owner's local input goes to the host as MiniGameControl (one-shot
+     * aim deltas are then spent); nothing is sent for a minigame this player only watches.
+     */
+    void clientMiniGameInput(MiniGameInput &input, glm::vec2 rateStep = glm::vec2(0.0f));
+    /** Host: a sound the running minigame played; it goes out with the next state. */
+    void onMiniGameSound(const std::string &resRef);
+    /** Client: the host's minigame sounds received since the last call. */
+    std::vector<std::string> takeMiniGameSounds();
+    /** Client: the owner's turret aim drawn ahead of the sampled state by the aim not yet used on the host. */
+    void clientPredictMiniGame(net::MiniGameState &sample);
+    /** Host: the running minigame's scripts animated an actor; it goes out with the next state. */
+    void onMiniGameAnimation(size_t actor, const std::string &name, uint8_t flags);
+    /** Client: the host's animations received since the last call, in order. */
+    std::vector<net::MiniGameAnimation> takeMiniGameAnimations();
+    /** The co-op side of the running minigame, for the harness (coopmg). */
+    boost::json::object miniGameJson() const;
+
     /** Client: the action bar used an item from the shared inventory. True when co-op handled it. */
     bool clientUseItem(const std::shared_ptr<Item> &localItem, uint32_t targetHostId);
     /** Client: the equipment screen put an item in a slot of the companion (null clears it). */
@@ -329,6 +382,12 @@ public:
     bool clientBenchCraft(const std::string &resref, int material);
     bool clientBenchBreak(uint32_t itemId);
     bool clientBenchClose();
+    /** Client: the bench screen's model (the view, its stand-in items, the last rejection). */
+    GuestBenchScreen &benchScreen() { return _benchScreen; }
+    /** Client: the local holder of the bench's stand-in items, or null. */
+    std::shared_ptr<Object> benchHolder() const;
+    /** Client: send one of the bench screen's requests. False when no bench is open. */
+    bool clientBenchRequest(const BenchRequest &request);
     /** Where this player's guest character file lives. */
     std::filesystem::path guestPath() const;
 
@@ -458,6 +517,7 @@ private:
         uint32_t benchOpen {0};
         net::BenchKind benchKind {net::BenchKind::Workbench};
         std::vector<uint8_t> benchSent;
+        uint64_t miniGameIgnored {0}; // minigame inputs from this player that nobody was listening for
         std::vector<uint8_t> guestSent;
         uint64_t guestSyncTick {0};
         bool levelFloorChecked {false};
@@ -588,7 +648,32 @@ private:
     net::GuestCharacter _guest;
     net::StoreView _storeView;
     net::BenchView _benchView;
+    // Minigames: who drives the running one, a request a guest made that has not started yet, and (client) the state sent.
+    CoopMiniGame _miniGame;
+    struct PendingMiniGame {
+        uint32_t client {0};
+        std::string module;
+        StoryState story;
+    };
+    PendingMiniGame _pendingMiniGame;
+    net::MiniGameState _miniGameState;
+    uint32_t _miniGameControlSeq {0};
+    MiniGameReplay _miniGameReplay;
+    uint64_t _miniGameControlsSent {0};
+    uint64_t _miniGameControlsAccepted {0}; // host: owner inputs used
+    std::string _miniGameResult;            // client: the line shown when the last one ended
+    std::vector<net::MiniGameAnimation> _miniGameAnimations; // host: for the next state; client: to play
+    uint64_t _miniGameAnimationsDropped {0};
+    MiniGameAimPrediction _miniGameAim;
+    std::vector<std::string> _miniGameSounds; // host: for the next state; client: to play
+    uint64_t _miniGameSoundsHeard {0};
+    // Client: the finished minigame (and its result line) stays up this long before the
+    // module the host moved on to is loaded.
+    float _miniGameResultHold {0.0f};
+    bool _moduleHeldForResult {false};
     std::shared_ptr<Object> _localStore;
+    GuestBenchScreen _benchScreen;
+    std::shared_ptr<Object> _benchHolder; // a local store shell holding the bench's stand-ins
     std::map<uint32_t, uint32_t> _storeLocal; // local store item id -> host item id
     uint64_t _guestSaves {0};
     std::vector<net::GuestRosterEntry> _roster;  // client: from the host
@@ -625,6 +710,8 @@ private:
     std::map<std::string, uint32_t> _localKeys; // load key -> local id
     std::map<uint32_t, std::string> _localKeyById;
     std::map<uint32_t, uint32_t> _carried; // host id -> local party creature from the previous module
+    friend class TestCoopSession; // test/game/coopnet.cpp: drives the client side without a host
+
     NetIdMap _ids;
     std::map<uint32_t, Replica> _replicas; // host id -> replica
     // N3 snapshots: decoded states by host tick. _recon keeps recent ones as
@@ -747,6 +834,14 @@ private:
     void hostSendSheets();
     void hostUsePlaceable(HostClient &client, const std::shared_ptr<Creature> &actor, const std::shared_ptr<Object> &target);
     void hostPromptHandOver(HostClient &client, const Object &object);
+    // Minigames
+    net::CommandReject hostMiniGameCommand(HostClient &client, const net::Command &command, bool &handled);
+    net::CommandReject hostRequestGuestMiniGame(HostClient &client);
+    void hostHandleMiniGameControl(HostClient &client, const net::MiniGameControl &control);
+    void hostSendMiniGame(const net::MiniGameState &state);
+    void hostBroadcastMiniGame();
+    void hostPromptMiniGameHandOver();
+    void clientHandleMiniGameState(const net::MiniGameState &state);
     void clientHandleInventory(const net::SharedInventory &inventory);
     void clientHandleSheet(const net::CharacterSheet &sheet);
     void clientHandleBark(const net::Bark &bark);

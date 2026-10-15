@@ -1271,3 +1271,12 @@ TEST(Reputes, the_player_column_mirrors_the_player_row) {
     // Retail: the two friendly factions are mutually hostile.
     EXPECT_TRUE(reputes.getIsEnemy(Faction::Friendly1, Faction::Friendly2));
 }
+
+TEST(SavedCustomTokens, resolving_a_line_drops_its_braced_notes) {
+    // Upstream #356: "{...}" is a developer note, "{{" a literal brace.
+    Fixture fixture(GameID::KotOR);
+    EXPECT_EQ("Hello  there.", fixture.game.substituteCustomTokens("Hello {Trask, warm} there."));
+    EXPECT_EQ("", fixture.game.substituteCustomTokens("{only a note}"));
+    EXPECT_EQ("a {b", fixture.game.substituteCustomTokens("a {{b"));
+    EXPECT_EQ("unclosed ", fixture.game.substituteCustomTokens("unclosed {note"));
+}

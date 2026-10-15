@@ -17,12 +17,21 @@
 
 #pragma once
 
+#include <deque>
+#include <string>
+
 #include "reone/input/event.h"
 
 #include "minigame.h"
 #include "minigameview.h"
 
 namespace reone {
+
+namespace audio {
+
+class AudioSource;
+
+}
 
 namespace graphics {
 
@@ -83,6 +92,14 @@ public:
                                bool overlay) override;
     void removeMiniGameAnimation(const MiniGameActor &actor, const std::string &name) override;
     void playMiniGameSound(const std::string &resRef, const glm::vec3 &position) override;
+
+    // Diagnostics
+
+    /** The animations scripts asked for lately (newest last), "!" before one no model has. */
+    const std::deque<std::string> &recentAnimations() const { return _recentAnimations; }
+
+    /** What an animation of the player's models drives: per model and node, its controllers (JSON). */
+    std::string describeAnimation(const std::string &name) const;
     void onMiniGameActorDied(const MiniGameActor &actor) override;
 
     // END IMiniGameView
@@ -108,6 +125,17 @@ private:
     std::vector<ActorModels> _actors;
     scene::SceneNode *_cameraHook {nullptr};
     MiniGameAnimator _animator;
+    std::deque<std::string> _recentAnimations;
+    // The bike's engine loop (the player's Sounds.Engine), pitched with its speed. Every
+    // view plays its own, the host's and a co-op guest's alike, from the session's speed.
+    std::shared_ptr<audio::AudioSource> _engineSound;
+    std::string _engineSoundResRef;
+
+public:
+    /** The engine loop playing, "" when none (diagnostics). */
+    const std::string &engineSound() const { return _engineSoundResRef; }
+
+private:
 
     bool _steerLeft {false};
     bool _steerRight {false};

@@ -18,6 +18,7 @@
 #include "reone/game/coopsession.h"
 #include "reone/game/gui/actionbar.h"
 
+#include "reone/game/d20/forcepowers.h"
 #include "reone/game/d20/forms.h"
 #include "reone/game/d20/spells.h"
 #include "reone/game/action/castspellatobject.h"
@@ -229,7 +230,11 @@ void ActionBar::update() {
         slot.actions.clear();
         switch (i) {
         case 0: {
-            // TODO: Force powers.
+            // The leader's personal Force powers, cast on the leader
+            // (design note k1hud_parity_2); hostile powers are on the target menu.
+            for (auto &power : hudForcePowers(leader->attributes().spells(), _services.game.spells, false)) {
+                slot.actions.push_back(ContextAction(nullptr, std::move(power)));
+            }
             // K2 Force forms (the K2 systems merge): the forms the leader
             // knows; using one makes it the active form (design note k2_merge).
             if (_services.resource.k2Merge) {

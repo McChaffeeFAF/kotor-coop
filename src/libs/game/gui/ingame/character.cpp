@@ -17,6 +17,7 @@
 
 #include "reone/game/gui/ingame/character.h"
 
+#include "reone/game/coopsession.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
@@ -26,6 +27,7 @@
 #include "reone/graphics/di/services.h"
 #include "reone/gui/sceneinitializer.h"
 #include "reone/resource/provider/models.h"
+#include "reone/resource/strings.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
 #include "reone/scene/types.h"
@@ -108,7 +110,32 @@ void CharacterMenu::onGUILoaded() {
         }
 
         _controls.LBL_MORE->setVisible(false);
-        _controls.BTN_SCRIPTS->setDisabled(true);
+        _scripts = _controls.BTN_SCRIPTS;
+    } else if (_controls.BTN_EXIT) {
+        // character_p has no Scripts button: one in BTN_EXIT's K2 style, on
+        // the footer row right of it (as equip_p's Equip sits).
+        auto button = std::static_pointer_cast<Button>(std::shared_ptr<Control>(_gui->newControl(ControlType::Button, "BTN_SCRIPTS")));
+        button->setBorder(_controls.BTN_EXIT->border());
+        button->setHilight(_controls.BTN_EXIT->hilight());
+        button->setText(_controls.BTN_EXIT->text());
+        auto extent = k2ScriptsButtonExtent();
+        button->setAuthoredExtent(extent);
+        button->setExtent(extent);
+        _gui->addControlToFront(button, IGUI::ControlCoordinates::Authored);
+        enableK2ButtonBodyFill(button);
+        _scripts = std::move(button);
+    }
+    if (_scripts) {
+        _scripts->setDisabled(false);
+        _scripts->setOnClick([this]() {
+            // Co-op: the party AI runs on the host; a client's button is off.
+            if (auto *coop = _game.coop(); coop && coop->isClient()) {
+                return;
+            }
+            _game.party().setAIStyle(nextPartyAIStyle(_game.party().aiStyle()));
+            refreshPartyAIStyle();
+        });
+        refreshPartyAIStyle();
     }
     if (_controls.SLD_ALIGN) {
         // The alignment bar only shows the value; both games make it read-only.
@@ -116,6 +143,28 @@ void CharacterMenu::onGUILoaded() {
     }
     // K2-only: force mastery has no K1 data.
     hideK2OnlyControls({"LBL_FORCEMASTERY"});
+}
+
+int CharacterMenu::partyAIStyleStrRef(int style) {
+    switch (style) {
+    case 1:
+        return 1097;
+    case 2:
+        return 1098;
+    default:
+        return 1096;
+    }
+}
+
+void CharacterMenu::refreshPartyAIStyle() {
+    if (!_scripts) {
+        return;
+    }
+    // "Scripts: Defensive" (TLK 1067 and the style's name).
+    auto &strings = _services.resource.strings;
+    _scripts->setTextMessage(strings.getText(1067) + ": " + strings.getText(partyAIStyleStrRef(_game.party().aiStyle())));
+    auto *coop = _game.coop();
+    _scripts->setDisabled(coop && coop->isClient());
 }
 
 void CharacterMenu::update(float dt) {
@@ -134,6 +183,7 @@ static std::string describeAbilityModifier(int value) {
 }
 
 void CharacterMenu::refreshControls() {
+    refreshPartyAIStyle();
     std::shared_ptr<Creature> partyLeader(_game.party().getLeader());
     CreatureAttributes &attributes = partyLeader->attributes();
 

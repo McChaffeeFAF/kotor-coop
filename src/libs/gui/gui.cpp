@@ -17,6 +17,8 @@
 
 #include "reone/gui/gui.h"
 
+#include "reone/gui/navigation.h"
+
 #include "reone/graphics/context.h"
 #include "reone/graphics/mesh.h"
 #include "reone/graphics/meshregistry.h"
@@ -355,6 +357,12 @@ bool GUI::handle(const input::Event &event) {
         if (_selection && _selection->get().handleMouseWheel(event.wheel.x, event.wheel.y))
             return true;
         break;
+
+    case input::EventType::Navigate:
+        return handleNavigate(event.navigate.action);
+
+    default:
+        break;
     }
 
     return false;
@@ -376,6 +384,10 @@ void GUI::updateSelection(int screenX, int screenY) {
         (_selection && control && _selection->get().id() == control->get().id())) {
         return;
     }
+    setSelection(control);
+}
+
+void GUI::setSelection(std::optional<std::reference_wrapper<Control>> control) {
     if (_selection) {
         _selection->get().setSelected(false);
         onSelectionChanged(_selection->get().tag(), false);
@@ -385,6 +397,69 @@ void GUI::updateSelection(int screenX, int screenY) {
         control->get().setSelected(true);
         onSelectionChanged(control->get().tag(), true);
     }
+}
+
+bool GUI::handleNavigate(input::NavigateAction action) {
+    if (!_rootControl) {
+        return false;
+    }
+    if (action == input::NavigateAction::Accept) {
+        if (!_selection) {
+            return false;
+        }
+        auto &control = _selection->get();
+        debug("Control used with the gamepad: " + control.tag(), LogChannel::GUI);
+        onClick(control.tag());
+        control.handlePadAccept();
+        return true;
+    }
+    // The focused control may use the direction itself (a list steps its rows).
+    if (_selection && _selection->get().handlePadDirection(action)) {
+        return true;
+    }
+    std::vector<Control *> controls;
+    auto items = collectNavItems(
+        _rootControl->get(),
+        [](Control &control) {
+            std::vector<Control *> kids;
+            for (auto &child : control.children()) {
+                kids.push_back(&child.get());
+            }
+            return kids;
+        },
+        [](const Control &control) { return control.isVisible(); },
+        [](const Control &control) { return !control.isDisabled(); },
+        [](const Control &control) { return control.isSelectable(); },
+        [this, &controls](Control &control) {
+            auto offset = renderOffset(control);
+            controls.push_back(&control);
+            NavItem item;
+            item.id = static_cast<int>(controls.size()) - 1;
+            item.left = control.extent().left + offset.x;
+            item.top = control.extent().top + offset.y;
+            item.width = control.extent().width;
+            item.height = control.extent().height;
+            return item;
+        });
+    if (items.empty()) {
+        return false;
+    }
+    std::optional<int> current;
+    for (const auto &item : items) {
+        if (_selection && controls[item.id] == &_selection->get()) {
+            current = item.id;
+        }
+    }
+    auto target = navigateFocus(items, current, action);
+    if (!target) {
+        return false;
+    }
+    Control *chosen = controls[*target];
+    if (_selection && &_selection->get() == chosen) {
+        return true; // nowhere further that way
+    }
+    setSelection(*chosen);
+    return true;
 }
 
 std::optional<std::reference_wrapper<Control>> GUI::findControlAt(int x, int y,

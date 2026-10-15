@@ -97,11 +97,24 @@ bool SoundSceneNode::isSoundPlaying() const {
     return _source && _source->isPlaying();
 }
 
+void SoundSceneNode::stopSound() {
+    if (_source) {
+        _source->stop();
+        _source.reset();
+    }
+    if (_fading) {
+        _fading->stop();
+        _fading.reset();
+    }
+}
+
 void SoundSceneNode::setAudible(bool audible) {
     if (_audible == audible) {
         return;
     }
     if (!audible && _source) {
+        // Falling out of range stops the sound; a fade already running
+        // finishes on its own.
         _source->stop();
         _source.reset();
     }

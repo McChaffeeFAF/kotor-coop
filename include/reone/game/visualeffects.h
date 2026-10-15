@@ -119,6 +119,34 @@ struct VisualEffectDesc {
     std::shared_ptr<graphics::Texture> bodyTexture;
 
     /**
+     * The speed effect (progfx 1500 impact, 1601 duration): afterimages of
+     * the target trail behind it as it moves, a pulse when it stands
+     * (design note v15_vfx_leftovers). Drawn as a body overlay.
+     */
+    bool speedTrail {false};
+
+    static bool isSpeedProgfx(int progfx) { return progfx == 1500 || progfx == 1601; }
+
+    /** Where a programmed effect's own model goes on the target. */
+    enum class ProgfxPlace {
+        Impact,      /**< the impact node, like imp_impact_node */
+        AboveHead,   /**< just over the head (the fizzle: at the impact node its flares are inside the body) */
+        Chest,  /**< pinned to the front of the chest (the medal) */
+        Head    /**< over the head, turning with it (the masks) */
+    };
+
+    /**
+     * Programmed effects that K1 draws with a model no table names
+     * (progfx 1201, 1700-1702): v_fizzle_imp, v_medal_dur,
+     * v_revmask1/2_dur (design note v15_vfx_leftovers).
+     */
+    std::shared_ptr<graphics::Model> progfxModel;
+    ProgfxPlace progfxPlace {ProgfxPlace::Impact};
+
+    /** The model K1 ships for such a programmed effect number, or empty. */
+    static std::string programmedModelResRef(int progfx, ProgfxPlace &place);
+
+    /**
      * A spell's cast-hand visual (spells.2da casthandvisual), presented as a
      * visual effect of its own so that co-op guests get it through the same
      * events. Its id is castHandId(spell row); it is not a visualeffects row.

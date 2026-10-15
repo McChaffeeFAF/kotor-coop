@@ -19,6 +19,7 @@
 
 #include "reone/graphics/texture.h"
 #include "reone/graphics/types.h"
+#include "reone/input/event.h"
 
 #include "reone/resource/parser/gff/gui.h"
 #include "controlrender.h"
@@ -139,6 +140,8 @@ public:
     int id() const { return _id; }
     int padding() const { return _padding; }
     Border &border() const { return *_border; }
+    const Border *borderOrNull() const { return _border.get(); }
+    const Border *hilightOrNull() const { return _hilight.get(); }
     const Extent &authoredExtent() const { return _authoredExtent; }
     void setAuthoredExtent(Extent extent) { _authoredExtent = std::move(extent); }
 
@@ -223,6 +226,13 @@ public:
     virtual bool handleClick(int x, int y, int clicks = 1);
     /** The left button moved while held down on this control. */
     virtual bool handleMouseDrag(int x, int y) { return false; }
+    /**
+     * A direction pressed on a gamepad while this control has focus. True when the control used it
+     * itself (a list stepping its rows, a slider moving); false lets focus move to the next control.
+     */
+    virtual bool handlePadDirection(input::NavigateAction direction) { return false; }
+    /** Accept pressed on a gamepad: by default a click in the middle of the control. */
+    virtual bool handlePadAccept();
 
     // END User input
 

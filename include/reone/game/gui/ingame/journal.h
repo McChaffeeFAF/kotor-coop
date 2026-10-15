@@ -43,13 +43,35 @@ public:
     /** Reload the quest list from the journal. */
     void refresh();
 
-private:
+    /** The sort orders: K1's BTN_SORT cycle and K2's four filter buttons. */
     enum class Filter {
         Priority,
         Planet,
         Name,
         Time,
     };
+
+    /** One quest as the list sorts it. */
+    struct Row {
+        std::string plotId;
+        std::string name;
+        uint32_t priority {0}; // JRL: 0 highest
+        int planetId {-1};
+        int received {0};      // position in the order received
+        bool completed {false};
+    };
+
+    /**
+     * The rows shown: the active quests (or, with completed, the finished
+     * ones), in the filter's order. Time: order received; Name: by name;
+     * Priority: highest first; Planet: by planet id. Ties keep the order
+     * received (design note k1hud_parity_2, follow-up).
+     */
+    static std::vector<Row> arrange(std::vector<Row> rows, Filter filter, bool completed);
+    /** K1's BTN_SORT cycle: received, name, priority, planet. */
+    static Filter nextK1Sort(Filter filter);
+
+private:
 
     struct Controls {
         std::shared_ptr<gui::Button> BTN_EXIT;
@@ -73,6 +95,8 @@ private:
 
     Controls _controls;
     Filter _filter {Filter::Priority};
+    bool _showCompleted {false};
+    void refreshToggleTexts();
 
     void onGUILoaded() override;
     void setFilter(Filter filter);

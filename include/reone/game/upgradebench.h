@@ -137,6 +137,8 @@ public:
      * benches (a guest's own bag in Free Mode, the shared inventory in Story Mode).
      */
     void useHolder(std::shared_ptr<Object> inventory, std::vector<uint32_t> wearers);
+    /** Back to the party's inventory and members (undoes useHolder). */
+    void useParty();
 
     /** Start editing an item (loads upgrade.2da). */
     bool begin(const std::shared_ptr<Item> &item);
@@ -150,6 +152,14 @@ public:
     std::string colorCrystalFor(int modelVariation) const;
     std::vector<UpgradeSlot> slots() const;
     uint32_t stagedUpgrades() const { return _staged; }
+    /** The inventory item staged into a slot now (not what was installed before), or null. */
+    std::shared_ptr<Item> stagedPart(int slot) const;
+    /**
+     * The template of what is in a slot as staged: the colour crystal of the staged blade colour
+     * for a saber's colour slot, else the installed upgrade row's template; "" when empty. The
+     * slot's icon and the list's installed row both show this, so they always agree.
+     */
+    std::string installedTemplate(int slot) const;
     int stagedModelVariation() const { return _stagedModelVariation; }
 
     /** Party inventory items that could go into a slot now. */

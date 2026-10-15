@@ -70,6 +70,7 @@ enum class KeyAction {
     CancelCombat,
     ClearOneAction,
     Stealth,
+    SwitchWeapons,
     GameMenu,
     Count
 };
@@ -105,6 +106,10 @@ public:
     input::KeyCode keyFor(KeyAction action) const { return _keys[static_cast<size_t>(action)]; }
     input::KeyCode defaultKeyFor(KeyAction action) const { return _defaults[static_cast<size_t>(action)]; }
     std::optional<KeyAction> actionFor(input::KeyCode code) const;
+    /** The action that holds this key now, if it is not `action` itself (a bind would swap with it). */
+    std::optional<KeyAction> conflict(KeyAction action, input::KeyCode code) const;
+    /** Whether `bind(action, code)` is refused: the action is fixed, or the key belongs to a fixed one. */
+    bool locked(KeyAction action, input::KeyCode code) const;
 
     /** Bind; an action that held the key takes this action's old key (a swap). */
     void bind(KeyAction action, input::KeyCode code);
@@ -119,6 +124,8 @@ public:
      * dropped; keys the keymap does not know pass through unchanged.
      */
     Translation translate(input::KeyCode pressed) const;
+    /** An action performed from somewhere other than its key (a gamepad): the same result its key would give. */
+    Translation translateAction(KeyAction action) const;
 
 private:
     std::vector<input::KeyCode> _keys;

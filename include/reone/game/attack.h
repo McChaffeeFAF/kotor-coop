@@ -32,7 +32,7 @@ class ISceneGraph;
 namespace game {
 
 class Action;
-class CombatRound;
+struct CombatRound;
 class Creature;
 class Game;
 class IAnimations;

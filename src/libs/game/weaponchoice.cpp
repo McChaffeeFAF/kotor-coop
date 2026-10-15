@@ -33,7 +33,7 @@ float expectedWeaponDamage(const Creature &creature, const Item &weapon) {
 static bool isKind(const Item &item, WeaponKind kind) {
     switch (kind) {
     case WeaponKind::Ranged:
-        return item.weaponType() == WeaponType::Ranged;
+        return item.isRanged();
     case WeaponKind::Melee:
         return item.weaponType() == WeaponType::Melee;
     }

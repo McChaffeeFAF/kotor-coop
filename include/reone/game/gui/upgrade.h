@@ -31,8 +31,21 @@ namespace reone {
 namespace game {
 
 class Creature;
+class GuestBenchScreen;
 class Item;
 class UpgradeGUI;
+
+/**
+ * Where a list goes when its authored rectangle runs under header labels and over controls
+ * below it (K1's upgrade.gui authors LB_ITEMS over the whole left panel): below every header
+ * that overlaps the list's top half, above the first footer that starts inside it. Headers and
+ * footers that do not overlap the list horizontally are ignored; the list is returned as authored
+ * when nothing overlaps or too little room would be left.
+ */
+gui::Control::Extent fitListBetween(const gui::Control::Extent &list,
+                                    const std::vector<gui::Control::Extent> &headers,
+                                    const std::vector<gui::Control::Extent> &footers,
+                                    int gap = 3);
 
 /** upgradeitems.gui: the upgradeable items of one category. */
 class UpgradeItemsPanel : public GameGUI {
@@ -96,7 +109,12 @@ public:
     Mode mode() const { return _mode; }
     CraftingBench &crafting() { return _crafting; }
     /// Act on list row `row` (0 is the mode switch). False when nothing happened.
+    /// A co-op guest's row sends the host a request instead (true when one went out).
     bool activate(int row);
+    /// The list row of a recipe (Create) or an item (Break down) by template, or -1.
+    int rowOf(const std::string &resRef) const;
+    int selectedRow() const;
+    void selectRow(int row);
 
 private:
     UpgradeGUI &_host;
@@ -104,6 +122,8 @@ private:
     Mode _mode {Mode::Create};
     std::vector<CraftingBench::RecipeEntry> _recipes;
     std::vector<std::shared_ptr<Item>> _breakable;
+    // A co-op guest's breakdown yields, from the host's view (by row).
+    std::vector<int> _guestYields;
     std::shared_ptr<gui::ListBox> _list;
     std::shared_ptr<gui::ListBox> _description;
     std::shared_ptr<gui::Button> _actionButton;
@@ -112,6 +132,9 @@ private:
     void onGUILoaded() override;
     void describeSelection();
     std::shared_ptr<Creature> crafter() const;
+    /** A co-op guest: the recipes and breakable items from the host's view. */
+    void loadGuestRows(const GuestBenchScreen &screen);
+    int yieldOf(size_t index, const Item &item, const Creature *leader) const;
 };
 
 /** upgrade.gui: one item's slots and the upgrades that fit them. */
@@ -159,8 +182,12 @@ private:
     std::shared_ptr<gui::Label> _title;
     std::shared_ptr<gui::Button> _assemble;
     std::shared_ptr<gui::Button> _back;
+    // LB_ITEMS fitted between the labels and the slot buttons, for a saber and for other items.
+    gui::Control::Extent _listExtent;
+    gui::Control::Extent _listExtentSaber;
 
     void onGUILoaded() override;
+    void fitLayout();
     void activateRow(int row);
     std::string slotName(const UpgradeSlot &slot) const;
 };
@@ -205,6 +232,19 @@ public:
     bool assemble();
     void close();
 
+    /**
+     * A co-op guest's bench (CoopSession::benchScreen): the screen works on local stand-ins of
+     * the host's items; Assemble, Create and Break Down send requests, and a new view from the
+     * host redraws it. A lab opens straight on crafting.
+     */
+    void openGuest();
+    void refreshGuest();
+    void leaveGuest();
+    bool guest() const { return _guest; }
+    GuestBenchScreen *guestScreen() const;
+    /** The host's reason for the last refused request, for the description lists, or "". */
+    std::string guestNote() const;
+
     Page page() const { return _page; }
     UpgradeBench &bench() { return _bench; }
     UpgradeSlotsPanel &slotsPanel() { return *_slotsPanel; }
@@ -217,6 +257,13 @@ private:
     UpgradeCategory _category {UpgradeCategory::None};
     // Opened on an item by a script: Back and Assemble leave the bench.
     bool _directItem {false};
+    // A co-op guest's bench: the item on the slots page by host id, the material counts the
+    // crafting page reads (the host's), and whether it is a lab (crafting only).
+    bool _guest {false};
+    bool _guestLab {false};
+    uint32_t _guestItem {0};
+    int _guestComponents {0};
+    int _guestChemicals {0};
     std::unique_ptr<UpgradeItemsPanel> _itemsPanel;
     std::unique_ptr<UpgradeSlotsPanel> _slotsPanel;
     std::unique_ptr<CraftingPanel> _craftingPanel;
@@ -235,6 +282,8 @@ private:
     std::shared_ptr<Item> selectedSelectItem() const;
     /** Back to the page that lists items: K2's workbench page, K1's items page. */
     void returnToItemList();
+    void useGuestHolder();
+    bool assembleGuest();
 };
 
 } // namespace game

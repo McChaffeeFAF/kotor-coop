@@ -22,6 +22,7 @@
 #include "reone/gui/control/listbox.h"
 
 #include "../../gui.h"
+#include "../../messagelog.h"
 
 namespace reone {
 
@@ -44,6 +45,15 @@ public:
     void resetFilter();
 
     void refresh();
+
+    /** The log split for the Messages lists (design note k1hud_parity_2, follow-up). */
+    struct Split {
+        std::vector<const MessageLog::Entry *> dialog;   // conversation lines
+        std::vector<const MessageLog::Entry *> feedback; // feedback, combat included (K1's one list)
+        std::vector<const MessageLog::Entry *> general;  // feedback without combat (K2's Feedback filter)
+        std::vector<const MessageLog::Entry *> combat;   // combat feedback (K2's Combat filter)
+    };
+    static Split split(const std::deque<MessageLog::Entry> &entries);
 
 private:
     enum class Filter {

@@ -37,6 +37,7 @@
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
 #include "reone/game/action.h"
+#include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/usefeat.h"
 #include "reone/game/animationutil.h"
@@ -1142,6 +1143,9 @@ void Creature::clearHostileActionsAgainst(const Object &object) {
             if (isPhysicalAttackFeat(featAction.feat())) {
                 target = featAction.target();
             }
+        } else if (action && action->type() == ActionType::CastSpellAtObject && action != getCurrentAction()) {
+            // A queued cast or item use at it; one already under way plays out.
+            target = static_cast<CastSpellAtObjectAction &>(*action).target();
         }
 
         if (target.get() != &object) {
@@ -3382,8 +3386,9 @@ void Creature::appendEquippedItemEffects(
             break;
         }
         case ItemProperty::DecreasedAbilityScore: {
-            int amount = getItemPropertyValue(
-                _services, property, "value", 0);
+            // The cost table (iprp_neg10cost) holds the decrease as a negative value.
+            int amount = std::abs(getItemPropertyValue(
+                _services, property, "value", 0));
             if (amount > 0) {
                 append(_game.newEffect<AbilityDecreaseEffect>(
                     static_cast<Ability>(property.subtype), amount));
@@ -3762,7 +3767,8 @@ int Creature::getDefense(const Creature *attacker, int damageFlags) const {
 
     if (isDebilitated()) {
         dexterityModifier = std::min(dexterityModifier, 0);
-    } else if (armorDefense > 0 && armor->maxDexterityBonus() >= 0) {
+    } else if (armorDefense > 0 && armor->isBodyModel() && armor->maxDexterityBonus() >= 0) {
+        // Only armour drawn as the body model with an armour class limits Dexterity.
         dexterityModifier = std::min(
             dexterityModifier,
             armor->maxDexterityBonus());
@@ -4238,7 +4244,8 @@ void Creature::addPhysicalDamageModifiers(
                 if (!modifier || modifier->flat <= 0) {
                     break;
                 }
-                selectDamageModifier(bonuses, *modifier);
+                // Damage bonuses of a type add up across an item's properties.
+                itemBonuses.push_back(*modifier);
                 damage.setPower(static_cast<DamagePower>(modifier->flat));
                 break;
             }
@@ -4251,7 +4258,8 @@ void Creature::addPhysicalDamageModifiers(
                     property.costValue,
                     type);
                 if (modifier) {
-                    selectDamageModifier(bonuses, *modifier);
+                    // Damage bonuses of a type add up across an item's properties.
+                itemBonuses.push_back(*modifier);
                 }
                 break;
             }
@@ -4265,7 +4273,8 @@ void Creature::addPhysicalDamageModifiers(
                     property.costValue,
                     type);
                 if (modifier) {
-                    selectDamageModifier(bonuses, *modifier);
+                    // Damage bonuses of a type add up across an item's properties.
+                itemBonuses.push_back(*modifier);
                 }
                 break;
             }

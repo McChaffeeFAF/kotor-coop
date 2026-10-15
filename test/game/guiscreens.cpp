@@ -28,6 +28,8 @@
 
 #include "reone/game/game.h"
 #include "reone/game/guestbench.h"
+#include "reone/game/gui/upgrade.h"
+#include "reone/gui/control/listbox.h"
 #include "reone/game/modulesnapshot.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
@@ -423,6 +425,85 @@ TEST_F(GuiScreensTest, a_colour_crystal_swaps_the_blade_colour) {
     ASSERT_TRUE(bench.assemble());
     EXPECT_EQ(2, saber->modelVariation());
     EXPECT_FALSE(_player->getItemByTag("g_w_sbrcrstl18"));
+}
+
+TEST_F(GuiScreensTest, a_slot_shows_what_it_holds_as_staged_a_colour_slot_its_crystal) {
+    auto saber = give("saber", kSaber, 900, false, {{38, 1, 0}});
+    saber->setModelVariation(1); // blue
+    saber->setUpgrades(1u << 0);
+    auto red = give("g_w_sbrcrstl18", 11, 100);
+    UpgradeBench bench(*_game, _engine.services());
+    ASSERT_TRUE(bench.begin(saber));
+    EXPECT_EQ("g_w_sbrcrstl14", bench.installedTemplate(0)) << "the blue blade's crystal, not a crystal it could take";
+    EXPECT_EQ("g_w_sbrcrstl01", bench.installedTemplate(1));
+    EXPECT_EQ("", bench.installedTemplate(2));
+    EXPECT_EQ("", bench.installedTemplate(7));
+    ASSERT_TRUE(bench.install(0, red));
+    EXPECT_EQ("g_w_sbrcrstl18", bench.installedTemplate(0));
+    ASSERT_TRUE(bench.remove(1));
+    EXPECT_EQ("", bench.installedTemplate(1));
+}
+
+TEST_F(GuiScreensTest, k1_upgrade_slots_come_from_the_items_own_upgrade_properties) {
+    // K1 data: an upgradeable variant (g_w_blstrpstl005) carries properties with UpgradeType
+    // rows; the plain one (g_w_blstrpstl001) has none, and installing into it would do nothing.
+    UpgradeTable table(*makeUpgradeTable());
+    auto variant = makeItem("g_w_blstrpstl005", kPistol, 100, false, {{38, 1, 2}, {11, 1, 3}});
+    auto plain = makeItem("g_w_blstrpstl001", kPistol, 100);
+    EXPECT_EQ(UpgradeCategory::Ranged, upgradeCategoryOf(*variant));
+    EXPECT_EQ(2u, upgradeSlotsFor(*variant, 0, table).size());
+    EXPECT_EQ(UpgradeCategory::None, upgradeCategoryOf(*plain));
+    EXPECT_TRUE(upgradeSlotsFor(*plain, 0, table).empty());
+}
+
+// --- Upgrade slots page layout --------------------------------------------------
+
+namespace {
+
+using Extent = reone::gui::Control::Extent;
+
+void expectExtent(const Extent &expected, const Extent &actual) {
+    EXPECT_EQ(expected.left, actual.left);
+    EXPECT_EQ(expected.top, actual.top);
+    EXPECT_EQ(expected.width, actual.width);
+    EXPECT_EQ(expected.height, actual.height);
+}
+
+} // namespace
+
+TEST(UpgradeLayout, k1_item_list_goes_below_the_name_and_upgrades_labels_and_above_the_slots) {
+    // K1 upgrade.gui: LB_ITEMS 60,66 265x338; LBL_SLOTNAME 66+25, LBL_UPGRADES 94+25, one line of
+    // LBL_PROPERTY at 122, slot buttons at 325.
+    Extent list(60, 66, 265, 338);
+    std::vector<Extent> headers {{60, 66, 265, 25}, {60, 94, 199, 25}, {262, 94, 63, 25}, {60, 122, 265, 25}};
+    std::vector<Extent> footers {{93, 325, 64, 64}, {161, 325, 64, 64}};
+    expectExtent(Extent(60, 150, 265, 172), fitListBetween(list, headers, footers));
+}
+
+TEST(UpgradeLayout, k1_saber_list_stops_above_the_colour_slot_name) {
+    Extent list(60, 66, 265, 338);
+    std::vector<Extent> headers {{60, 94, 199, 25}};
+    std::vector<Extent> footers {{60, 285, 265, 25}, {93, 325, 64, 64}};
+    expectExtent(Extent(60, 122, 265, 160), fitListBetween(list, headers, footers));
+}
+
+TEST(UpgradeLayout, a_list_clear_of_its_labels_or_left_too_small_stays_as_authored) {
+    Extent list(60, 200, 265, 100);
+    // Above it, beside it, and below it: nothing overlaps.
+    std::vector<Extent> headers {{60, 66, 265, 25}, {400, 200, 50, 25}};
+    std::vector<Extent> footers {{60, 325, 64, 64}};
+    expectExtent(list, fitListBetween(list, headers, footers));
+    // A header covering most of it would leave too little room.
+    std::vector<Extent> huge {{60, 200, 265, 90}};
+    expectExtent(list, fitListBetween(list, huge, {}));
+}
+
+TEST(UpgradeLayout, a_borrowed_proto_item_keeps_its_offset_and_narrows_with_the_list) {
+    // K1: LB_DESC_LS 329,66 258 wide with its proto at 333,70 234x50; LB_DESC 332,69 253 wide.
+    Extent donor(329, 66, 258, 338);
+    Extent proto(333, 70, 234, 50);
+    Extent list(332, 69, 253, 237);
+    expectExtent(Extent(336, 73, 229, 50), reone::gui::ListBox::rebasedProtoExtent(donor, proto, list));
 }
 
 // --- Routines -----------------------------------------------------------------

@@ -512,6 +512,7 @@ void Encounter::runExhaustedScript() {
 }
 
 void Encounter::runEnteredScript(uint32_t entering) {
+    setLastEntered(entering);
     if (_onEntered.empty()) {
         return;
     }
@@ -522,6 +523,7 @@ void Encounter::runEnteredScript(uint32_t entering) {
 }
 
 void Encounter::runExitScript(uint32_t exiting) {
+    setLastLeft(exiting);
     if (_onExit.empty()) {
         return;
     }

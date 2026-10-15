@@ -55,6 +55,9 @@ public:
     void render(const glm::ivec2 &screenSize, const glm::ivec2 &offset, scene::IRenderPass &pass) override;
     bool handleClick(int x, int y, int clicks = 1) override;
     bool handleMouseDrag(int x, int y) override;
+    /** Left and right move the value a tenth of the track. */
+    bool handlePadDirection(input::NavigateAction direction) override;
+    bool handlePadAccept() override { return false; }
 
     float value() const { return _value; }
     /** Set the value (clamped to 0..1) without notifying. */

@@ -75,6 +75,7 @@ public:
     struct Features {
         Blending blending {Blending::None};
         float waterAlpha {-1.0f};
+        float alphaTest {0.0f}; /**< TPC header: a cut-out texel's alpha must exceed this */
         bool cube {false};
         bool decal {false};
 

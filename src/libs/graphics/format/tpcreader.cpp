@@ -22,6 +22,10 @@
 #include "reone/system/exception/validation.h"
 #include "reone/system/stream/memoryinput.h"
 
+#include <cmath>
+
+#include <glm/common.hpp>
+
 namespace reone {
 
 namespace graphics {
@@ -29,7 +33,9 @@ namespace graphics {
 void TpcReader::load() {
     uint32_t dataSize = _tpc.readUint32();
 
-    _tpc.skipBytes(4);
+    // The public TPC header's second field: the alpha a cut-out ("Punch-Through")
+    // texel must exceed to be drawn, as a fraction (1/255 steps in K1).
+    float alphaTest = _tpc.readFloat();
 
     uint16_t width = _tpc.readUint16();
     uint16_t height = _tpc.readUint16();
@@ -62,6 +68,7 @@ void TpcReader::load() {
 
     loadLayers();
     loadFeatures();
+    _features.alphaTest = std::isfinite(alphaTest) ? glm::clamp(alphaTest, 0.0f, 1.0f) : 0.0f;
     loadTexture();
 }
 

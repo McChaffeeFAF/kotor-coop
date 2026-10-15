@@ -223,6 +223,9 @@ void Trigger::update(float dt) {
     for (auto &tenant : tenantsToRemove) {
         _tenants.erase(tenant);
 
+        if (tenant) {
+            setLastLeft(tenant->id());
+        }
         if (_onExit.empty() || !tenant) {
             continue;
         }
@@ -239,6 +242,12 @@ void Trigger::update(float dt) {
 void Trigger::addTenant(const std::shared_ptr<Object> &object) {
     _tenants.insert(object);
     syncDebugVisual();
+    uint32_t entering = object ? object->id() : script::kObjectInvalid;
+    if (auto *coop = _game.coop()) {
+        entering = coop->scriptActor(entering); // a player's creature counts as the PC
+    }
+    // Kept before a trap goes off, so its script reads the victim.
+    setLastEntered(entering);
     if (object && isTrap() && trapFiresOn(*object)) {
         if (partyHoldsTrapKey()) {
             // The trap's key, held by the party, disarms it instead.
@@ -251,10 +260,6 @@ void Trigger::addTenant(const std::shared_ptr<Object> &object) {
         return;
     }
 
-    uint32_t entering = object->id();
-    if (auto *coop = _game.coop()) {
-        entering = coop->scriptActor(entering); // a player's creature counts as the PC
-    }
     _game.scriptRunner().run(
         _onEnter,
         {{script::ArgKind::Caller, script::Variable::ofObject(_id)},
@@ -269,6 +274,7 @@ void Trigger::runClickScript(uint32_t clickerId) {
     if (auto *coop = _game.coop()) {
         clickerId = coop->scriptActor(clickerId); // a player's creature counts as the PC
     }
+    setLastEntered(clickerId);
     _game.scriptRunner().run(
         _onClick,
         {{script::ArgKind::Caller, script::Variable::ofObject(_id)},
@@ -461,6 +467,7 @@ void Trigger::fireTrap(uint32_t victimId) {
         removeTrapMarker();
     }
     if (!script.empty()) {
+        setLastEntered(victimId);
         _game.scriptRunner().run(
             script,
             {{script::ArgKind::Caller, script::Variable::ofObject(_id)},

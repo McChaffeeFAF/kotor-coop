@@ -293,6 +293,16 @@ public:
     // Combat
 
     uint32_t getLastHostileActor() const;
+    /**
+     * GetEnteringObject / GetExitingObject: who last came into (or was let in at) and who last
+     * left this object, kept on it, so a script it runs later (DelayCommand, ExecuteScript) still
+     * reads them. Set where the module, areas, triggers, encounters, doors and placeables run
+     * their enter, exit, click and fail-to-open scripts.
+     */
+    uint32_t lastEnteredId() const { return _lastEnteredId; }
+    uint32_t lastLeftId() const { return _lastLeftId; }
+    void setLastEntered(uint32_t id) { _lastEnteredId = id; }
+    void setLastLeft(uint32_t id) { _lastLeftId = id; }
 
     void setLastHostileActor(uint32_t actor);
 
@@ -458,6 +468,8 @@ protected:
     RuntimeObjectRef<Object> _lastHostileActor;
     RuntimeObjectRef<Object> _lastDamager;
     uint32_t _lastLockedBy {script::kObjectInvalid};
+    uint32_t _lastEnteredId {script::kObjectInvalid};
+    uint32_t _lastLeftId {script::kObjectInvalid};
     uint32_t _lastUnlockedBy {script::kObjectInvalid};
     std::map<std::string, int> _scriptSettings;
     std::optional<uint32_t> _savedLastDamagerId;

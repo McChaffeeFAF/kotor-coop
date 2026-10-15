@@ -7,3 +7,5 @@ fuzz-corpus/
 __pycache__/
 *.pyc
 coop_rejoin.json
+fuzz-*.log
+*.profraw

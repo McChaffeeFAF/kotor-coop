@@ -127,6 +127,13 @@ void CraftingBench::useHolder(std::shared_ptr<Object> inventory, int *components
     _hasHolder = true;
 }
 
+void CraftingBench::useParty() {
+    _holder.reset();
+    _components = nullptr;
+    _chemicals = nullptr;
+    _hasHolder = false;
+}
+
 std::shared_ptr<Object> CraftingBench::inventoryHolder() const {
     if (_hasHolder) {
         return _holder;

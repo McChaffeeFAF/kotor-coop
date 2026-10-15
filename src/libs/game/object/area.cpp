@@ -31,6 +31,8 @@
 #include "reone/game/game.h"
 #include "reone/game/location.h"
 #include "reone/game/object/door.h"
+#include "reone/game/object/store.h"
+#include "reone/game/object/waypoint.h"
 #include "reone/game/party.h"
 #include "reone/game/reputes.h"
 #include "reone/game/room.h"
@@ -1858,6 +1860,7 @@ void Area::runOnEnterScript() {
     if (!player)
         return;
 
+    setLastEntered(player->id());
     _game.scriptRunner().run(
         _onEnter,
         {{script::ArgKind::Caller, script::Variable::ofObject(_id)},
@@ -1872,6 +1875,7 @@ void Area::runOnExitScript() {
     if (!player)
         return;
 
+    setLastLeft(player->id());
     _game.scriptRunner().run(
         _onExit,
         {{script::ArgKind::Caller, script::Variable::ofObject(_id)},
@@ -2164,6 +2168,20 @@ std::shared_ptr<Object> Area::createObject(ObjectType type, const std::string &b
         std::shared_ptr<Placeable> placeable =
             _game.newPlaceableFromBlueprint(blueprintResRef);
         object = std::move(placeable);
+        break;
+    }
+    case ObjectType::Waypoint: {
+        // CreateObject makes waypoints (a script's own markers) and stores too.
+        auto waypoint = _game.newWaypoint();
+        waypoint->loadFromBlueprint(blueprintResRef);
+        object = std::move(waypoint);
+        break;
+    }
+    case ObjectType::Store: {
+        auto utm = _services.resource.gffs.get(blueprintResRef, ResType::Utm);
+        if (utm) {
+            object = _game.newStore(*utm, SerializedIdentityContext::templateResource(blueprintResRef));
+        }
         break;
     }
     default:

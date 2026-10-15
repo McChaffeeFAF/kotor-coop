@@ -21,6 +21,7 @@
 
 #include "reone/game/coopsession.h"
 #include "reone/game/game.h"
+#include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/module.h"
 #include "reone/game/types.h"
@@ -279,6 +280,7 @@ bool Party::addAvailableRosterRecord(
              std::string(e.what()));
         return false;
     }
+    retireStaleRosterBinding(identity, creature.get());
     return setRosterAvailable(identity, true);
 }
 
@@ -297,7 +299,36 @@ bool Party::addAvailableRosterRecord(
         return false;
     }
     _game.destroyRuntimeObjectGraph(creature);
+    retireStaleRosterBinding(identity);
     return setRosterAvailable(identity, true);
+}
+
+void Party::retireStaleRosterBinding(
+    const RosterIdentity &identity,
+    const Creature *keep) {
+    // K1 parks Trask in companion slot 0 on the Endar Spire; Bastila's
+    // AddAvailableNPCByTemplate(0, ...) on Taris replaces the record. The old
+    // runtime binding survived, so party selection spawned Trask again until
+    // a save/load dropped the in-memory bindings.
+    auto stale = rosterCreature(identity);
+    if (!stale || stale.get() == keep || stale == _player || stale == _actualPlayer) {
+        return;
+    }
+    for (const auto &member : _members) {
+        if (member.creature == stale) {
+            return;
+        }
+    }
+    clearRosterCreature(identity, stale.get());
+    bool inArea = false;
+    if (auto module = _game.module(); module && module->area()) {
+        const auto &objects = module->area()->objects();
+        inArea = std::any_of(objects.begin(), objects.end(),
+                             [&stale](const auto &object) { return object == stale; });
+    }
+    if (!inArea && _game.isRuntimeObjectLive(*stale)) {
+        _game.destroyRuntimeObjectGraph(stale);
+    }
 }
 
 bool Party::bindRosterCreature(
@@ -793,7 +824,7 @@ std::shared_ptr<Creature> Party::getLeader() const {
     return !_members.empty() ? _members[0].creature : nullptr;
 }
 
-void Party::setPartyLeader(int npc) {
+bool Party::setPartyLeader(int npc) {
     int memberIdx = -1;
     for (int i = 0; i < static_cast<int>(_members.size()); ++i) {
         if (_members[i].npc == npc) {
@@ -803,12 +834,12 @@ void Party::setPartyLeader(int npc) {
     }
     if (memberIdx == -1) {
         warn("Party: NPC not found: " + std::to_string(npc));
-        return;
+        return false;
     }
-    if (memberIdx == 0)
-        return;
-
-    setPartyLeaderByIndex(memberIdx);
+    if (memberIdx > 0) {
+        setPartyLeaderByIndex(memberIdx);
+    }
+    return true;
 }
 
 void Party::setPartyLeaderByIndex(int index) {

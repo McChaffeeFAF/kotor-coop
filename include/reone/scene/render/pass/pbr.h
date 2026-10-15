@@ -81,8 +81,14 @@ public:
     void drawParticles(graphics::Texture &texture,
                        graphics::FaceCullMode faceCulling,
                        bool premultipliedAlpha,
+                       float cutout,
                        const glm::ivec2 &gridSize,
                        const std::vector<ParticleInstance> &particles) override;
+
+    void drawProjectedBeam(graphics::Mesh &mesh,
+                           const glm::mat4 &transform,
+                           const glm::mat4 &transformInv,
+                           const glm::vec4 &color) override;
 
     void drawGrass(float radius,
                    float quadSize,

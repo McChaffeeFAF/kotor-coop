@@ -23,6 +23,7 @@
 #include "reone/gui/control/togglebutton.h"
 #include "reone/resource/types.h"
 
+#include "../creaturestates.h"
 #include "../gui.h"
 #include "../transitioncandidate.h"
 
@@ -316,6 +317,37 @@ private:
 
     void updatePartyPresentation();
     void toggleCombat(bool enabled);
+public:
+    /** The leader's effect-icon row, in authored space. step < 0: right to left. */
+    struct EffectIconRow {
+        int left {0};
+        int top {0};
+        int size {0};
+        int step {0};
+    };
+    static constexpr int kEffectIconCount = 6;
+    static constexpr int kEffectIconSize = 20;
+    static EffectIconRow effectIconRowFor(const gui::Control::Extent &mainPortrait, bool tsl);
+
+    /** What a party member's portrait indicators show. */
+    struct MemberStatus {
+        bool down {false};        // LBL_DISABLE: dead or at 0 hit points
+        bool debilitated {false}; // LBL_DEBILATATED: cannot act
+        bool helped {false};      // LBL_CMBTEFCTINC: a good effect icon is on
+        bool hindered {false};    // LBL_CMBTEFCTRED: a bad effect icon is on
+        std::vector<EffectIconEntry> icons;
+    };
+    static MemberStatus memberStatus(resource::ITwoDAs &twoDas, const Creature &member);
+
+private:
+    std::vector<std::shared_ptr<gui::Label>> _effectIcons;
+    std::vector<std::string> _effectIconResRefs;
+    void addEffectIcons();
+    void updateEffectIcons(const std::vector<EffectIconEntry> &icons);
+
+    // TB_PAUSE / TB_SOLO follow the game's state each frame (design note k1hud_parity_2).
+    void updateModeToggles();
+    bool soloToggleAvailable() const;
 
     // P1 item 10: the auto-combat toggle, built at load beside the weapon-swap
     // button (K2 layout) or the Cancel Combat button (K1 layout, which has no

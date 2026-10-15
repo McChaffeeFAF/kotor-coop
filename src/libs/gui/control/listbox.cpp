@@ -25,6 +25,7 @@
 #include "reone/gui/control/button.h"
 #include "reone/gui/control/imagebutton.h"
 #include "reone/gui/control/scrollbar.h"
+#include "reone/gui/control/togglebutton.h"
 #include "reone/gui/gui.h"
 #include "reone/resource/gff.h"
 #include "reone/resource/resources.h"
@@ -210,6 +211,47 @@ bool ListBox::handleClick(int x, int y, int clicks) {
     return true;
 }
 
+bool ListBox::handlePadDirection(input::NavigateAction direction) {
+    if (!_itemsInteractive || _items.empty() || (direction != input::NavigateAction::Up && direction != input::NavigateAction::Down)) {
+        return false;
+    }
+    int count = static_cast<int>(_items.size());
+    int next = direction == input::NavigateAction::Down ? _selectedItemIndex + 1 : _selectedItemIndex - 1;
+    if (_selectedItemIndex < 0) {
+        next = direction == input::NavigateAction::Down ? 0 : count - 1;
+    }
+    if (next < 0 || next >= count) {
+        return false; // past the ends: focus moves on to the next control
+    }
+    _selectedItemIndex = next;
+    // Keep the row on screen.
+    int visible = std::max(1, _slotCount);
+    if (next < _itemOffset) {
+        setItemOffset(next);
+    } else if (next >= _itemOffset + visible) {
+        setItemOffset(next - visible + 1);
+    }
+    return true;
+}
+
+bool ListBox::handlePadAccept() {
+    if (!_itemsInteractive || _items.empty()) {
+        return false;
+    }
+    if (_selectedItemIndex < 0) {
+        _selectedItemIndex = std::min(_itemOffset, static_cast<int>(_items.size()) - 1);
+    }
+    int row = _selectedItemIndex - _itemOffset;
+    if (row < 0 || row >= visibleItemCount()) {
+        return false;
+    }
+    auto extent = visibleItemExtent(row);
+    int x = 0;
+    int y = 0;
+    extent.getCenter(x, y);
+    return handleClick(x, y, 1);
+}
+
 void ListBox::render(const glm::ivec2 &screenSize,
                      const glm::ivec2 &offset,
                      IRenderPass &pass) {
@@ -243,6 +285,12 @@ void ListBox::render(const glm::ivec2 &screenSize,
             _protoItem->setTextColor(*item.textColor);
         }
 
+        auto toggle = item.on ? std::dynamic_pointer_cast<ToggleButton>(_protoItem) : nullptr;
+        bool originalOn = toggle && toggle->isOn();
+        if (toggle) {
+            toggle->setOn(*item.on);
+        }
+
         auto imageButton = std::dynamic_pointer_cast<ImageButton>(_protoItem);
         if (imageButton) {
             imageButton->render(itemOffset, item._textLines, item.iconText, item.iconTexture, item.iconFrame, pass);
@@ -254,6 +302,9 @@ void ListBox::render(const glm::ivec2 &screenSize,
         }
 
         _protoItem->setTextColor(originalTextColor);
+        if (toggle) {
+            toggle->setOn(originalOn);
+        }
 
         // Round the accumulated authored stride, not every row separately.
         // At fractional layout factors, truncating height and padding for each
@@ -350,6 +401,62 @@ void ListBox::setExtent(Extent extent) {
 void ListBox::setExtentHeight(int height) {
     Control::setExtentHeight(height);
     updateItemSlots();
+}
+
+Control::Extent ListBox::rebasedProtoExtent(const Extent &donorList, const Extent &donorProto, const Extent &list) {
+    return Extent(list.left + (donorProto.left - donorList.left),
+                  list.top + (donorProto.top - donorList.top),
+                  std::max(0, donorProto.width - (donorList.width - list.width)),
+                  donorProto.height);
+}
+
+void ListBox::relocate(Extent target) {
+    Extent old = _extent;
+    int dx = target.left - old.left;
+    int dy = target.top - old.top;
+    if (_protoItem) {
+        auto proto = _protoItem->extent();
+        proto.left += dx;
+        proto.top += dy;
+        proto.width = std::max(0, proto.width + (target.width - old.width));
+        _protoItem->setExtent(proto);
+        _protoItem->updateTransform();
+    }
+    if (_scrollBar) {
+        auto bar = _scrollBar->extent();
+        bar.left += dx + (bar.left > old.left + old.width / 2 ? target.width - old.width : 0);
+        bar.top = bar.top - old.top + target.top;
+        bar.height = std::max(0, bar.height + (target.height - old.height));
+        _scrollBar->setExtent(bar);
+        _scrollBar->updateTransform();
+    }
+    setExtent(target);
+    updateTransform();
+}
+
+bool ListBox::adoptProtoItem(const ListBox &donor) {
+    const Control *source = donor.protoItemOrNull();
+    if (_protoItem || !source) {
+        return false;
+    }
+    std::shared_ptr<Control> proto = _gui.newControl(source->controlType(), source->tag());
+    if (!proto) {
+        return false;
+    }
+    proto->setExtent(rebasedProtoExtent(donor.extent(), source->extent(), extent()));
+    proto->setPadding(source->padding());
+    if (const Border *border = source->borderOrNull()) {
+        proto->setBorder(*border);
+    }
+    if (const Border *hilight = source->hilightOrNull()) {
+        proto->setHilight(*hilight);
+    }
+    proto->setText(source->text());
+    proto->updateTextLines();
+    proto->updateTransform();
+    _protoItem = std::move(proto);
+    updateItemSlots();
+    return true;
 }
 
 void ListBox::changeProtoItemType(ControlType type) {

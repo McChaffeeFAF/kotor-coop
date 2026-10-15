@@ -107,6 +107,34 @@ void Mesh::init() {
     _inited = true;
 }
 
+void Mesh::update(const std::vector<Vertex> &vertices, const std::vector<Face> &faces) {
+    checkMainThread();
+    _vertices = vertices;
+    _faces = faces;
+    computeVertexDataFromVertices();
+    computeFaceData();
+    computeAABB();
+
+    glBindVertexArray(_vaoId);
+    glBindBuffer(GL_ARRAY_BUFFER, _vboId);
+    glBufferData(GL_ARRAY_BUFFER, _vertexData.size() * sizeof(float), _vertexData.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, _iboId);
+    auto indexBytes = static_cast<GLsizeiptr>(3 * _faces.size() * sizeof(uint16_t));
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexBytes, nullptr, GL_DYNAMIC_DRAW);
+    if (indexBytes > 0) {
+        auto indices = static_cast<uint16_t *>(glMapBufferRange(GL_ELEMENT_ARRAY_BUFFER, 0, indexBytes, GL_MAP_WRITE_BIT | GL_MAP_INVALIDATE_BUFFER_BIT));
+        if (indices) {
+            for (const auto &face : _faces) {
+                *indices++ = face.vertices[0];
+                *indices++ = face.vertices[1];
+                *indices++ = face.vertices[2];
+            }
+            glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
+        }
+    }
+    glBindVertexArray(0);
+}
+
 void Mesh::deinit() {
     if (!_inited) {
         return;

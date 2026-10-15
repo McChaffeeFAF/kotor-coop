@@ -95,6 +95,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/d20/feat.h
     ${GAME_INCLUDE_DIR}/d20/feats.h
     ${GAME_INCLUDE_DIR}/d20/forcepoints.h
+    ${GAME_INCLUDE_DIR}/d20/forcepowers.h
     ${GAME_INCLUDE_DIR}/d20/forms.h
     ${GAME_INCLUDE_DIR}/d20/k2feats.h
     ${GAME_INCLUDE_DIR}/d20/prestige.h
@@ -247,6 +248,8 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/onhit.h
     ${GAME_INCLUDE_DIR}/traps.h
     ${GAME_INCLUDE_DIR}/guestbench.h
+    ${GAME_INCLUDE_DIR}/guestbenchscreen.h
+    ${GAME_INCLUDE_DIR}/coopminigame.h
     ${GAME_INCLUDE_DIR}/upgradebench.h
     ${GAME_INCLUDE_DIR}/gui/conversation.h
     ${GAME_INCLUDE_DIR}/gui/dialog.h
@@ -370,6 +373,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/object/waypoint.h
     ${GAME_INCLUDE_DIR}/options.h
     ${GAME_INCLUDE_DIR}/keymap.h
+    ${GAME_INCLUDE_DIR}/padinput.h
     ${GAME_INCLUDE_DIR}/usersettings.h
     ${GAME_INCLUDE_DIR}/presentationpointer.h
     ${GAME_INCLUDE_DIR}/party.h
@@ -475,6 +479,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/d20/classes.cpp
     ${GAME_SOURCE_DIR}/d20/feats.cpp
     ${GAME_SOURCE_DIR}/d20/forcepoints.cpp
+    ${GAME_SOURCE_DIR}/d20/forcepowers.cpp
     ${GAME_SOURCE_DIR}/d20/forms.cpp
     ${GAME_SOURCE_DIR}/d20/k2feats.cpp
     ${GAME_SOURCE_DIR}/d20/prestige.cpp
@@ -485,6 +490,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/difficultyoptions.cpp
     ${GAME_SOURCE_DIR}/gamekeys.cpp
     ${GAME_SOURCE_DIR}/keymap.cpp
+    ${GAME_SOURCE_DIR}/padinput.cpp
     ${GAME_SOURCE_DIR}/usersettings.cpp
     ${GAME_SOURCE_DIR}/di/module.cpp
     ${GAME_SOURCE_DIR}/effect/abilitydecrease.cpp
@@ -596,6 +602,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/onhit.cpp
     ${GAME_SOURCE_DIR}/traps.cpp
     ${GAME_SOURCE_DIR}/guestbench.cpp
+    ${GAME_SOURCE_DIR}/guestbenchscreen.cpp
     ${GAME_SOURCE_DIR}/upgradebench.cpp
     ${GAME_SOURCE_DIR}/gui/conversation.cpp
     ${GAME_SOURCE_DIR}/gui/dialog.cpp
@@ -692,6 +699,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/twodautil.cpp
     ${GAME_SOURCE_DIR}/visualeffectpresenter.cpp
     ${GAME_SOURCE_DIR}/visualeffects.cpp
+    ${GAME_SOURCE_DIR}/combattables.cpp
     ${GAME_SOURCE_DIR}/coopcommand.cpp
     ${GAME_SOURCE_DIR}/coopflow.cpp
     ${GAME_SOURCE_DIR}/coopflows.cpp
@@ -703,6 +711,8 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/coopsession.cpp
     ${GAME_SOURCE_DIR}/coopfree.cpp
     ${GAME_SOURCE_DIR}/coopbench.cpp
+    ${GAME_SOURCE_DIR}/coopminigame.cpp
+    ${GAME_SOURCE_DIR}/coopmg.cpp
     ${GAME_SOURCE_DIR}/coopinventory.cpp
     ${GAME_SOURCE_DIR}/coopprogress.cpp
     ${GAME_SOURCE_DIR}/coopstandin.cpp)

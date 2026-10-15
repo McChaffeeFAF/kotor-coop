@@ -330,6 +330,10 @@ public:
         return *_audioClips;
     }
 
+    MockDialogs &dialogs() {
+        return *_dialogs;
+    }
+
     MockLayouts &layouts() {
         return *_layouts;
     }

@@ -98,6 +98,32 @@ std::optional<VisualEffectDesc::BodyLook> VisualEffectDesc::bodyLookFor(int prog
     }
 }
 
+// Programmed effects drawn with a model: K1 ships effect models that no
+// table names, and four of their names match progfx rows: the fizzle
+// (VFX_COM_JEDI_FORCE_FIZZLE, 1201), the medal (VFX_DUR_MEDAL, 1700) and
+// Revan's two masks (VFX_DUR_MASK_01/02, 1701/1702). 1202 is left undrawn:
+// VFX_COM_SNIPER_SHOT shares it, so the unnamed v_fresist_imp ring would
+// show on every sniper shot. Inferred from the game data
+// (design note v15_vfx_leftovers); not read from any executable.
+std::string VisualEffectDesc::programmedModelResRef(int progfx, ProgfxPlace &place) {
+    switch (progfx) {
+    case 1201:
+        place = ProgfxPlace::AboveHead;
+        return "v_fizzle_imp";
+    case 1700:
+        place = ProgfxPlace::Chest;
+        return "v_medal_dur";
+    case 1701:
+        place = ProgfxPlace::Head;
+        return "v_revmask1_dur";
+    case 1702:
+        place = ProgfxPlace::Head;
+        return "v_revmask2_dur";
+    default:
+        return "";
+    }
+}
+
 static std::optional<uint32_t> parseRowLabel(const std::string &label) {
     if (label.empty() || label.size() > 9) {
         return std::nullopt;
@@ -187,6 +213,17 @@ std::map<uint32_t, VisualEffectDesc> VisualEffects::parse(
                 desc.bodyTexture = loadTexture(look->texture);
             }
             desc.bodyLook = std::move(*look);
+        }
+
+        desc.speedTrail = VisualEffectDesc::isSpeedProgfx(desc.progfxImpact) || VisualEffectDesc::isSpeedProgfx(desc.progfxDuration);
+        for (int progfx : {duration ? desc.progfxDuration : desc.progfxImpact, duration ? desc.progfxImpact : desc.progfxDuration}) {
+            auto place = VisualEffectDesc::ProgfxPlace::Impact;
+            std::string resRef = VisualEffectDesc::programmedModelResRef(progfx, place);
+            if (!resRef.empty()) {
+                desc.progfxModel = loadModel(resRef);
+                desc.progfxPlace = place;
+                break;
+            }
         }
 
         desc.soundImpact = sound(row, "soundimpact");

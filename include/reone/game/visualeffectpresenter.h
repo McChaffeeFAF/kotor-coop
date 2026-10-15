@@ -29,6 +29,7 @@ class IAudioMixer;
 namespace scene {
 class ISceneGraph;
 class ModelSceneNode;
+struct BodyOverlay;
 } // namespace scene
 
 namespace game {
@@ -61,7 +62,10 @@ public:
         Impact,
         HeadConjure,
         BeamSource, /**< a beam model, on its effector's body node */
-        Hand        /**< a cast-hand visual, on the target's right hand */
+        Hand,       /**< a cast-hand visual, on the target's right hand */
+        Chest,      /**< a programmed model on the front of the chest (the medal) */
+        AboveHead,  /**< a programmed model just over the head (the fizzle) */
+        Head        /**< a programmed model over the head (the masks) */
     };
 
     struct Context {
@@ -113,6 +117,16 @@ public:
     /** Models the presenter has given body overlays to, by object id. */
     const std::set<uint32_t> &overlayTargets() const { return _overlayTargets; }
 
+    /** Requests begun but not yet presented (the next update starts them). */
+    const std::vector<std::shared_ptr<Request>> &pending() const { return _pending; }
+
+    /**
+     * The afterimages of the speed effect for a target moving at velocity
+     * (world m/s), strength 0-1 and time seconds since the effect began.
+     * Pure, so it can be tested.
+     */
+    static std::vector<scene::BodyOverlay> speedGhosts(const glm::vec3 &velocity, float strength, float time);
+
 private:
     enum class Phase {
         Impact,    /**< playing impact once */
@@ -157,6 +171,12 @@ private:
     scene::ISceneGraph *_graph {nullptr};
     std::set<uint32_t> _overlayTargets;
 
+    struct Motion {
+        glm::vec3 position {0.0f};
+        glm::vec3 velocity {0.0f}; /**< smoothed */
+    };
+    std::map<uint32_t, Motion> _motion; // speed-effect targets, by object id
+
     void start(const std::shared_ptr<Request> &request, const Context &ctx);
     void place(Presented &presented, const Context &ctx);
     void advance(Presented &presented, float dt, const Context &ctx);
@@ -164,7 +184,7 @@ private:
     void finish(Presented &presented, const Context &ctx);
     void removePart(Part &part);
     void updateShake(float dt, const Context &ctx);
-    void updateOverlays(const Context &ctx);
+    void updateOverlays(float dt, const Context &ctx);
     bool overlayLive(const Presented &presented) const;
 };
 

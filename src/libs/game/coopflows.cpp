@@ -1030,6 +1030,17 @@ void CoopSession::clientHandleNotice(const Notice &notice) {
 }
 
 void CoopSession::clientShowRejection(const CommandResult &result) {
+    if (_benchScreen.tracks(result.seq)) {
+        // A bench request: the reason goes on the bench screen and into the feedback log.
+        _benchScreen.reject(result.seq, result.reason);
+        auto text = GuestBenchScreen::rejectionText(result.reason);
+        _game.messageLog().add(MessageLog::kFeedbackMessageType, MessageLog::Style::Normal, text);
+        showNotice(NoticeKind::Refusal, text);
+        if (_game.currentScreen() == Game::Screen::Upgrade) {
+            _game.showGuestBench();
+        }
+        return;
+    }
     switch (result.reason) {
     case CommandReject::HostLeadsConversation:
         showNotice(NoticeKind::Refusal, "The host leads conversations");

@@ -288,6 +288,7 @@ static Variable ActionCastSpellAtObject(const std::vector<Variable> &args, const
     // Execute
     // bCheat: the caster need not be able to cast it, and pays nothing.
     auto action = ctx.game.newAction<CastSpellAtObjectAction>(std::move(spell), std::move(oTarget), /*item=*/std::nullopt, cheat);
+    action->setInstant(instantSpell);
     getCaller(ctx)->addAction(std::move(action));
     return Variable::ofNull();
 }

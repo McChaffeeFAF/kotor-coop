@@ -94,4 +94,17 @@ EquipmentOperationOutcome applyEquipmentOperation(
     return EquipmentOperationOutcome::Applied;
 }
 
+EquipmentOperationOutcome applyEquipmentFromHolder(
+    Game &game,
+    Creature &subject,
+    const std::shared_ptr<Item> &item,
+    int requestedSlot) {
+    if (!item || item->owner() == 0 || item->owner() == script::kObjectInvalid)
+        return EquipmentOperationOutcome::Rejected;
+    auto holder = game.getObjectById(item->owner());
+    if (!holder)
+        return EquipmentOperationOutcome::Rejected;
+    return applyEquipmentOperation(game, subject, *holder, item, requestedSlot);
+}
+
 } // namespace reone::game

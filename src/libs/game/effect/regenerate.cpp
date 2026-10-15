@@ -18,6 +18,7 @@
 #include "reone/game/effect/regenerate.h"
 
 #include "reone/game/object/creature.h"
+#include "reone/system/cast.h"
 
 namespace reone {
 
@@ -40,6 +41,11 @@ bool RegenerateEffect::onUpdate(Object &object, const EffectInstance &, float dt
     elapsed += dt;
     while (elapsed >= _intervalSeconds) {
         elapsed -= _intervalSeconds;
+        // Nothing regenerates on a party member that is down (no vitality, not dead).
+        auto *creature = dyn_cast<Creature>(&object);
+        if (creature && creature->isTemporarilyDead()) {
+            continue;
+        }
         if (!object.isDead() && object.currentHitPoints() < object.maxHitPoints()) {
             object.heal(std::min(_amount, object.maxHitPoints() - object.currentHitPoints()));
         }

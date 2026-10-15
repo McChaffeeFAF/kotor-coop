@@ -798,7 +798,13 @@ void EmitterSceneNode::renderLeafs(IRenderPass &pass, const std::vector<SceneNod
                     _modelNode.emitter()->renderMode == ModelNode::Emitter::RenderMode::BillboardToLocalZ;
     auto faceCulling = twosided ? FaceCullMode::None : FaceCullMode::Back;
     bool premultipliedAlpha = emitter->blendMode == ModelNode::Emitter::BlendMode::Lighten;
-    pass.drawParticles(*texture, faceCulling, premultipliedAlpha, emitter->gridSize, particles);
+    // Punch-Through is a cut-out, as a Punch-Through TXI is on meshes: the
+    // texture's own alpha test (TPC header) decides which texels show, and
+    // those show at full strength. Blended by alpha instead, the ion ray 02
+    // rings (fx_LensRing: alpha at most 16/255, alpha test 1/255) drew
+    // nothing visible (design note v15_vfx_leftovers).
+    float cutout = emitter->blendMode == ModelNode::Emitter::BlendMode::PunchThrough ? texture->features().alphaTest : -1.0f;
+    pass.drawParticles(*texture, faceCulling, premultipliedAlpha, cutout, emitter->gridSize, particles);
 }
 
 } // namespace scene

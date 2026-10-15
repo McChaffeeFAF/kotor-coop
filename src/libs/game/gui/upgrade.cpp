@@ -29,8 +29,10 @@
 #include "reone/resource/provider/textures.h"
 #include "reone/resource/strings.h"
 
+#include "reone/game/coopsession.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
+#include "reone/game/guestbenchscreen.h"
 #include "reone/game/itemdescription.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/item.h"
@@ -62,6 +64,32 @@ static void configureItemList(ListBox &list, const glm::vec3 &base, const glm::v
         proto->setText(text);
         proto->setHilightColor(hilight);
     }
+}
+
+Control::Extent fitListBetween(const Control::Extent &list,
+                               const std::vector<Control::Extent> &headers,
+                               const std::vector<Control::Extent> &footers,
+                               int gap) {
+    auto overlapsX = [&list](const Control::Extent &other) {
+        return other.left < list.left + list.width && list.left < other.left + other.width;
+    };
+    int top = list.top;
+    int bottom = list.top + list.height;
+    int middle = list.top + list.height / 2;
+    for (const auto &header : headers) {
+        if (overlapsX(header) && header.top < middle && header.top + header.height > list.top) {
+            top = std::max(top, header.top + header.height + gap);
+        }
+    }
+    for (const auto &footer : footers) {
+        if (overlapsX(footer) && footer.top >= top && footer.top < bottom) {
+            bottom = std::min(bottom, footer.top - gap);
+        }
+    }
+    if (bottom - top < list.height / 4) {
+        return list;
+    }
+    return Control::Extent(list.left, top, list.width, bottom - top);
 }
 
 // --- UpgradeItemsPanel -----------------------------------------------------
@@ -108,10 +136,18 @@ void UpgradeItemsPanel::refresh() {
         return;
     }
     _list->clearItems();
+    auto *guest = _host.guestScreen();
     for (const auto &item : _items) {
         ListBox::Item row;
         row.tag = std::to_string(item->id());
         row.text = item->localizedName();
+        if (guest) {
+            // A guest's stand-ins all sit in one bag: say which the character wears.
+            const auto *entry = guest->item(guest->hostId(item->id()));
+            if (entry && entry->equipped) {
+                row.text += " (equipped)";
+            }
+        }
         row.iconTexture = item->icon();
         row.iconFrame = itemFrameTexture(item->stackSize());
         _list->addItem(std::move(row));
@@ -165,6 +201,9 @@ void UpgradeItemsPanel::describeSelection() {
         return;
     }
     _description->clearItems();
+    if (auto note = _host.guestNote(); !note.empty()) {
+        _description->addTextLinesAsItems(note);
+    }
     if (int crafting = selectedCraftingRow(); crafting >= 0) {
         _description->addTextLinesAsItems(crafting == 0
                                               ? "Make items from components and chemicals."
@@ -241,11 +280,96 @@ void CraftingPanel::show(Mode mode) {
     refresh();
 }
 
+void CraftingPanel::loadGuestRows(const GuestBenchScreen &screen) {
+    // Names and skill requirements from this install's recipes; what the guest can do from the host.
+    std::vector<CraftingBench::RecipeEntry> local;
+    if (auto leader = crafter()) {
+        local = _crafting.recipes(*leader);
+    }
+    for (const auto &entry : screen.recipes()) {
+        CraftingBench::RecipeEntry row;
+        auto material = entry.material == 1 ? crafting::Material::Chemicals : crafting::Material::Components;
+        auto found = std::find_if(local.begin(), local.end(), [&](const CraftingBench::RecipeEntry &candidate) {
+            return candidate.recipe.material == material && boost::iequals(candidate.recipe.templateResRef, entry.resref);
+        });
+        if (found != local.end()) {
+            row = *found;
+        } else {
+            row.recipe.templateResRef = entry.resref;
+            row.recipe.material = material;
+            row.name = _host.templateLook(entry.resref).second;
+            if (row.name.empty()) {
+                row.name = entry.resref;
+            }
+        }
+        row.cost = entry.cost;
+        row.skilled = entry.skilled;
+        row.affordable = entry.affordable;
+        _recipes.push_back(std::move(row));
+    }
+    auto holder = _game.coop() ? _game.coop()->benchHolder() : nullptr;
+    for (const auto &entry : screen.breakdowns()) {
+        uint32_t local = screen.localId(entry.id);
+        std::shared_ptr<Item> item;
+        if (holder) {
+            for (const auto &held : holder->items()) {
+                if (held && held->id() == local) {
+                    item = held;
+                    break;
+                }
+            }
+        }
+        if (item) {
+            _breakable.push_back(item);
+            _guestYields.push_back(entry.yield);
+        }
+    }
+}
+
+int CraftingPanel::yieldOf(size_t index, const Item &item, const Creature *leader) const {
+    if (_host.guestScreen()) {
+        return index < _guestYields.size() ? _guestYields[index] : 0;
+    }
+    return leader ? _crafting.breakdownYieldFor(item, *leader) : 0;
+}
+
+int CraftingPanel::selectedRow() const {
+    return _list ? _list->selectedItemIndex() : -1;
+}
+
+void CraftingPanel::selectRow(int row) {
+    if (!_list || row < 0 || row >= static_cast<int>(_list->getItemCount())) {
+        return;
+    }
+    _list->setSelectedItemIndex(row);
+    describeSelection();
+}
+
+int CraftingPanel::rowOf(const std::string &resRef) const {
+    if (_mode == Mode::Create) {
+        for (size_t i = 0; i < _recipes.size(); ++i) {
+            if (boost::iequals(_recipes[i].recipe.templateResRef, resRef)) {
+                return static_cast<int>(i) + 1;
+            }
+        }
+        return -1;
+    }
+    for (size_t i = 0; i < _breakable.size(); ++i) {
+        if (boost::iequals(_breakable[i]->blueprintResRef(), resRef) || boost::iequals(_breakable[i]->tag(), resRef)) {
+            return static_cast<int>(i) + 1;
+        }
+    }
+    return -1;
+}
+
 void CraftingPanel::refresh() {
     auto leader = crafter();
     _recipes.clear();
     _breakable.clear();
-    if (leader) {
+    _guestYields.clear();
+    if (auto *guest = _host.guestScreen()) {
+        loadGuestRows(*guest);
+    } else if (leader) {
         if (_mode == Mode::Create) {
             _recipes = _crafting.recipes(*leader);
         } else {
@@ -277,12 +401,13 @@ void CraftingPanel::refresh() {
             _list->addItem(std::move(row));
             ++rows;
         }
-    } else if (leader) {
-        for (const auto &item : _breakable) {
+    } else {
+        for (size_t i = 0; i < _breakable.size(); ++i) {
+            const auto &item = _breakable[i];
             ListBox::Item row;
             row.tag = std::to_string(item->id());
             row.text = str(boost::format("%s (+%d %s)") % item->localizedName() %
-                           _crafting.breakdownYieldFor(*item, *leader) %
+                           yieldOf(i, *item, leader.get()) %
                            materialName(crafting::materialOfBaseItem(item->baseItemType())));
             row.iconTexture = item->icon();
             row.iconFrame = itemFrameTexture(item->stackSize());
@@ -299,6 +424,24 @@ bool CraftingPanel::activate(int row) {
     if (row == 0) {
         show(_mode == Mode::Create ? Mode::BreakDown : Mode::Create);
         return true;
+    }
+    if (auto *guest = _host.guestScreen()) {
+        // The host makes or breaks it down, then sends the view again (which redraws this).
+        auto *coop = _game.coop();
+        if (!coop || row < 1) {
+            return false;
+        }
+        size_t index = static_cast<size_t>(row - 1);
+        if (_mode == Mode::Create && index < _recipes.size()) {
+            const auto *recipe = guest->recipe(_recipes[index].recipe.templateResRef,
+                                               _recipes[index].recipe.material == crafting::Material::Chemicals ? 1 : 0);
+            return recipe && coop->clientBenchRequest(guest->craft(*recipe));
+        }
+        if (_mode == Mode::BreakDown && index < _breakable.size()) {
+            uint32_t host = guest->hostId(_breakable[index]->id());
+            return host && coop->clientBenchRequest(guest->breakDown(host));
+        }
+        return false;
     }
     if (!leader || row < 1) {
         return false;
@@ -328,6 +471,9 @@ void CraftingPanel::describeSelection() {
     auto leader = crafter();
     std::string totals = str(boost::format("Components: %d\nChemicals: %d") %
                              _crafting.components() % _crafting.chemicals());
+    if (auto note = _host.guestNote(); !note.empty()) {
+        totals = note + "\n\n" + totals;
+    }
     int row = _list->selectedItemIndex();
     if (row <= 0 || !leader) {
         _description->addTextLinesAsItems(totals);
@@ -335,6 +481,20 @@ void CraftingPanel::describeSelection() {
     }
     size_t index = static_cast<size_t>(row - 1);
     std::string text;
+    if (_host.guestScreen()) {
+        // A guest: the host judged skill and material; the local character is a copy.
+        if (_mode == Mode::Create && index < _recipes.size()) {
+            const auto &entry = _recipes[index];
+            text = str(boost::format("%s\n\nCost: %d %s%s%s") % entry.name % entry.cost % materialName(entry.recipe.material) %
+                       (entry.skilled ? "" : "\nYour skill is too low.") % (entry.affordable ? "" : "\nNot enough material."));
+        } else if (_mode == Mode::BreakDown && index < _breakable.size()) {
+            const auto &item = *_breakable[index];
+            text = str(boost::format("%s\n\nBreaks down into %d %s") % item.localizedName() % yieldOf(index, item, leader.get()) %
+                       materialName(crafting::materialOfBaseItem(item.baseItemType())));
+        }
+        _description->addTextLinesAsItems(text + "\n\n" + totals);
+        return;
+    }
     if (_mode == Mode::Create && index < _recipes.size()) {
         const auto &entry = _recipes[index];
         text = str(boost::format("%s\n\nCost: %d %s\nRequires %s %d (yours: %d)%s") % entry.name % entry.cost %
@@ -414,11 +574,17 @@ void UpgradeSlotsPanel::onGUILoaded() {
             activateRow(_list->selectedItemIndex());
         });
     }
+    // K1 authors LB_DESC without a proto item, so a non-saber description drew nothing: it
+    // takes the saber description's.
+    if (_description && _descriptionSaber) {
+        _description->adoptProtoItem(*_descriptionSaber);
+    }
     for (auto &description : {_description, _descriptionSaber}) {
         if (description) {
             description->setProtoMatchContent(true);
         }
     }
+    fitLayout();
     if (_assemble) {
         _assemble->setOnClick([this]() {
             _host.assemble();
@@ -429,6 +595,46 @@ void UpgradeSlotsPanel::onGUILoaded() {
             _host.back();
         });
     }
+}
+
+void UpgradeSlotsPanel::fitLayout() {
+    if (!_list) {
+        return;
+    }
+    _listExtent = _list->extent();
+    _listExtentSaber = _listExtent;
+    auto extentOf = [](const std::shared_ptr<Control> &control, std::vector<Control::Extent> &out) {
+        if (control) {
+            out.push_back(control->extent());
+        }
+    };
+    std::vector<Control::Extent> footers;
+    for (auto *group : {&_slots3, &_slots4}) {
+        for (const auto &controls : *group) {
+            extentOf(controls.button, footers);
+        }
+    }
+    // A saber: the name label is hidden; "Upgrades:" stays above, the colour slot's name below.
+    std::vector<Control::Extent> saberHeaders;
+    extentOf(findControl<Label>("LBL_UPGRADES"), saberHeaders);
+    extentOf(_count, saberHeaders);
+    auto saberFooters = footers;
+    extentOf(_saberSlotName, saberFooters);
+    _listExtentSaber = fitListBetween(_listExtent, saberHeaders, saberFooters);
+    // Other items: the item name and "Upgrades:", then the slot's name on one line of the
+    // property box the rows then fill.
+    auto headers = saberHeaders;
+    extentOf(_slotName, headers);
+    if (_property && _list->protoItemOrNull()) {
+        auto property = _property->extent();
+        auto fitted = fitListBetween(_listExtent, headers, footers);
+        if (fitted.top != _listExtent.top && property.top < fitted.top + fitted.height) {
+            property.height = std::min(property.height, 25);
+            _property->setExtent(property);
+            headers.push_back(property);
+        }
+    }
+    _listExtent = fitListBetween(_listExtent, headers, footers);
 }
 
 std::string UpgradeSlotsPanel::slotName(const UpgradeSlot &slot) const {
@@ -464,6 +670,13 @@ void UpgradeSlotsPanel::refresh() {
     auto slots = bench.slots();
     bool saber = item && item->isLightsaber();
     _active = slots.size() > 3 ? &_slots4 : &_slots3;
+    if (_list) {
+        const auto &fitted = saber ? _listExtentSaber : _listExtent;
+        const auto &now = _list->extent();
+        if (fitted.top != now.top || fitted.height != now.height) {
+            _list->relocate(fitted);
+        }
+    }
     if (_selectedSlot >= static_cast<int>(slots.size())) {
         _selectedSlot = 0;
     }
@@ -480,13 +693,7 @@ void UpgradeSlotsPanel::refresh() {
                 controls.label->setVisible(visible);
                 std::shared_ptr<Texture> icon;
                 if (visible) {
-                    const UpgradeSlot &slot = slots[i];
-                    std::string resRef;
-                    if (slot.color) {
-                        resRef = bench.colorCrystalFor(bench.stagedModelVariation());
-                    } else if (const UpgradeKind *kind = bench.table().kind(slot.installedRow)) {
-                        resRef = kind->templateResRef;
-                    }
+                    std::string resRef = bench.installedTemplate(static_cast<int>(i));
                     if (!resRef.empty()) {
                         icon = _host.templateLook(resRef).first;
                     }
@@ -539,18 +746,17 @@ void UpgradeSlotsPanel::refresh() {
     if (_list) {
         _list->clearItems();
         if (_selectedSlot < static_cast<int>(slots.size())) {
-            const UpgradeSlot &slot = slots[_selectedSlot];
-            if (!slot.color && slot.installedRow >= 0) {
-                if (const UpgradeKind *kind = bench.table().kind(slot.installedRow)) {
-                    auto look = _host.templateLook(kind->templateResRef);
-                    ListBox::Item row;
-                    row.tag = "installed";
-                    row.text = look.second;
-                    row.iconTexture = look.first;
-                    row.textColor = _hilightColor;
-                    _list->addItem(std::move(row));
-                    _rows.push_back({true, nullptr});
-                }
+            // What the slot holds comes first (a saber's colour crystal too, though it can
+            // only be swapped), so the list's first row matches the slot's icon.
+            if (auto installed = bench.installedTemplate(_selectedSlot); !installed.empty()) {
+                auto look = _host.templateLook(installed);
+                ListBox::Item row;
+                row.tag = "installed";
+                row.text = look.second;
+                row.iconTexture = look.first;
+                row.textColor = _hilightColor;
+                _list->addItem(std::move(row));
+                _rows.push_back({true, nullptr});
             }
             for (const auto &candidate : bench.candidates(_selectedSlot)) {
                 ListBox::Item row;
@@ -571,6 +777,9 @@ void UpgradeSlotsPanel::refresh() {
     auto description = saber ? _descriptionSaber : _description;
     if (description) {
         description->clearItems();
+        if (auto note = _host.guestNote(); !note.empty()) {
+            description->addTextLinesAsItems(note);
+        }
         if (item) {
             // Describe the item as it would be with the staged slots.
             uint32_t actual = item->upgrades();
@@ -617,6 +826,9 @@ void UpgradeGUI::init() {
 }
 
 bool UpgradeGUI::craftingAvailable() const {
+    if (auto *screen = guestScreen()) {
+        return screen->crafting();
+    }
     return _services.resource.k2Merge != nullptr;
 }
 
@@ -756,6 +968,9 @@ void UpgradeGUI::describeSelectItem() {
         return;
     }
     _selectDescription->clearItems();
+    if (auto note = guestNote(); !note.empty()) {
+        _selectDescription->addTextLinesAsItems(note);
+    }
     if (auto item = selectedSelectItem()) {
         _selectDescription->addTextLinesAsItems(joinItemDescriptionLines(buildItemDescriptionLines(*item, _services)));
     }
@@ -843,6 +1058,9 @@ void UpgradeGUI::openItem(const std::shared_ptr<Item> &item) {
     if (!_bench.begin(item)) {
         return;
     }
+    if (auto *screen = guestScreen()) {
+        _guestItem = screen->hostId(item->id());
+    }
     _page = Page::Slots;
     _slotsPanel->show();
 }
@@ -861,6 +1079,10 @@ void UpgradeGUI::back() {
         _page = Page::Select;
         break;
     case Page::Crafting:
+        if (_guestLab) {
+            close();
+            return;
+        }
         returnToItemList();
         break;
     default:
@@ -870,7 +1092,7 @@ void UpgradeGUI::back() {
 }
 
 bool UpgradeGUI::assemble() {
-    bool applied = _game.assembleUpgrades();
+    bool applied = _guest ? assembleGuest() : _game.assembleUpgrades();
     if (_directItem) {
         close();
         return applied;
@@ -884,6 +1106,129 @@ void UpgradeGUI::close() {
     _directItem = false;
     _page = Page::Select;
     _game.closeUpgradeScreen();
+}
+
+GuestBenchScreen *UpgradeGUI::guestScreen() const {
+    auto *coop = _guest ? _game.coop() : nullptr;
+    return coop && coop->isClient() ? &coop->benchScreen() : nullptr;
+}
+
+std::string UpgradeGUI::guestNote() const {
+    auto *screen = guestScreen();
+    return screen ? screen->rejection() : std::string();
+}
+
+void UpgradeGUI::useGuestHolder() {
+    auto *coop = _game.coop();
+    if (!coop) {
+        return;
+    }
+    const auto &view = coop->benchScreen().view();
+    _guestComponents = view.components;
+    _guestChemicals = view.chemicals;
+    // No wearers: the stand-ins of equipped items sit in the holder too.
+    auto holder = coop->benchHolder();
+    _bench.useHolder(holder, {});
+    _craftingPanel->crafting().useHolder(holder, &_guestComponents, &_guestChemicals);
+}
+
+void UpgradeGUI::openGuest() {
+    auto *coop = _game.coop();
+    if (!coop || !coop->isClient()) {
+        return;
+    }
+    _guest = true;
+    _guestLab = coop->benchScreen().lab();
+    _guestItem = 0;
+    useGuestHolder();
+    if (_guestLab) {
+        _bench.cancel();
+        _directItem = false;
+        _page = Page::Crafting;
+        _craftingPanel->show(CraftingPanel::Mode::Create);
+        return;
+    }
+    open(nullptr);
+}
+
+void UpgradeGUI::refreshGuest() {
+    auto *screen = guestScreen();
+    if (!screen) {
+        return;
+    }
+    // The stand-ins were rebuilt (a new view), or only the rejection changed.
+    useGuestHolder();
+    switch (_page) {
+    case Page::Slots: {
+        if (_bench.item()) {
+            _slotsPanel->refresh();
+            break;
+        }
+        uint32_t local = screen->localId(_guestItem);
+        std::shared_ptr<Item> item;
+        for (const auto &candidate : _bench.partyItems(UpgradeCategory::None)) {
+            if (candidate->id() == local) {
+                item = candidate;
+            }
+        }
+        if (item && _bench.begin(item)) {
+            _slotsPanel->refresh();
+        } else {
+            _bench.cancel();
+            returnToItemList();
+        }
+        break;
+    }
+    case Page::Items:
+        _itemsPanel->refresh();
+        break;
+    case Page::Crafting: {
+        int row = _craftingPanel->selectedRow();
+        _craftingPanel->refresh();
+        _craftingPanel->selectRow(row);
+        break;
+    }
+    default:
+        if (_selectList) {
+            refreshSelectList();
+        }
+        break;
+    }
+}
+
+void UpgradeGUI::leaveGuest() {
+    if (!_guest) {
+        return;
+    }
+    _guest = false;
+    _guestLab = false;
+    _guestItem = 0;
+    _bench.useParty();
+    _craftingPanel->crafting().useParty();
+    _page = Page::Select;
+}
+
+bool UpgradeGUI::assembleGuest() {
+    auto *screen = guestScreen();
+    auto *coop = _game.coop();
+    auto item = _bench.item();
+    if (!screen || !coop || !item) {
+        _bench.cancel();
+        return false;
+    }
+    auto slots = _bench.slots();
+    std::vector<StagedBenchSlot> staged;
+    for (int i = 0; i < static_cast<int>(slots.size()); ++i) {
+        auto part = _bench.stagedPart(i);
+        staged.push_back({slots[i].installedRow, part ? screen->hostId(part->id()) : 0});
+    }
+    bool sent = false;
+    for (const auto &request : screen->assemble(screen->hostId(item->id()), staged)) {
+        sent = coop->clientBenchRequest(request) || sent;
+    }
+    // Nothing changes here: the host's next view shows the item as it is now.
+    _bench.cancel();
+    return sent;
 }
 
 std::pair<std::shared_ptr<Texture>, std::string> UpgradeGUI::templateLook(const std::string &resRef) const {

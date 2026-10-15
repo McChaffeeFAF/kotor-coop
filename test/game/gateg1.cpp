@@ -148,8 +148,13 @@ TEST(GateG1Presentation, tutorial_window_pops_once) {
     TestEngine &engine = testEngine();
     TwoDA::Builder builder;
     builder.columns({"label", "message0", "message1", "message2", "icon"});
+    // The windows are TUTORIAL_WINDOW_* constants (0 swoop race, 1 return to base,
+    // 2 movement keys) that name rows by label, wherever the rows are.
     builder.row({"Use_Combat_Feat", "48559", "", "", ""});
     builder.row({"Use_Grenade", "", "", "", ""});
+    builder.row({"Set_Mine", "48366", "", "", ""});
+    builder.row({"Start_Swoop_Race", "48373", "", "", ""});
+    builder.row({"Return_To_Base", "", "", "", ""});
     builder.row({"Movement_Keys", "42000", "", "", ""});
     std::shared_ptr<TwoDA> table(builder.build());
     EXPECT_CALL(engine.resourceModule().twoDas(), get("tutorial"))
@@ -158,6 +163,9 @@ TEST(GateG1Presentation, tutorial_window_pops_once) {
     EXPECT_CALL(engine.resourceModule().strings(), getText(42000))
         .Times(AnyNumber())
         .WillRepeatedly(Return(std::string("Use the movement keys.")));
+    EXPECT_CALL(engine.resourceModule().strings(), getText(48373))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(std::string("Left-click to accelerate.")));
 
     G1Harness harness;
     EXPECT_FALSE(harness.game().wasTutorialWindowShown(2));
@@ -165,6 +173,9 @@ TEST(GateG1Presentation, tutorial_window_pops_once) {
     EXPECT_TRUE(harness.game().wasTutorialWindowShown(2));
     // Second call for the same window does nothing.
     EXPECT_FALSE(harness.game().showTutorialWindow(2));
+    // The swoop race's window is its own row, not the combat feat in row 0.
+    EXPECT_TRUE(harness.game().showTutorialWindow(0));
+    EXPECT_TRUE(harness.game().wasTutorialWindowShown(0));
     // A row without a message is never shown.
     EXPECT_FALSE(harness.game().showTutorialWindow(1));
     EXPECT_FALSE(harness.game().wasTutorialWindowShown(1));
@@ -174,6 +185,13 @@ TEST(GateG1Presentation, tutorial_window_pops_once) {
     Mock::VerifyAndClearExpectations(&engine.resourceModule().twoDas());
     engine.resourceModule().twoDas().allowAnyLookup();
     Mock::VerifyAndClearExpectations(&engine.resourceModule().strings());
+}
+
+TEST(GateG1Presentation, tutorial_key_tokens_name_this_engines_keys) {
+    EXPECT_EQ("Use the Movement keys (A and D) to avoid obstacles.",
+              tutorialKeyText("Use the Movement keys (<MGActionLeft> and <MGActionRight>) to avoid obstacles."));
+    EXPECT_EQ("W, S, A, D", tutorialKeyText("<ActionUp>, <ActionDown>, <ActionLeft>, <ActionRight>"));
+    EXPECT_EQ("<Unknown> stays", tutorialKeyText("<Unknown> stays"));
 }
 
 TEST(GateG1Presentation, return_strref_is_stored_on_the_module) {

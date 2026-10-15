@@ -36,4 +36,5 @@ layout(std140) uniform Globals {
     vec4 uVolumeTint;
     vec4 uVolumeShadow;
     vec4 uParticleParams;
+    vec4 uForceSight;
 };

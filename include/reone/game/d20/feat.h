@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <functional>
 #include <memory>
 #include <set>
@@ -43,6 +45,7 @@ struct Feat {
     int maxCR {0};          // feat.2da maxcr, used to rank talents
     uint32_t exclusion {0}; // feat.2da exclusion bits
     int useType {-1};       // feat.2da usetype: 0 melee attack feat, 1 ranged, -1 neither
+    std::optional<int> spellId; /**< feat.2da spellid: the spell whose effects count as this feat's effects */
 };
 
 /**

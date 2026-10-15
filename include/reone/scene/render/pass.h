@@ -106,11 +106,20 @@ public:
                                const glm::mat4 &transformInv,
                                std::optional<float> size) = 0;
 
+    // cutout >= 0: a "Punch-Through" emitter, drawn where the texel's alpha
+    // exceeds it, at the particle's own alpha (design note v15_vfx_leftovers).
     virtual void drawParticles(graphics::Texture &texture,
                                graphics::FaceCullMode faceCulling,
                                bool premultipliedAlpha,
+                               float cutout,
                                const glm::ivec2 &gridSize,
                                const std::vector<ParticleInstance> &particles) = 0;
+
+    /** Draws a projected beam's geometry in a flat translucent colour (upstream #356). */
+    virtual void drawProjectedBeam(graphics::Mesh &mesh,
+                                   const glm::mat4 &transform,
+                                   const glm::mat4 &transformInv,
+                                   const glm::vec4 &color) = 0;
 
     virtual void drawGrass(float radius,
                            float quadSize,

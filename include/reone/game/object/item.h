@@ -109,7 +109,10 @@ public:
     bool isIdentified() const { return _identified; }
     bool isEquipped() const { return _equipped; }
     bool isLightsaber() const { return _baseItem >= 8 && _baseItem <= 10; }
-    bool isRanged() const { return _weaponType == WeaponType::Ranged; }
+    /** A ranged weapon by its base item's rangedweapon column (a creature's bite has weapontype 4 but is not). */
+    bool isRanged() const { return _rangedWeapon; }
+    /** Armour drawn as its wearer's body model (baseitems modeltype 1): only that limits Dexterity. */
+    bool isBodyModel() const { return _bodyModel; }
 
     const std::string &baseBodyVariation() const { return _baseBodyVariation; }
     const std::string &itemClass() const { return _itemClass; }
@@ -238,6 +241,8 @@ private:
     int _dieToRoll {0};
     int _damageFlags {0};
     WeaponType _weaponType {WeaponType::None};
+    bool _rangedWeapon {false};
+    bool _bodyModel {false};
     WeaponWield _weaponWield {WeaponWield::None};
     CreatureSize _weaponSize {CreatureSize::Invalid};
 

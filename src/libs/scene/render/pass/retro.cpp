@@ -229,14 +229,18 @@ void RetroRenderPass::drawBillboard(Texture &texture,
 void RetroRenderPass::drawParticles(Texture &texture,
                                     FaceCullMode faceCulling,
                                     bool premultipliedAlpha,
+                                    float cutout,
                                     const glm::ivec2 &gridSize,
                                     const std::vector<ParticleInstance> &particles) {
     _context.useProgram(_shaderRegistry.get(ShaderProgramId::oitParticles));
     _context.bindTexture(texture, TextureUnits::mainTex);
-    _uniforms.setLocals([&premultipliedAlpha](auto &locals) {
+    _uniforms.setLocals([&premultipliedAlpha, &cutout](auto &locals) {
         locals.reset();
         if (premultipliedAlpha) {
             locals.featureMask |= UniformsFeatureFlags::premulalpha;
+        } else if (cutout >= 0.0f) {
+            locals.featureMask |= UniformsFeatureFlags::cutout;
+            locals.surfaceParams.x = cutout;
         }
     });
     _uniforms.setParticles([&gridSize, &premultipliedAlpha, &particles](auto &p) {
@@ -258,6 +262,20 @@ void RetroRenderPass::drawParticles(Texture &texture,
     if (faceCulling != prevFaceCulling) {
         _context.popFaceCullMode();
     }
+}
+
+void RetroRenderPass::drawProjectedBeam(Mesh &mesh,
+                                    const glm::mat4 &transform,
+                                    const glm::mat4 &transformInv,
+                                    const glm::vec4 &color) {
+    _context.useProgram(_shaderRegistry.get(ShaderProgramId::oitProjectedBeam));
+    _uniforms.setLocals([&transform, &transformInv, &color](auto &locals) {
+        locals.reset();
+        locals.model = transform;
+        locals.modelInv = transformInv;
+        locals.color = color;
+    });
+    mesh.draw(_statistic);
 }
 
 void RetroRenderPass::drawGrass(float radius,
@@ -313,6 +331,10 @@ void RetroRenderPass::applyMaterialToLocals(const Material &material,
     locals.uvJitterTime = material.uvJitterTime;
     if (material.surfaceDetail) {
         locals.surfaceParams.x = material.surfaceStrength;
+    }
+    locals.forceSightColor = material.forceSightColor;
+    if (material.forceGlow) {
+        locals.featureMask |= UniformsFeatureFlags::forceglow;
     }
     if (material.shell) {
         locals.featureMask |= UniformsFeatureFlags::shell;

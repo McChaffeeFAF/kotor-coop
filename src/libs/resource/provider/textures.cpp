@@ -102,6 +102,7 @@ std::shared_ptr<Texture> Textures::doGet(const std::string &resRef, TextureUsage
             texture = tpcReader.texture();
             if (texture) {
                 if (features) {
+                    features->alphaTest = texture->features().alphaTest; // a TPC header value, not TXI
                     texture->setFeatures(*features);
                 } else {
                     features = texture->features();

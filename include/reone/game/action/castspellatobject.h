@@ -59,6 +59,8 @@ public:
      * an ally runs as the ally (design note c13_companions, "Ally items").
      */
     void setImpactCaller(std::shared_ptr<Object> caller) { _impactCaller = std::move(caller); }
+    /** ActionCastSpellAtObject's bInstantSpell: the cast has no range, so no walk to the target. */
+    void setInstant(bool instant) { _instant = instant; }
 
 private:
     std::shared_ptr<Spell> _spell;
@@ -80,6 +82,7 @@ private:
     void releaseConsumedItem();
     bool _targetRecorded {false};
     bool _inRange {false};
+    bool _instant {false};
     // Force points (design note c03_stats, "Power cost"): a power the caster
     // cannot afford when the cast is taken up is dropped; the cost is paid
     // once, as the cast begins.

@@ -43,6 +43,12 @@ public:
     const glm::vec3 &getBorderColor() const override;
 
     void toggle();
+    /** Turns the button on or off (upstream #356). */
+    void setOn(bool on) {
+        if (_on != on) {
+            toggle();
+        }
+    }
 
     bool isOn() const { return _on; }
 

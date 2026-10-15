@@ -21,6 +21,8 @@
 #include <algorithm>
 #include <array>
 
+#include "reone/game/action/switchweapons.h"
+#include "reone/game/coopsession.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
@@ -58,6 +60,22 @@ void InGameMenu::loadEquipment() {
     _equip = std::make_shared<Equipment>(_gameId, _game.options().graphics,
         _presentation, _services.resource.strings, newEquipmentMenuBacking(_game, _services),
         [this]() { _game.openInGame(); });
+    _equip->setOnSwapWeapons([this]() {
+        // equip_p's Swap Weapons. Out of combat the swap is what the switch
+        // action does on its first step, done now so the screen shows it; in
+        // combat it queues, as the HUD's swap does; a co-op client asks the
+        // host with the HUD's request.
+        auto leader = _game.party().getLeader();
+        if (!leader || leader->isDead() || _game.isConversationActive()) {
+            return false;
+        }
+        auto *coop = _game.coop();
+        if ((coop && coop->isClient()) || leader->isInCombat()) {
+            requestWeaponSwitch(_game, *leader);
+            return false;
+        }
+        return leader->swapWeaponSets();
+    });
     _equip->init();
     _host->registerScreen(InGameMenuTab::Equipment, _equip);
 }
@@ -176,6 +194,21 @@ bool InGameMenu::handle(const input::Event &event) { return _host->handle(event)
 void InGameMenu::update(float dt) { _host->update(dt); }
 void InGameMenu::render() { _host->render(); }
 InGameMenuTab InGameMenu::activeTab() const { return _host ? _host->activeTab() : InGameMenuTab::None; }
+
+PresentationGUI *InGameMenu::activeTabPage() const {
+    switch (activeTab()) {
+    case InGameMenuTab::Equipment: return _equip.get();
+    case InGameMenuTab::Inventory: return _inventory.get();
+    case InGameMenuTab::Character: return _character.get();
+    case InGameMenuTab::Abilities: return _abilities.get();
+    case InGameMenuTab::Party: return _partySelect.get();
+    case InGameMenuTab::Messages: return _messages.get();
+    case InGameMenuTab::Journal: return _journal.get();
+    case InGameMenuTab::Map: return _map.get();
+    case InGameMenuTab::Options: return _options.get();
+    default: return nullptr;
+    }
+}
 
 std::shared_ptr<Button> InGameMenu::getBtnChange2() { return _host->getBtnChange2(); }
 std::shared_ptr<Button> InGameMenu::getBtnChange3() { return _host->getBtnChange3(); }

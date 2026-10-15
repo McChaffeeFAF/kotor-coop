@@ -703,6 +703,81 @@ void Game::initConsole() {
             enableVideoEffect(*row);
         }
     });
+    // Presentation probe for upstream #356's scene support: frame effects and
+    // per-model looks. None of it reaches the simulation.
+    _console.registerCommand("sceneeffect",
+                             "sceneeffect speedblur <0|1> [ratio] | forcesight <0|1> | fade <id> <alpha> | hilite <id> <r g b>|off | "
+                             "sightstyle <id> grey|translucent|glow [r g b a] | lookat <id> <bone> <x y z>|off",
+                             [this](const ConsoleArgs &args) {
+        auto text = [&args](size_t index, const char *def) { auto arg = args[index]; return arg ? std::string(*arg) : std::string(def); };
+        auto what = text(1, "");
+        auto &graph = _services.scene.graphs.get(kSceneMain);
+        auto modelArg = [&](int index) -> scene::ModelSceneNode * {
+            auto id = args.get<int>(index);
+            auto object = id ? getObjectById(static_cast<uint32_t>(*id)) : nullptr;
+            auto node = object ? object->sceneNode() : nullptr;
+            if (!node || node->type() != scene::SceneNodeType::Model) {
+                throw std::runtime_error("no model for that object id");
+            }
+            return static_cast<scene::ModelSceneNode *>(node.get());
+        };
+        auto number = [&](int index, float def) { return args.get<float>(index).value_or(def); };
+        if (what == "speedblur") {
+            graph.setSpeedBlur(args.get<int>(2).value_or(0) != 0);
+            graph.setSpeedBlurRatio(number(3, 0.75f));
+        } else if (what == "forcesight") {
+            if (args.get<int>(2).value_or(0) != 0) {
+                scene::VideoEffect effect;
+                effect.forceSight = true;
+                graph.setVideoEffect(effect);
+            } else {
+                graph.setVideoEffect(std::nullopt);
+            }
+        } else if (what == "fade") {
+            modelArg(2)->setFadeAlpha(number(3, 1.0f));
+        } else if (what == "hilite") {
+            auto model = modelArg(2);
+            if (text(3, "off") == "off") {
+                model->setHiliteColor(std::nullopt);
+            } else {
+                model->setHiliteColor(glm::vec3(number(3, 0.0f), number(4, 0.0f), number(5, 0.0f)));
+            }
+        } else if (what == "sightstyle") {
+            auto model = modelArg(2);
+            auto style = text(3, "grey");
+            if (style == "glow") {
+                model->setForceSightStyle(scene::ModelSceneNode::ForceSightStyle::Glow,
+                                          glm::vec4(number(4, 1.0f), number(5, 0.2f), number(6, 0.2f), number(7, 0.6f)));
+            } else if (style == "translucent") {
+                model->setForceSightStyle(scene::ModelSceneNode::ForceSightStyle::Translucent);
+            } else {
+                model->setForceSightStyle(scene::ModelSceneNode::ForceSightStyle::Grey);
+            }
+        } else if (what == "lookat") {
+            auto model = modelArg(2);
+            // A K1 creature's head is a model of its own, at the head hook.
+            if (!model->getNodeByName(text(3, "")) && text(3, "off") != "off") {
+                if (auto head = model->getAttachment("headhook"); head && head->type() == scene::SceneNodeType::Model) {
+                    model = static_cast<scene::ModelSceneNode *>(head);
+                }
+            }
+            auto bone = text(3, "off");
+            if (bone == "off") {
+                model->endLookAt();
+                if (auto head = model->getAttachment("headhook"); head && head->type() == scene::SceneNodeType::Model) {
+                    static_cast<scene::ModelSceneNode *>(head)->endLookAt();
+                }
+            } else {
+                if (!model->isLookingAt() && !model->beginLookAt(bone, 60.0f, 30.0f)) {
+                    throw std::runtime_error("no such bone");
+                }
+                model->setLookAtPoint(glm::vec3(number(4, 0.0f), number(5, 0.0f), number(6, 0.0f)));
+            }
+        } else {
+            throw std::runtime_error("Usage: sceneeffect speedblur|forcesight|fade|hilite|sightstyle|lookat ...");
+        }
+        _console.printLine("sceneeffect " + what);
+    });
     registerConsoleCommand("cutsceneattack", "attack an object by id with a pre-determined animation and result", &Game::consoleCutsceneAttack);
     registerConsoleCommand("setability", "set ability value (strength, dexterity, etc.)", &Game::consoleSetAbility);
     registerConsoleCommand("setskill", "set skill value (computer use, repair, etc.)", &Game::consoleSetSkill);
@@ -854,7 +929,81 @@ void Game::setSceneSurfaces() {
     }
 }
 
+PadMode Game::padMode() const {
+    if (_confirmPopup && _confirmPopup->isVisible()) {
+        return PadMode::Menu;
+    }
+    if (_movie) {
+        return PadMode::None;
+    }
+    switch (_screen) {
+    case Screen::InGame:
+        return _cameraType == CameraType::ThirdPerson ? PadMode::World : PadMode::None;
+    case Screen::SwoopRace:
+    case Screen::Turret:
+        return PadMode::Minigame;
+    default:
+        return PadMode::Menu;
+    }
+}
+
+bool Game::handlePad(const input::Event &event) {
+    if (_padCapture && event.type == input::EventType::GamepadButtonDown) {
+        auto capture = _padCapture;
+        if (capture(event.padButton.button)) {
+            return true;
+        }
+    }
+    for (const auto &output : _padInput.handle(event, padMode())) {
+        applyPadOutput(output);
+    }
+    return true;
+}
+
+void Game::updatePad(float dt) {
+    for (const auto &output : _padInput.update(dt, padMode())) {
+        applyPadOutput(output);
+    }
+}
+
+void Game::applyPadOutput(const PadOutput &output) {
+    switch (output.kind) {
+    case PadOutput::Kind::Key: {
+        auto key = input::KeyEvent(output.pressed, output.key, 0, false);
+        handle(output.pressed ? input::Event::newKeyDown(key) : input::Event::newKeyUp(key));
+        break;
+    }
+    case PadOutput::Kind::Navigate: {
+        auto event = input::Event::newNavigate(output.navigate);
+        if (_confirmPopup && _confirmPopup->isVisible()) {
+            _confirmPopup->handle(event);
+        } else if (!_movie) {
+            if (auto gui = getScreenGUI()) {
+                gui->handle(event);
+            }
+        }
+        break;
+    }
+    case PadOutput::Kind::Action: {
+        // As the action's own key would do, whatever that key is bound to now (or if it is bound to none).
+        auto translation = _keymap.translateAction(output.action);
+        if (translation.dispatch) {
+            if (output.pressed) {
+                dispatchKeyAction(*translation.dispatch);
+            }
+        } else {
+            auto key = input::KeyEvent(output.pressed, translation.forward, 0, false);
+            handleTranslated(output.pressed ? input::Event::newKeyDown(key) : input::Event::newKeyUp(key));
+        }
+        break;
+    }
+    }
+}
+
 bool Game::handle(const input::Event &rawEvent) {
+    if (rawEvent.isGamepad()) {
+        return handlePad(rawEvent);
+    }
     if (_confirmPopup && _confirmPopup->isVisible()) {
         _confirmPopup->handle(rawEvent);
         return true;
@@ -882,6 +1031,10 @@ bool Game::handle(const input::Event &rawEvent) {
         }
     }
 
+    return handleTranslated(event);
+}
+
+bool Game::handleTranslated(const input::Event &event) {
     switch (event.type) {
     case input::EventType::KeyDown:
         if (handleKeyDown(event.key)) {
@@ -932,11 +1085,25 @@ bool Game::handle(const input::Event &rawEvent) {
             break;
         }
         case Screen::SwoopRace:
+            if (_coop && _coop->miniGameRemoteOwned()) {
+                return true; // a guest has the controls: the host's keys do nothing
+            }
+            if (_coop && _coop->isClient() && event.type == input::EventType::KeyDown &&
+                event.key.code == input::KeyCode::Escape && _coop->clientQuitMiniGame()) {
+                return true; // the owner lets go: the host plays it out
+            }
             if (_swoopRace.handle(event)) {
                 return true;
             }
             break;
         case Screen::Turret:
+            if (_coop && _coop->miniGameRemoteOwned()) {
+                return true;
+            }
+            if (_coop && _coop->isClient() && event.type == input::EventType::KeyDown &&
+                event.key.code == input::KeyCode::Escape && _coop->clientQuitMiniGame()) {
+                return true;
+            }
             if (_turret.handle(event)) {
                 return true;
             }
@@ -961,6 +1128,7 @@ bool Game::consumeTimingDiscontinuity() {
 
 void Game::update(float frameTime) {
     ++_frameCount;
+    updatePad(frameTime);
     // Last frame's blend is presentation only: gone before anything else runs.
     scene::interp::restore();
     float frameDt = frameTime * _gameSpeed;
@@ -970,6 +1138,9 @@ void Game::update(float frameTime) {
     if (_coopRecord) {
         recordCoopState(frameTime);
     }
+    // Every other sound waits while a movie plays and goes on after it
+    // (upstream #356); the movie's own audio plays.
+    _services.audio.mixer.setSoundsHeldForMovie(static_cast<bool>(_movie));
     if (_movie) {
         // Movies play on wall time and hold the simulation: no ticks accrue.
         updateMovie(frameDt);
@@ -3937,6 +4108,9 @@ void Game::renderGUI() {
         renderFade(_dialogFade);
     }
     renderFade(_globalFade);
+    if ((_screen == Screen::SwoopRace || _screen == Screen::Turret) && _coop) {
+        renderMiniGameResult();
+    }
     if (_screen == Screen::InGame && _cameraType == CameraType::ThirdPerson && _hud) {
         _hud->renderModal();
     }
@@ -4318,6 +4492,26 @@ void Game::renderDeveloperWatchedValues() {
         glm::vec3(0.92f));
 }
 
+void Game::renderMiniGameResult() {
+    // A co-op client's minigame just ended: its result over the last picture (even
+    // a race's closing fade to black) until the host's next module loads.
+    const std::string &text = _coop->clientMiniGameBanner();
+    if (text.empty()) {
+        return;
+    }
+    if (!_resultFont) {
+        _resultFont = _services.resource.fonts.get("dialogfont16x16");
+    }
+    if (!_resultFont) {
+        return;
+    }
+    glm::vec3 position(_options.graphics.width * 0.5f, _options.graphics.height * 0.42f, 0.0f);
+    _services.graphics.context.withBlendMode(graphics::BlendMode::Normal, [&]() {
+        _resultFont->render(text, position + glm::vec3(2.0f, 2.0f, 0.0f), glm::vec3(0.0f), graphics::TextGravity::CenterCenter);
+        _resultFont->render(text, position, glm::vec3(1.0f, 0.86f, 0.45f), graphics::TextGravity::CenterCenter);
+    });
+}
+
 void Game::renderDeveloperText(const std::string &text, const glm::vec3 &position, const glm::vec3 &color, TextGravity gravity) {
     if (!_developerFont) {
         return;
@@ -4484,12 +4678,10 @@ void Game::scheduleModuleTransitionWithMovies(const std::string &moduleName, con
 }
 
 bool Game::startVideo(const std::string &name) {
-    _services.audio.mixer.stopAll();
-    _music.reset();
-    _ambient.reset();
-    _fadingAudio.clear();
-
+    // Music, ambience and sounds are held, not stopped: they go on when the
+    // movie ends (a module change clears them itself).
     _movie = _services.resource.movies.get(name);
+    _services.audio.mixer.setSoundsHeldForMovie(static_cast<bool>(_movie));
     _globalFade.setMovieOverride(static_cast<bool>(_movie));
     if (_coop && _movie) {
         _coop->onMovieStarted(name);
@@ -4575,6 +4767,13 @@ void Game::updateVisualEffects(float dt) {
     }
     VisualEffectPresenter::Context ctx;
     ctx.graph = &_services.scene.graphs.get(kSceneMain);
+    // The swoop minigame's speed blur (SWMG_SetSpeedBlurEffect), laid over
+    // the frame by the render pipeline (upstream #356's frame effect).
+    bool speedBlur = _miniGame && _miniGame->speedBlurEnabled() && _miniGame->speedBlurRatio() > 0.0f;
+    ctx.graph->setSpeedBlur(speedBlur);
+    if (speedBlur) {
+        ctx.graph->setSpeedBlurRatio(_miniGame->speedBlurRatio());
+    }
     ctx.mixer = &_services.audio.mixer;
     ctx.modelOf = [this](uint32_t id) -> scene::ModelSceneNode * {
         auto object = getObjectById(id);
@@ -4707,8 +4906,38 @@ std::string Game::resolveTokens(const std::string &str, const std::map<int, std:
     return _stringTokens.resolve(str, customTokens, stringTokenSubject(), [&strings](int strRef) { return strings.getText(strRef); });
 }
 
+// Text between "{" and "}" is dropped; "{{" stands for "{" (upstream #356). A
+// string with no note is returned as it is. Talk-table text arrives already
+// without notes (Strings::getText); a dialogue's own text may still carry them.
+static std::string dropNotes(const std::string &text) {
+    if (text.find('{') == std::string::npos) {
+        return text;
+    }
+    std::string result;
+    size_t start = 0;
+    size_t i = 0;
+    while (i < text.size()) {
+        if (text[i] != '{') {
+            ++i;
+            continue;
+        }
+        if (i + 1 < text.size() && text[i + 1] == '{') {
+            result.append(text, start, i + 1 - start);
+            i += 2;
+            start = i;
+            continue;
+        }
+        result.append(text, start, i - start);
+        const size_t close = text.find('}', i + 1);
+        i = close == std::string::npos ? text.size() : close + 1;
+        start = i;
+    }
+    result.append(text, start, text.size() - start);
+    return result;
+}
+
 std::string Game::substituteCustomTokens(std::string str) const {
-    return resolveTokens(str, _customTokens);
+    return resolveTokens(dropNotes(str), _customTokens);
 }
 
 std::string Game::substituteCustomToken(std::string str, int token, std::string value) const {
@@ -4893,8 +5122,10 @@ namespace {
 // everything else to the active view (swoop or turret).
 class GameMiniGameHost : public IMiniGameHost {
 public:
-    GameMiniGameHost(std::function<void(const std::string &, uint32_t)> run) :
-        _run(std::move(run)) {
+    using Record = std::function<void(const MiniGameActor &, const std::string &, uint8_t)>;
+
+    GameMiniGameHost(std::function<void(const std::string &, uint32_t)> run, Record record = Record()) :
+        _run(std::move(run)), _record(std::move(record)) {
     }
 
     void setView(IMiniGameView *view) { _view = view; }
@@ -4906,17 +5137,29 @@ public:
         if (_view) {
             _view->playMiniGameAnimation(actor, name, looping, queue, overlay);
         }
+        if (_record) {
+            using A = net::MiniGameAnimation;
+            _record(actor, name, static_cast<uint8_t>((looping ? A::Looping : 0) | (queue ? A::Queue : 0) | (overlay ? A::Overlay : 0)));
+        }
     }
     void removeMiniGameAnimation(const MiniGameActor &actor, const std::string &name) override {
         if (_view) {
             _view->removeMiniGameAnimation(actor, name);
+        }
+        if (_record) {
+            _record(actor, name, net::MiniGameAnimation::Remove);
         }
     }
     void playMiniGameSound(const std::string &resRef, const glm::vec3 &position) override {
         if (_view) {
             _view->playMiniGameSound(resRef, position);
         }
+        if (_sound) {
+            _sound(resRef);
+        }
     }
+
+    void setSoundRecord(std::function<void(const std::string &)> sound) { _sound = std::move(sound); }
     void onMiniGameActorDied(const MiniGameActor &actor) override {
         if (_view) {
             _view->onMiniGameActorDied(actor);
@@ -4930,6 +5173,8 @@ public:
 
 private:
     std::function<void(const std::string &, uint32_t)> _run;
+    Record _record;
+    std::function<void(const std::string &)> _sound;
     IMiniGameView *_view {nullptr};
 };
 
@@ -4974,11 +5219,21 @@ bool Game::startMiniGame() {
         return false;
     }
 
+    // A co-op host passes on what the scripts animate (the gear lights, the engine glow): clients run no script.
+    GameMiniGameHost::Record record;
+    if (_coop && _coop->isHost()) {
+        record = [this](const MiniGameActor &actor, const std::string &name, uint8_t flags) {
+            if (_miniGame && _coop) {
+                _coop->onMiniGameAnimation(static_cast<size_t>(&actor - _miniGame->actors().data()), name, flags);
+            }
+        };
+    }
     auto host = std::make_unique<GameMiniGameHost>([this](const std::string &resRef, uint32_t callerId) {
         if (_scriptRunner) {
             _scriptRunner->run(resRef, callerId);
         }
-    });
+    }, std::move(record));
+    host->setSoundRecord([this](const std::string &resRef) { recordMiniGameSound(resRef); });
     auto *hostView = host.get();
     auto session = std::make_unique<MiniGameSession>(*host);
 
@@ -5034,6 +5289,10 @@ bool Game::startMiniGame() {
     }
     _savedCameraType = _cameraType;
     _miniGameInput = MiniGameInput();
+    // A co-op client loads the same module, models and camera as the host, and draws the
+    // host's simulation from MiniGameState: nothing here runs a script or moves an actor.
+    bool replica = _coop && _coop->isClient();
+    _turret.setReplica(replica);
 
     bool started = false;
     if (spec.type == MinigameType::SwoopRace) {
@@ -5055,6 +5314,7 @@ bool Game::startMiniGame() {
     _miniGame = std::move(session);
     _miniGameObjects = std::move(objects);
     _miniGameModule = _module->name();
+    _miniGameReplica = replica;
 
     _cameraType = CameraType::FirstPerson;
     setRelativeMouseMode(spec.type == MinigameType::Turret);
@@ -5077,6 +5337,14 @@ bool Game::startMiniGame() {
              % minigameTypeName(spec.type) % _miniGameModule % _miniGame->actors().size()
              % _miniGame->enemyCount() % _miniGame->obstacleCount()));
 
+    if (_coop) {
+        _coop->onMiniGameStarted(spec.type, _miniGameModule);
+    }
+    if (replica) {
+        info("minigame: drawing the host's " + std::string(minigameTypeName(spec.type)) + " (co-op client)");
+        return true;
+    }
+
     // Creation scripts last: they may already use the view.
     _miniGame->start();
     return true;
@@ -5085,6 +5353,9 @@ bool Game::startMiniGame() {
 void Game::endMiniGame() {
     if (!_miniGame) {
         return;
+    }
+    if (_coop) {
+        _coop->onMiniGameEnded(*_miniGame);
     }
     info(str(boost::format("minigame: ended %s module=%s ticks=%llu scripts=%zu")
              % minigameTypeName(_miniGame->type()) % _miniGameModule
@@ -5107,6 +5378,8 @@ void Game::endMiniGame() {
     _miniGameInput = MiniGameInput();
     _swoopAutopilot = false;
     _turretAutopilot = false;
+    _miniGameReplica = false;
+    _turret.setReplica(false);
     _miniGameModule.clear();
     _cameraType = _savedCameraType;
     setPartyVisible(true);
@@ -5115,6 +5388,10 @@ void Game::endMiniGame() {
 void Game::tickMiniGame(float dt) {
     if (!_miniGame) {
         return;
+    }
+    if (_coop && _coop->miniGameRemoteOwned()) {
+        // A guest steers it: its input replaces the host's before anything reads the seam.
+        _coop->applyMiniGameInput(_miniGameInput);
     }
     if (_swoopAutopilot) {
         applySwoopAutopilot();
@@ -5147,6 +5424,81 @@ void Game::tickMiniGame(float dt) {
         _swoopRace.update(dt);
     }
     if (_turret.isActive()) {
+        _turret.update(dt);
+    }
+}
+
+void Game::recordMiniGameSound(const std::string &resRef) {
+    if (_coop && _coop->isHost() && _miniGame && !resRef.empty()) {
+        _coop->onMiniGameSound(resRef);
+    }
+}
+
+void Game::tickMiniGameReplica(float dt) {
+    if (!_miniGame || !_coop) {
+        return;
+    }
+    auto &replay = _coop->miniGameReplay();
+    // The harness autopilots steer from what is drawn, as a player would.
+    if (!replay.empty()) {
+        if (_swoopAutopilot) {
+            applySwoopAutopilot();
+        }
+        if (_turretAutopilot && _turret.isActive()) {
+            applyTurretAutopilot();
+        }
+    }
+    // The owner's input goes to the host, whose simulation is what everyone sees. A turret's
+    // keyboard aim is turned into the angle it gives this tick, for drawing the aim ahead.
+    glm::vec2 rateStep(0.0f);
+    if (_turret.isActive() && _coop->clientOwnsMiniGame()) {
+        rateStep = _turret.replicaRateStep(_miniGameInput, dt);
+    }
+    _coop->clientMiniGameInput(_miniGameInput, rateStep);
+    if (replay.empty()) {
+        return; // the host's first state is on its way: the scene stays as loaded
+    }
+    replay.advance(dt);
+    auto state = replay.sample();
+    _coop->clientPredictMiniGame(state);
+    auto died = applyMiniGameState(*_miniGame, state);
+    auto &actors = _miniGame->actors();
+    // What the host's scripts animated, on the same actors' models.
+    IMiniGameView *view = _swoopRace.isActive() ? static_cast<IMiniGameView *>(&_swoopRace)
+                          : _turret.isActive()  ? static_cast<IMiniGameView *>(&_turret)
+                                                : nullptr;
+    for (const auto &animation : _coop->takeMiniGameAnimations()) {
+        if (!view || animation.actor >= actors.size()) {
+            continue;
+        }
+        const auto &actor = actors[animation.actor];
+        if ((animation.flags & net::MiniGameAnimation::Remove) != 0) {
+            view->removeMiniGameAnimation(actor, animation.name);
+        } else {
+            view->playMiniGameAnimation(actor, animation.name, (animation.flags & net::MiniGameAnimation::Looping) != 0,
+                                        (animation.flags & net::MiniGameAnimation::Queue) != 0,
+                                        (animation.flags & net::MiniGameAnimation::Overlay) != 0);
+        }
+    }
+    // What the host played: script sounds, deaths, hits.
+    for (const auto &resRef : _coop->takeMiniGameSounds()) {
+        if (auto clip = _services.resource.audioClips.get(resRef)) {
+            _services.audio.mixer.play(std::move(clip), audio::AudioType::Sound);
+        }
+    }
+    for (size_t index : died) {
+        if (_swoopRace.isActive()) {
+            _swoopRace.onMiniGameActorDied(actors[index]);
+        }
+        if (_turret.isActive()) {
+            _turret.onMiniGameActorDied(actors[index]);
+        }
+    }
+    if (_swoopRace.isActive()) {
+        _swoopRace.update(dt);
+    }
+    if (_turret.isActive()) {
+        _turret.prepareReplica(dt, state.firing && state.active);
         _turret.update(dt);
     }
 }
@@ -5232,7 +5584,13 @@ void Game::applyTurretAutopilot() {
     }
     // Lead the target by its motion over the bolt's flight time.
     glm::vec3 velocity = (best->position - best->previousPosition) * 30.0f;
-    glm::vec3 target = best->position + velocity * (bestDistance / bulletSpeed);
+    float lead = bestDistance / bulletSpeed;
+    if (_miniGameReplica && _coop && !_coop->miniGameReplay().empty()) {
+        // A co-op client sees the fighters a few ticks late: lead them by that too.
+        lead += (static_cast<float>(_coop->miniGameReplay().newest().tick) - _coop->miniGameReplay().clock() + kMiniGameStateEveryTicks) /
+                kMiniGameTicksPerSecond;
+    }
+    glm::vec3 target = best->position + velocity * lead;
     // Aim in the anchor frame: the turret's forward is Rz(yaw) * Rx(pitch) * +Y.
     glm::mat4 anchor = _turret.anchorTransform();
     glm::vec3 local(glm::inverse(anchor) * glm::vec4(target, 1.0f));
@@ -6208,24 +6566,54 @@ void Game::showMessageBox(const std::string &text) {
     }
 }
 
+std::string tutorialKeyText(std::string text) {
+    // The tutorial strings name keys by binding ("<ActionLeft>", "<MGActionRight>"),
+    // which the retail game fills in from its key map. These are this engine's keys:
+    // movement on W/A/S/D, and the minigames steer with A/D (or the arrows).
+    static const std::pair<const char *, const char *> kKeys[] = {
+        {"<ActionUp>", "W"}, {"<ActionDown>", "S"}, {"<ActionLeft>", "A"}, {"<ActionRight>", "D"},
+        {"<MGActionUp>", "W"}, {"<MGActionDown>", "S"}, {"<MGActionLeft>", "A"}, {"<MGActionRight>", "D"}};
+    for (const auto &[token, key] : kKeys) {
+        boost::replace_all(text, token, key);
+    }
+    return text;
+}
+
 bool Game::showTutorialWindow(int window) {
     if (!_tutorialWindowsEnabled || window < 0 || wasTutorialWindowShown(window)) {
         return false;
     }
     std::shared_ptr<TwoDA> table(_services.resource.twoDas.get("tutorial"));
-    if (!table || window >= table->getRowCount()) {
+    if (!table) {
         return false;
     }
-    int strref = table->getInt(window, "message0", -1);
+    // nWindow is a TUTORIAL_WINDOW_* constant of nwscript.nss, not a row: the
+    // constants name rows of tutorial.2da by label (the swoop race's 0 is the
+    // Start_Swoop_Race row, 9). Any other number is taken as a row.
+    int row = window;
+    static const char *kWindowLabels[] = {"Start_Swoop_Race", "Return_To_Base", "Movement_Keys"};
+    if (window < static_cast<int>(std::size(kWindowLabels))) {
+        row = -1;
+        for (int r = 0; r < table->getRowCount(); ++r) {
+            if (boost::iequals(table->getString(r, "label"), kWindowLabels[window])) {
+                row = r;
+                break;
+            }
+        }
+    }
+    if (row < 0 || row >= table->getRowCount()) {
+        return false;
+    }
+    int strref = table->getInt(row, "message0", -1);
     if (strref < 0) {
         return false;
     }
-    std::string text(_services.resource.strings.getText(strref));
+    std::string text(tutorialKeyText(_services.resource.strings.getText(strref)));
     if (text.empty()) {
         return false;
     }
     _tutorialWindowsShown.insert(window);
-    info(str(boost::format("Tutorial window %d: %s") % window % table->getString(window, "label")));
+    info(str(boost::format("Tutorial window %d: %s") % window % table->getString(row, "label")));
     if (!_confirmPopup) {
         _confirmPopup = tryLoadGUI<ConfirmPopup>();
     }

@@ -233,13 +233,104 @@ struct MouseWheelEvent {
     }
 };
 
+/**
+ * A gamepad's buttons as a layout-neutral set (A is the bottom face button, whatever it is
+ * labelled). The triggers are buttons here too: the engine reports them pressed past half pull.
+ */
+enum class GamepadButton {
+    A,
+    B,
+    X,
+    Y,
+    Back,
+    Guide,
+    Start,
+    LeftStick,
+    RightStick,
+    LeftShoulder,
+    RightShoulder,
+    DPadUp,
+    DPadDown,
+    DPadLeft,
+    DPadRight,
+    LeftTrigger,
+    RightTrigger,
+    Count
+};
+
+enum class GamepadAxis {
+    LeftX,
+    LeftY,
+    RightX,
+    RightY,
+    LeftTrigger,
+    RightTrigger
+};
+
+struct GamepadButtonEvent {
+    uint32_t pad;
+    GamepadButton button;
+    bool pressed;
+
+    GamepadButtonEvent(uint32_t pad, GamepadButton button, bool pressed) :
+        pad(pad),
+        button(button),
+        pressed(pressed) {
+    }
+};
+
+struct GamepadAxisEvent {
+    uint32_t pad;
+    GamepadAxis axis;
+    float value; /**< -1..1, down and right positive; the triggers 0..1 */
+
+    GamepadAxisEvent(uint32_t pad, GamepadAxis axis, float value) :
+        pad(pad),
+        axis(axis),
+        value(value) {
+    }
+};
+
+/** A pad plugged in or out (hot-plug). */
+struct GamepadDeviceEvent {
+    uint32_t pad;
+    bool connected;
+
+    GamepadDeviceEvent(uint32_t pad, bool connected) :
+        pad(pad),
+        connected(connected) {
+    }
+};
+
+/** Menu navigation, from a gamepad's stick, D-pad and face buttons: focus moves, or the focused control is used. */
+enum class NavigateAction {
+    Up,
+    Down,
+    Left,
+    Right,
+    Accept
+};
+
+struct NavigateEvent {
+    NavigateAction action;
+
+    explicit NavigateEvent(NavigateAction action) :
+        action(action) {
+    }
+};
+
 enum class EventType {
     KeyDown,
     KeyUp,
     MouseMotion,
     MouseButtonDown,
     MouseButtonUp,
-    MouseWheel
+    MouseWheel,
+    GamepadButtonDown,
+    GamepadButtonUp,
+    GamepadAxisMotion,
+    GamepadDevice,
+    Navigate
 };
 
 struct Event {
@@ -249,6 +340,10 @@ struct Event {
         MouseMotionEvent motion;
         MouseButtonEvent button;
         MouseWheelEvent wheel;
+        GamepadButtonEvent padButton;
+        GamepadAxisEvent padAxis;
+        GamepadDeviceEvent padDevice;
+        NavigateEvent navigate;
     };
 
     Event(EventType type) :
@@ -289,6 +384,35 @@ struct Event {
         Event event {EventType::MouseWheel};
         event.wheel = std::move(wheel);
         return event;
+    }
+
+    inline static Event newGamepadButton(GamepadButtonEvent button) {
+        Event event {button.pressed ? EventType::GamepadButtonDown : EventType::GamepadButtonUp};
+        event.padButton = button;
+        return event;
+    }
+
+    inline static Event newGamepadAxis(GamepadAxisEvent axis) {
+        Event event {EventType::GamepadAxisMotion};
+        event.padAxis = axis;
+        return event;
+    }
+
+    inline static Event newGamepadDevice(GamepadDeviceEvent device) {
+        Event event {EventType::GamepadDevice};
+        event.padDevice = device;
+        return event;
+    }
+
+    inline static Event newNavigate(NavigateAction action) {
+        Event event {EventType::Navigate};
+        event.navigate = NavigateEvent {action};
+        return event;
+    }
+
+    bool isGamepad() const {
+        return type == EventType::GamepadButtonDown || type == EventType::GamepadButtonUp ||
+               type == EventType::GamepadAxisMotion || type == EventType::GamepadDevice;
     }
 };
 

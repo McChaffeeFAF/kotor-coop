@@ -68,6 +68,8 @@ public:
     InGameMenuTab activeTab() const;
 
     OptionsMenu *optionsMenu() const { return _options.get(); }
+    /** Harness (guiclick / guidump): the open tab's own page, or null. */
+    PresentationGUI *activeTabPage() const;
 
     std::shared_ptr<gui::Button> getBtnChange2();
     std::shared_ptr<gui::Button> getBtnChange3();

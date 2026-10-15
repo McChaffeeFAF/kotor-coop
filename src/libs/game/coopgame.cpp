@@ -20,6 +20,7 @@
 #include "reone/game/gui/ingame.h"
 #include "reone/game/gui/ingame/options.h"
 #include "reone/game/gui/mainmenu.h"
+#include "reone/game/gui/upgrade.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/item.h"
@@ -206,6 +207,9 @@ void Game::tickCoopClient(float dt) {
         _dialogFade.update(dt);
     }
     _coop->clientTick(dt);
+    if (_miniGame && _miniGameReplica && !_movie) {
+        tickMiniGameReplica(dt);
+    }
     if (!_movie && getActiveCamera()) {
         auto &sceneGraph = _services.scene.graphs.get(kSceneMain);
         // The host's tactical pause freezes the scene here too.
@@ -591,6 +595,42 @@ void Game::initCoopConsole() {
         }
         _console.printLine("coop handover " + std::string(on ? "on " : "off ") + std::to_string(object->id()));
     });
+    // Minigames
+    _console.registerCommand("mganim", "swoop race: what an animation of the player's models drives, and the animations played lately: mganim [name]", [this](const ConsoleArgs &args) {
+        std::string recent;
+        for (const auto &name : _swoopRace.recentAnimations()) {
+            recent += (recent.empty() ? "\"" : ",\"") + name + "\"";
+        }
+        std::string described = _swoopRace.describeAnimation(args.size() > 1 ? std::string(*args[1]) : std::string());
+        _console.printLine("{\"recent\":[" + recent + "],\"engineSound\":\"" + _swoopRace.engineSound() + "\",\"animation\":" + described + "}");
+    });
+    _console.registerCommand("coopmg", "co-op: the running minigame's co-op side (owner, inputs, the client's playback) as JSON", [this](const ConsoleArgs &) {
+        if (!_coop) {
+            _console.printLine("{\"role\":\"none\"}");
+            return;
+        }
+        _console.printLine(boost::json::serialize(_coop->miniGameJson()));
+    });
+    _console.registerCommand("coophandmg", "co-op host: hand the running minigame to a player, or take it back: coophandmg <client id> [1|0]", [this](const ConsoleArgs &args) {
+        if (!_coop || !_coop->isHost()) {
+            throw std::runtime_error("not a co-op host");
+        }
+        auto client = args.get<int>(1);
+        if (!client) {
+            throw std::runtime_error("Usage: coophandmg <client id> [1|0]");
+        }
+        bool on = args.size() < 3 || args.get<int>(2).value_or(1) != 0;
+        if (!_coop->handMiniGame(static_cast<uint32_t>(*client), on)) {
+            throw std::runtime_error("no minigame running, or no such player");
+        }
+        _console.printLine(std::string("coop minigame ") + (on ? "handed to " : "taken back from ") + std::to_string(*client));
+    });
+    _console.registerCommand("coopmgquit", "co-op client: let go of the minigame this player drives (the host plays it out)", [this](const ConsoleArgs &) {
+        if (!_coop || !_coop->clientQuitMiniGame()) {
+            throw std::runtime_error("not driving a minigame");
+        }
+        _console.printLine("coop minigame quit");
+    });
     // Free Mode
     _console.registerCommand("coopnewguest", "co-op Free Mode client: make the guest character with quick character generation: coopnewguest [class slot 0-5] [name]", [=](const ConsoleArgs &args) {
         auto &session = clientSession();
@@ -640,6 +680,125 @@ void Game::initCoopConsole() {
         }
         auto result = _storeSession.sell(item);
         _console.printLine(std::string("coop sell ") + StoreSession::describe(result));
+    });
+    _console.registerCommand("coopbench", "co-op client: drive the workbench or lab screen as its buttons do: coopbench [state|item <template>|slot <n>|install <part template>|remove <slot>|assemble|craft <template>|break <template>|close|send remove|upgrade <item> <n>]", [=](const ConsoleArgs &args) {
+        auto &session = clientSession();
+        auto &screen = session.benchScreen();
+        std::string verb = args.size() > 1 ? boost::to_lower_copy(std::string(*args[1])) : std::string("state");
+        std::string what = args.size() > 2 ? std::string(*args[2]) : std::string();
+        UpgradeGUI *gui = _screen == Screen::Upgrade ? _upgrade.get() : nullptr;
+        if (verb == "state") {
+            boost::json::object root;
+            root["screen"] = gui && gui->guest();
+            root["open"] = screen.open();
+            root["kind"] = screen.lab() ? "lab" : "workbench";
+            root["page"] = gui ? static_cast<int>(gui->page()) : -1;
+            root["rejection"] = screen.rejection();
+            boost::json::array items;
+            for (const auto &entry : screen.view().items) {
+                boost::json::array slots;
+                for (const auto &slot : entry.slots) {
+                    slots.push_back(boost::json::value(slot.installedRow));
+                }
+                items.push_back(boost::json::object {{"id", entry.id}, {"resref", entry.resref}, {"upgrades", entry.upgrades},
+                                              {"local", screen.localId(entry.id)}, {"slots", std::move(slots)}});
+            }
+            root["items"] = std::move(items);
+            boost::json::array parts;
+            for (const auto &entry : screen.view().parts) {
+                parts.push_back(boost::json::value(entry.resref + "@" + std::to_string(entry.id)));
+            }
+            root["parts"] = std::move(parts);
+            root["recipes"] = screen.recipes().size();
+            root["breakdown"] = screen.breakdowns().size();
+            if (gui && gui->bench().isEditing()) {
+                boost::json::array staged;
+                for (const auto &slot : gui->bench().slots()) {
+                    staged.push_back(boost::json::value(slot.installedRow));
+                }
+                root["staged"] = std::move(staged);
+            }
+            _console.printLine(boost::json::serialize(root));
+            return;
+        }
+        if (verb == "send") {
+            // Test seam: a request as a stale screen would send it: send remove <item> <slot> | send upgrade <item> <part>.
+            auto item = args.get<uint32_t>(3).value_or(0);
+            auto value = args.get<int>(4).value_or(-1);
+            bool sent = what == "remove"    ? session.clientBenchRemove(item, value)
+                        : what == "upgrade" ? session.clientBenchUpgrade(item, static_cast<uint32_t>(std::max(0, value)))
+                                            : false;
+            _console.printLine(std::string("coop bench send ") + (sent ? "sent" : "refused"));
+            return;
+        }
+        if (!gui || !gui->guest()) {
+            throw std::runtime_error("no guest bench screen is open");
+        }
+        auto byTemplate = [](const std::vector<std::shared_ptr<Item>> &items, const std::string &which) -> std::shared_ptr<Item> {
+            for (const auto &item : items) {
+                if (item && (boost::iequals(item->blueprintResRef(), which) || boost::iequals(item->tag(), which))) {
+                    return item;
+                }
+            }
+            return nullptr;
+        };
+        if (verb == "item") {
+            auto item = byTemplate(gui->bench().partyItems(UpgradeCategory::None), what);
+            if (!item) {
+                throw std::runtime_error("the bench has no " + what);
+            }
+            gui->openItem(item);
+            _console.printLine("coop bench item " + what);
+        } else if (verb == "install" || verb == "remove") {
+            if (gui->page() != UpgradeGUI::Page::Slots) {
+                throw std::runtime_error("no item is open on the bench");
+            }
+            bool done = false;
+            if (verb == "install") {
+                // As double-clicking the part in the first slot that lists it.
+                for (int i = 0; i < static_cast<int>(gui->bench().slots().size()) && !done; ++i) {
+                    if (auto part = byTemplate(gui->bench().candidates(i), what)) {
+                        gui->slotsPanel().selectSlot(i);
+                        done = gui->bench().install(i, part);
+                    }
+                }
+            } else {
+                auto slot = args.get<int>(2).value_or(-1);
+                gui->slotsPanel().selectSlot(std::max(0, slot));
+                done = gui->bench().remove(slot);
+            }
+            gui->slotsPanel().refresh();
+            _console.printLine(std::string("coop bench ") + verb + (done ? " staged" : " refused"));
+        } else if (verb == "slot") {
+            // A slot button on the slots page.
+            if (gui->page() != UpgradeGUI::Page::Slots) {
+                throw std::runtime_error("no item is open on the bench");
+            }
+            gui->slotsPanel().selectSlot(std::max(0, args.get<int>(2).value_or(0)));
+            _console.printLine("coop bench slot " + std::to_string(gui->slotsPanel().selectedSlot()));
+        } else if (verb == "assemble") {
+            if (gui->page() != UpgradeGUI::Page::Slots) {
+                throw std::runtime_error("no item is open on the bench");
+            }
+            bool sent = gui->assemble();
+            _console.printLine(std::string("coop bench assemble ") + (sent ? "sent" : "nothing"));
+        } else if (verb == "craft" || verb == "break") {
+            auto mode = verb == "craft" ? CraftingPanel::Mode::Create : CraftingPanel::Mode::BreakDown;
+            if (gui->page() != UpgradeGUI::Page::Crafting || gui->craftingPanel().mode() != mode) {
+                gui->openCrafting(mode);
+            }
+            int row = gui->craftingPanel().rowOf(what);
+            if (row < 0) {
+                throw std::runtime_error("the bench lists no " + what);
+            }
+            bool sent = gui->craftingPanel().activate(row);
+            _console.printLine(std::string("coop bench ") + verb + (sent ? " sent" : " refused"));
+        } else if (verb == "close") {
+            gui->close();
+            _console.printLine("coop bench closed");
+        } else {
+            throw std::runtime_error("Usage: coopbench [state|item|install|remove|assemble|craft|break|close]");
+        }
     });
     _console.registerCommand("coopoffer", "co-op Free Mode client: answer the store or minigame prompt: coopoffer [1|0]", [=](const ConsoleArgs &args) {
         bool yes = args.size() < 2 || args.get<int>(1).value_or(1) != 0;

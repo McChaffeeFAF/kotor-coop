@@ -2,6 +2,7 @@
 
 #include "reone/net/protocol.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 
@@ -74,11 +75,11 @@ bool validSlotStatus(uint8_t value) {
 
 bool validCommandType(uint8_t value) {
     return value >= static_cast<uint8_t>(CommandType::MoveTo) &&
-           value <= static_cast<uint8_t>(CommandType::BenchClose);
+           value <= static_cast<uint8_t>(CommandType::MiniGameQuit);
 }
 
 bool validCommandReject(uint8_t value) {
-    return value <= static_cast<uint8_t>(CommandReject::NotBreakable);
+    return value <= static_cast<uint8_t>(CommandReject::MiniGameBusy);
 }
 
 bool validEventKind(uint8_t value) {
@@ -346,6 +347,7 @@ bool isClientMessage(MessageType type) {
     case MessageType::Bye:
     case MessageType::SnapshotAck:
     case MessageType::GuestCharacter:
+    case MessageType::MiniGameControl:
         return true;
     default:
         return false;
@@ -373,6 +375,7 @@ bool isHostMessage(MessageType type) {
     case MessageType::GuestRoster:
     case MessageType::Offer:
     case MessageType::BenchView:
+    case MessageType::MiniGameState:
         return true;
     default:
         return false;
@@ -385,7 +388,7 @@ std::optional<MessageType> peekType(const std::vector<uint8_t> &bytes) {
     }
     uint8_t value = bytes.front();
     bool completeness = value >= static_cast<uint8_t>(MessageType::SharedInventory) &&
-                        value <= static_cast<uint8_t>(MessageType::BenchView);
+                        value <= static_cast<uint8_t>(MessageType::MiniGameState);
     if (!completeness && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
         return std::nullopt;
     }
@@ -440,6 +443,10 @@ const char *messageTypeName(MessageType type) {
         return "offer";
     case MessageType::BenchView:
         return "bench_view";
+    case MessageType::MiniGameControl:
+        return "minigame_control";
+    case MessageType::MiniGameState:
+        return "minigame_state";
     }
     return "unknown";
 }
@@ -550,6 +557,8 @@ const char *commandTypeName(CommandType type) {
         return "bench_break";
     case CommandType::BenchClose:
         return "bench_close";
+    case CommandType::MiniGameQuit:
+        return "minigame_quit";
     }
     return "unknown";
 }
@@ -632,6 +641,10 @@ const char *commandRejectName(CommandReject reason) {
         return "skill_too_low";
     case CommandReject::NotBreakable:
         return "not_breakable";
+    case CommandReject::NotYourMiniGame:
+        return "not_your_minigame";
+    case CommandReject::MiniGameBusy:
+        return "minigame_busy";
     }
     return "unknown";
 }
@@ -1876,6 +1889,167 @@ bool decode(const std::vector<uint8_t> &bytes, BenchView &out) {
             return false;
         }
         out.recipes.push_back(std::move(recipe));
+    }
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const MiniGameControl &m) {
+    auto w = begin(MessageType::MiniGameControl);
+    w.u32(m.seq);
+    w.f32(m.steer);
+    w.boolean(m.fire);
+    w.f32(m.pitchRate);
+    w.f32(m.yawRate);
+    w.f32(m.pitchDelta);
+    w.f32(m.yawDelta);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, MiniGameControl &out) {
+    if (bytes.size() > kMaxClientMessageBytes) {
+        return false;
+    }
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::MiniGameControl)) {
+        return false;
+    }
+    out = MiniGameControl();
+    out.seq = r.u32();
+    out.steer = r.f32();
+    out.fire = r.boolean();
+    out.pitchRate = r.f32();
+    out.yawRate = r.f32();
+    out.pitchDelta = r.f32();
+    out.yawDelta = r.f32();
+    auto within = [](float v, float limit) { return std::fabs(v) <= limit; };
+    // f32() has already failed the reader on a non-finite value.
+    if (!finish(r) || !within(out.steer, 1.0f) || !within(out.pitchRate, 1.0f) || !within(out.yawRate, 1.0f) ||
+        !within(out.pitchDelta, kMaxMiniGameDelta) || !within(out.yawDelta, kMaxMiniGameDelta)) {
+        return false;
+    }
+    return true;
+}
+
+std::vector<uint8_t> encode(const MiniGameState &m) {
+    auto w = begin(MessageType::MiniGameState);
+    w.boolean(m.active);
+    w.u8(static_cast<uint8_t>(m.kind));
+    w.str(m.module);
+    w.str(m.owner);
+    w.u32(m.tick);
+    w.f32(m.elapsed);
+    w.f32(m.speed);
+    writeVec3(w, m.offset);
+    w.i16(m.hp);
+    w.i16(m.maxHp);
+    w.boolean(m.finished);
+    w.boolean(m.quit);
+    w.boolean(m.firing);
+    w.u32(m.controlSeq);
+    w.i32(m.prize);
+    w.u16(static_cast<uint16_t>(m.actors.size()));
+    auto fraction = [](float v) {
+        return static_cast<int16_t>(std::lround(std::clamp(std::isfinite(v) ? v : 0.0f, -1.0f, 1.0f) * 32767.0f));
+    };
+    for (const auto &actor : m.actors) {
+        w.u8(static_cast<uint8_t>(actor.kind));
+        w.i16(actor.hp);
+        w.boolean(actor.dead);
+        writeVec3(w, actor.position);
+        w.i16(fraction(actor.rotation.x));
+        w.i16(fraction(actor.rotation.y));
+        w.i16(fraction(actor.rotation.z));
+        w.i16(fraction(actor.rotation.w));
+    }
+    w.u8(static_cast<uint8_t>(m.animations.size()));
+    for (const auto &animation : m.animations) {
+        w.u16(animation.actor);
+        w.str(animation.name);
+        w.u8(animation.flags);
+    }
+    w.u8(static_cast<uint8_t>(std::min(m.sounds.size(), static_cast<size_t>(255))));
+    for (size_t i = 0; i < m.sounds.size() && i < 255; ++i) {
+        w.str(m.sounds[i]);
+    }
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, MiniGameState &out) {
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::MiniGameState)) {
+        return false;
+    }
+    out = MiniGameState();
+    out.active = r.boolean();
+    uint8_t kind = r.u8();
+    out.module = r.str();
+    out.owner = r.str();
+    out.tick = r.u32();
+    out.elapsed = r.f32();
+    out.speed = r.f32();
+    out.offset = readVec3(r);
+    out.hp = r.i16();
+    out.maxHp = r.i16();
+    out.finished = r.boolean();
+    out.quit = r.boolean();
+    out.firing = r.boolean();
+    out.controlSeq = r.u32();
+    out.prize = r.i32();
+    uint16_t count = r.u16();
+    if (!r.ok() || (kind != 1 && kind != 2) || out.module.size() > 16 || !validText(out.owner) || out.owner.size() > 32 ||
+        out.elapsed < 0.0f || out.prize < 0 || out.maxHp < 0 || count > kMaxMiniGameActors) {
+        return false;
+    }
+    out.kind = static_cast<MiniGameKind>(kind);
+    for (uint16_t i = 0; i < count; ++i) {
+        MiniGameActorState actor;
+        uint8_t actorKind = r.u8();
+        actor.hp = r.i16();
+        actor.dead = r.boolean();
+        actor.position = readVec3(r);
+        float q[4];
+        for (float &v : q) {
+            v = static_cast<float>(r.i16()) / 32767.0f;
+        }
+        float length = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        // Four fractions of a unit rotation: anything far from length one was never one.
+        if (!r.ok() || actorKind > 2 || length < 0.9f || length > 1.1f) {
+            return false;
+        }
+        actor.rotation = {q[0], q[1], q[2], q[3]}; // the reader normalises it before use
+        actor.kind = static_cast<MiniGameRole>(actorKind);
+        out.actors.push_back(actor);
+    }
+    uint8_t animations = r.u8();
+    if (!r.ok() || animations > kMaxMiniGameAnimations) {
+        return false;
+    }
+    for (uint8_t i = 0; i < animations; ++i) {
+        MiniGameAnimation animation;
+        animation.actor = r.u16();
+        animation.name = r.str();
+        animation.flags = r.u8();
+        if (!r.ok() || animation.actor >= out.actors.size() || animation.name.empty() || animation.name.size() > 32 ||
+            !validText(animation.name) || animation.flags > 15) {
+            return false;
+        }
+        out.animations.push_back(std::move(animation));
+    }
+    uint8_t sounds = r.u8();
+    if (!r.ok() || sounds > kMaxMiniGameSounds) {
+        return false;
+    }
+    for (uint8_t i = 0; i < sounds; ++i) {
+        auto sound = r.str();
+        if (!r.ok() || !validResRef(sound)) {
+            return false;
+        }
+        out.sounds.push_back(std::move(sound));
+    }
+    for (float v : {out.offset.x, out.offset.y, out.offset.z}) {
+        if (std::fabs(v) > 100000.0f) {
+            return false;
+        }
     }
     return finish(r);
 }

@@ -126,3 +126,23 @@ TEST(Pathfinder, walkmesh_elevation_searches_every_room_and_picks_the_nearest_le
     EXPECT_NEAR(*below, 0.0f, 1e-4f);
     EXPECT_FALSE(walkmeshElevationAt(pf.uni, {3.0f, 3.0f}, 0.0f).has_value());
 }
+
+TEST(Pathfinder, two_points_are_joined_only_when_their_faces_share_a_region) {
+    // Upstream #356: two squares of two triangles each, apart.
+    Pathfinder pf;
+    pf.uni.vertices = {
+        {0.0f, 0.0f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f, 0.0f},
+        {5.0f, 0.0f, 0.0f}, {6.0f, 0.0f, 0.0f}, {6.0f, 1.0f, 0.0f}, {5.0f, 1.0f, 0.0f}};
+    pf.uni.faces = {{{0, 1, 2}}, {{0, 2, 3}}, {{4, 5, 6}}, {{4, 6, 7}}};
+    pf.uni.rooms = {{0, 4, {0.0f, 0.0f, 0.0f}, {6.0f, 1.0f, 0.0f}}};
+    for (Uniface &face : pf.uni.faces) {
+        for (uint32_t i = 0; i < 3; ++i) {
+            face.adjecent[i] = UINT32_MAX;
+        }
+    }
+    uniwalkFinalize(pf.uni);
+
+    EXPECT_TRUE(pathExists(pf, {0.8f, 0.2f, 0.0f}, {0.2f, 0.8f, 0.0f})) << "across the shared edge";
+    EXPECT_FALSE(pathExists(pf, {0.5f, 0.2f, 0.0f}, {5.5f, 0.2f, 0.0f})) << "two islands";
+    EXPECT_FALSE(pathExists(pf, {0.5f, 0.2f, 0.0f}, {3.0f, 0.5f, 0.0f})) << "off the walkmesh";
+}

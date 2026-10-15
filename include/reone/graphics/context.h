@@ -108,6 +108,8 @@ public:
 
     virtual void withViewport(glm::ivec4 viewport, const std::function<void()> &block) = 0;
     virtual void withScissorTest(const glm::ivec4 &bounds, const std::function<void()> &block) = 0;
+    /** Scissor to the bounds without clearing them (upstream #356). */
+    virtual void withScissorTestNoClear(const glm::ivec4 &bounds, const std::function<void()> &block) = 0;
     virtual void withDepthTestMode(DepthTestMode mode, const std::function<void()> &block) = 0;
     virtual void withDepthMask(bool enabled, const std::function<void()> &block) = 0;
     virtual void withPolygonMode(PolygonMode mode, const std::function<void()> &block) = 0;
@@ -198,6 +200,7 @@ public:
 
     void withViewport(glm::ivec4 viewport, const std::function<void()> &block) override;
     void withScissorTest(const glm::ivec4 &bounds, const std::function<void()> &block) override;
+    void withScissorTestNoClear(const glm::ivec4 &bounds, const std::function<void()> &block) override;
     void withDepthTestMode(DepthTestMode mode, const std::function<void()> &block) override;
     void withDepthMask(bool enabled, const std::function<void()> &block) override;
     void withPolygonMode(PolygonMode mode, const std::function<void()> &block) override;

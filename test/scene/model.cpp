@@ -1218,3 +1218,142 @@ TEST(ModelSceneNode, event_keyed_at_the_start_fires_once_as_the_animation_starts
     }
     EXPECT_EQ((std::vector<std::string> {"start", "middle", "start", "middle"}), log.names);
 }
+
+// Upstream #356: animation layers, backwards playback, head look-at, frame
+// effects.
+
+namespace {
+
+struct LayerFixture {
+    GraphicsOptions graphicsOpt;
+    MockRenderPipelineFactory pipelineFactory;
+    TestGraphicsModule graphicsModule;
+    TestAudioModule audioModule;
+    TestResourceModule resourceModule;
+    std::unique_ptr<SceneGraph> scene;
+    std::shared_ptr<ModelNode> rootNode;
+    std::unique_ptr<Model> model;
+    std::shared_ptr<ModelSceneNode> node;
+    EventLog log;
+
+    LayerFixture() {
+        graphicsModule.init();
+        audioModule.init();
+        resourceModule.init();
+        scene = std::make_unique<SceneGraph>("test", pipelineFactory, graphicsOpt, graphicsModule.services(), audioModule.services(), resourceModule.services());
+        rootNode = std::make_shared<ModelNode>(0, "root_node", glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true, nullptr);
+        auto head = std::make_shared<ModelNode>(1, "head", glm::vec3(0.0f, 0.0f, 1.7f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true, rootNode.get());
+        rootNode->addChild(head);
+        std::vector<std::shared_ptr<Animation>> anims {
+            std::make_shared<Animation>("walk", 1.0f, 0.0f, "root_node", nullptr, std::vector<Animation::Event>()),
+            std::make_shared<Animation>("run", 1.0f, 0.0f, "root_node", nullptr, std::vector<Animation::Event>()),
+            std::make_shared<Animation>("wave", 1.0f, 0.5f, "root_node", nullptr, std::vector<Animation::Event>()),
+            std::make_shared<Animation>("rewind", 1.0f, 0.0f, "root_node", nullptr, std::vector<Animation::Event> {{0.25f, "early"}, {0.75f, "late"}})};
+        model = std::make_unique<Model>("layered", 0, rootNode, anims, "", 1.0f);
+        model->init();
+        node = scene->newModel(*model, ModelUsage::Creature);
+        node->init();
+        node->setAnimationEventListener(log);
+    }
+};
+
+} // namespace
+
+TEST(ModelSceneNode, a_layer_stays_above_the_base_animations_and_blends_in_and_out) {
+    LayerFixture f;
+    f.node->playAnimation("walk", nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+    f.node->playAnimation("wave", nullptr, AnimationProperties::fromFlags(AnimationFlags::layer | AnimationFlags::loop));
+    f.node->playAnimation("run", nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+
+    const auto &channels = f.node->animationChannels();
+    ASSERT_EQ(2u, channels.size()) << "the run replaced the walk under the layer";
+    EXPECT_EQ("wave", channels[0].anim->name());
+    ASSERT_TRUE(f.node->baseAnimationChannel());
+    EXPECT_EQ("run", f.node->baseAnimationChannel()->get().anim->name());
+    EXPECT_FLOAT_EQ(0.0f, channels[0].weight);
+
+    f.node->update(0.25f);
+    EXPECT_NEAR(0.5f, f.node->animationChannels()[0].weight, 1e-4f) << "half its 0.5 s transition";
+    f.node->update(0.5f);
+    EXPECT_FLOAT_EQ(1.0f, f.node->animationChannels()[0].weight);
+
+    EXPECT_TRUE(f.node->fadeOutLayer("wave"));
+    f.node->update(0.25f);
+    ASSERT_EQ(2u, f.node->animationChannels().size()) << "still blending out";
+    f.node->update(0.3f);
+    f.node->update(0.0f);
+    ASSERT_EQ(1u, f.node->animationChannels().size()) << "erased once blended out";
+    EXPECT_EQ("run", f.node->animationChannels()[0].anim->name());
+}
+
+TEST(ModelSceneNode, removing_the_layers_leaves_the_base) {
+    LayerFixture f;
+    f.node->playAnimation("walk", nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+    f.node->playAnimation("wave", nullptr, AnimationProperties::fromFlags(AnimationFlags::layer | AnimationFlags::loop));
+    f.node->removeLayers();
+    ASSERT_EQ(1u, f.node->animationChannels().size());
+    EXPECT_EQ("walk", f.node->animationChannels()[0].anim->name());
+}
+
+TEST(ModelSceneNode, an_animation_played_backwards_runs_from_its_end_and_signals_events_in_reverse) {
+    LayerFixture f;
+    AnimationProperties properties;
+    properties.speed = -1.0f;
+    f.node->playAnimation("rewind", nullptr, properties);
+    EXPECT_FLOAT_EQ(1.0f, f.node->animationChannels()[0].time);
+    for (int i = 0; i < 10; ++i) {
+        f.node->update(0.1f);
+    }
+    EXPECT_EQ((std::vector<std::string> {"late", "early"}), f.log.names);
+    EXPECT_TRUE(f.node->isAnimationFinished());
+}
+
+TEST(ModelSceneNode, a_look_at_turns_the_bone_within_its_arc_and_returns_to_rest) {
+    LayerFixture f;
+    f.node->playAnimation("walk", nullptr, AnimationProperties::fromFlags(AnimationFlags::loop));
+    ASSERT_FALSE(f.node->beginLookAt("no_such_bone", 60.0f, 30.0f));
+    ASSERT_TRUE(f.node->beginLookAt("head", 30.0f, 30.0f));
+    // Far off to the model's right (+X): a 90 degree turn, held to 30.
+    f.node->setLookAtPoint(glm::vec3(100.0f, 0.0f, 1.7f));
+    for (int i = 0; i < 60; ++i) {
+        f.node->update(0.05f);
+    }
+    auto head = f.node->getNodeByName("head");
+    glm::vec3 forward(head->localTransform() * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+    float yaw = glm::degrees(std::atan2(-forward.x, forward.y));
+    EXPECT_NEAR(-30.0f, yaw, 0.5f) << "turned right, as far as the arc allows";
+
+    f.node->endLookAt();
+    EXPECT_FALSE(f.node->isLookingAt());
+    for (int i = 0; i < 10; ++i) {
+        f.node->update(0.05f);
+    }
+    glm::vec3 rest(f.node->getNodeByName("head")->localTransform() * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f));
+    EXPECT_NEAR(0.0f, rest.x, 1e-4f);
+    EXPECT_NEAR(1.0f, rest.y, 1e-4f);
+}
+
+TEST(SceneGraph, force_sight_is_a_video_effect_and_its_glow_pulses_between_half_and_full) {
+    LayerFixture f;
+    EXPECT_FALSE(f.scene->isForceSightEnabled());
+    VideoEffect effect;
+    effect.forceSight = true;
+    f.scene->setVideoEffect(effect);
+    EXPECT_TRUE(f.scene->isForceSightEnabled());
+    float lowest = 1.0f, highest = 0.0f;
+    for (int i = 0; i < 100; ++i) {
+        f.scene->update(0.05f);
+        lowest = std::min(lowest, f.scene->forceSightPulse());
+        highest = std::max(highest, f.scene->forceSightPulse());
+    }
+    EXPECT_GE(lowest, 0.5f - 1e-4f);
+    EXPECT_LE(highest, 1.0f + 1e-4f);
+    EXPECT_LT(lowest, 0.6f);
+    EXPECT_GT(highest, 0.9f);
+    f.scene->setVideoEffect(std::nullopt);
+    EXPECT_FALSE(f.scene->isForceSightEnabled());
+
+    EXPECT_FALSE(f.scene->isSpeedBlurEnabled());
+    f.scene->setSpeedBlur(true);
+    EXPECT_TRUE(f.scene->isSpeedBlurEnabled());
+}

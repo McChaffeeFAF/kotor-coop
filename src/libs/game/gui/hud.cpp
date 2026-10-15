@@ -31,6 +31,7 @@
 #include "reone/resource/di/services.h"
 #include "reone/resource/provider/2das.h"
 #include "reone/resource/provider/audioclips.h"
+#include "reone/resource/provider/textures.h"
 #include "reone/resource/strings.h"
 #include "reone/system/logutil.h"
 
@@ -38,6 +39,7 @@
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/switchweapons.h"
 #include "reone/game/action/usefeat.h"
+#include "reone/game/creaturestates.h"
 #include "reone/game/d20/feat.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/d20/spell.h"
@@ -207,6 +209,7 @@ void HUD::refreshAutoCombatButton(bool visible) {
 void HUD::onGUILoaded() {
     bindControls();
     addAutoCombatButton();
+    addEffectIcons();
 
     // Both layouts ship the literal placeholder "Combat mode message" in this
     // label; it only ever shows text the game gives it.
@@ -290,9 +293,24 @@ void HUD::onGUILoaded() {
              _controls.LBL_JOURNAL, _controls.LBL_HEALTHBG, _controls.LBL_ITEMRCVD, _controls.LBL_ITEMLOST,
              _controls.LBL_LIGHTSHIFT, _controls.LBL_MAP, _controls.LBL_MOULDING1, _controls.LBL_MOULDING3,
              _controls.LBL_NAME, _controls.LBL_NAMEBG, _controls.LBL_PLOTXP, _controls.LBL_STEALTHXP,
-             _controls.LBL_ARROW, _controls.TB_PAUSE, _controls.TB_SOLO, _controls.TB_STEALTH}) {
+             _controls.LBL_ARROW, _controls.TB_STEALTH}) {
         setVisible(control, false);
     }
+    // Stealth has no mechanic in the build (no stealth mode); its toggle
+    // stays hidden on both layouts. Pause and solo mode are live
+    // (design note k1hud_parity_2): their SELECTED art shows the state.
+    for (auto &toggle : {_controls.TB_PAUSE, _controls.TB_SOLO}) {
+        if (toggle) {
+            toggle->setShowCheckedFill(true);
+            toggle->setSharpenBorderFillAlpha(true);
+        }
+    }
+    setOnClick(_controls.TB_PAUSE, [this]() {
+        _game.togglePauseAsKey();
+    });
+    setOnClick(_controls.TB_SOLO, [this]() {
+        _game.toggleSoloModeAsKey();
+    });
 
     if (isTSL()) {
         tintK2HUDMenuButton(_controls.BTN_EQU, _baseColor);
@@ -331,7 +349,6 @@ void HUD::onGUILoaded() {
     } else {
         setVisible(_controls.LBL_COMBATBG1, false);
         setVisible(_controls.LBL_COMBATBG2, false);
-        setVisible(_controls.LBL_MOULDING2, false);
     }
 
     setOnClick(_controls.BTN_EQU, [this]() {
@@ -516,6 +533,65 @@ bool HUD::handle(const input::Event &event) {
     return _gui->handle(event);
 }
 
+HUD::EffectIconRow HUD::effectIconRowFor(const Control::Extent &mainPortrait, bool tsl) {
+    // The leader's effect icons, a row of kEffectIconSize squares in the
+    // layout's authored space (design note k1hud_parity_2). K1: above the two small
+    // portraits, right of the toggle column, reading left to right. K2: above
+    // the main portrait's left, beside the toggle row, reading right to left.
+    EffectIconRow row;
+    row.size = kEffectIconSize;
+    row.step = kEffectIconSize + 2;
+    if (tsl) {
+        // Clear of the vitality bar authored left of the portrait.
+        row.left = mainPortrait.left - 30 - kEffectIconSize;
+        row.top = mainPortrait.top + 16;
+        row.step = -row.step;
+    } else {
+        row.left = mainPortrait.left + mainPortrait.width + 1;
+        row.top = mainPortrait.top - kEffectIconSize - 4;
+    }
+    return row;
+}
+
+void HUD::addEffectIcons() {
+    if (!_controls.LBL_BACK1) {
+        return;
+    }
+    auto row = effectIconRowFor(_controls.LBL_BACK1->authoredExtent(), isTSL());
+    for (int i = 0; i < kEffectIconCount; ++i) {
+        auto label = std::static_pointer_cast<Label>(std::shared_ptr<Control>(
+            _gui->newControl(ControlType::Label, "LBL_EFFECTICON" + std::to_string(i))));
+        label->setBorder(Control::Border());
+        label->setSelectable(false);
+        label->setSharpenBorderFillAlpha(true);
+        Control::Extent extent {row.left + i * row.step, row.top, row.size, row.size};
+        label->setAuthoredExtent(extent);
+        label->setExtent(extent);
+        label->setVisible(false);
+        _gui->addControlToBack(label, IGUI::ControlCoordinates::Authored);
+        _effectIcons.push_back(std::move(label));
+    }
+}
+
+HUD::MemberStatus HUD::memberStatus(resource::ITwoDAs &twoDas, const Creature &member) {
+    MemberStatus status;
+    status.down = member.isDead() || member.currentHitPoints() <= 0;
+    // Cannot act: stunned, paralysed, asleep, held, choked (a knockdown
+    // passes and is not shown).
+    bool held = member.isDebilitated() || member.isChoked();
+    for (auto type : {EffectType::Paralyze, EffectType::CutSceneParalyze, EffectType::CutSceneStunned,
+                      EffectType::Sleep, EffectType::DroidStun, EffectType::Horrified,
+                      EffectType::CutSceneHorrified, EffectType::Crush, EffectType::WhirlWind}) {
+        held = held || member.hasEffect(type);
+    }
+    status.debilitated = !status.down && held;
+    status.icons = creatureEffectIcons(twoDas, member);
+    for (const auto &icon : status.icons) {
+        (icon.good ? status.helped : status.hindered) = true;
+    }
+    return status;
+}
+
 void HUD::updatePartyPresentation() {
     Party &party = _game.party();
     const std::array<Label *, 3> charLabels {
@@ -549,8 +625,27 @@ void HUD::updatePartyPresentation() {
         }
     };
 
+    const std::array<Label *, 3> debilitatedLabels {
+        _controls.LBL_DEBILATATED1.get(), _controls.LBL_DEBILATATED2.get(), _controls.LBL_DEBILATATED3.get()};
+    const std::array<Label *, 3> disabledLabels {
+        _controls.LBL_DISABLE1.get(), _controls.LBL_DISABLE2.get(), _controls.LBL_DISABLE3.get()};
+    const std::array<Label *, 3> helpedLabels {
+        _controls.LBL_CMBTEFCTINC1.get(), _controls.LBL_CMBTEFCTINC2.get(), _controls.LBL_CMBTEFCTINC3.get()};
+    const std::array<Label *, 3> hinderedLabels {
+        _controls.LBL_CMBTEFCTRED1.get(), _controls.LBL_CMBTEFCTRED2.get(), _controls.LBL_CMBTEFCTRED3.get()};
+
     for (int i = 0; i < 3; ++i) {
         std::shared_ptr<Creature> member(party.getMember(i));
+        // Portrait status (both layouts author these over each portrait):
+        // down, cannot act, and whether good / bad effects are on.
+        MemberStatus status = member ? memberStatus(_services.resource.twoDas, *member) : MemberStatus();
+        show(disabledLabels[i], member && status.down);
+        show(debilitatedLabels[i], member && status.debilitated);
+        show(helpedLabels[i], member && status.helped);
+        show(hinderedLabels[i], member && status.hindered);
+        if (i == 0) {
+            updateEffectIcons(member ? status.icons : std::vector<EffectIconEntry>());
+        }
         show(charLabels[i], static_cast<bool>(member));
         show(backLabels[i], static_cast<bool>(member));
         show(levelUpLabels[i], member && member->isLevelUpPending());
@@ -576,6 +671,25 @@ void HUD::updatePartyPresentation() {
                                        ? std::clamp(100 * member->currentForce() / forcePoints, 0, 100)
                                        : 0);
         }
+    }
+}
+
+void HUD::updateEffectIcons(const std::vector<EffectIconEntry> &icons) {
+    for (size_t i = 0; i < _effectIcons.size(); ++i) {
+        auto &label = _effectIcons[i];
+        if (i >= icons.size()) {
+            label->setVisible(false);
+            continue;
+        }
+        if (_effectIconResRefs.size() <= i) {
+            _effectIconResRefs.resize(i + 1);
+        }
+        if (_effectIconResRefs[i] != icons[i].icon) {
+            _effectIconResRefs[i] = icons[i].icon;
+            // The running game's icon art (effecticon.2da names its own).
+            label->setBorderFill(_services.resource.textures.get(icons[i].icon, graphics::TextureUsage::GUI));
+        }
+        label->setVisible(true);
     }
 }
 
@@ -623,6 +737,7 @@ void HUD::update(float dt) {
     }
 
     updateStatusSummaryIndicators(dt);
+    updateModeToggles();
 
     _select.update();
     _actionBar.update();
@@ -795,6 +910,33 @@ void HUD::renderGuestList() {
             y += lineHeight;
         }
     });
+}
+
+bool HUD::soloToggleAvailable() const {
+    // Co-op: the party's follow mode is the host's (as the V key).
+    auto *coop = _game.coop();
+    return !(coop && coop->isClient());
+}
+
+static void syncToggle(const std::shared_ptr<ToggleButton> &toggle, bool visible, bool on) {
+    if (!toggle) {
+        return;
+    }
+    toggle->setVisible(visible);
+    if (toggle->isOn() != on) {
+        toggle->toggle();
+    }
+}
+
+void HUD::updateModeToggles() {
+    const bool present = _game.party().getLeader() != nullptr;
+    syncToggle(_controls.TB_PAUSE, present, _game.isPaused());
+    syncToggle(_controls.TB_SOLO, present && soloToggleAvailable(), _game.party().isSoloMode());
+    if (!isTSL()) {
+        // K1's left moulding frames the toggle column and its backing.
+        setVisible(_controls.LBL_MOULDING1, present);
+        setVisible(_controls.LBL_MOULDING2, present);
+    }
 }
 
 void HUD::renderMinimap() {

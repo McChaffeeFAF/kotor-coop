@@ -770,11 +770,11 @@ void MiniGameSession::placeActor(MiniGameActor &actor) {
     }
 }
 
-void MiniGameSession::setActorPosition(MiniGameActor &actor, const glm::vec3 &position) {
+void MiniGameSession::setActorPosition(MiniGameActor &actor, const glm::vec3 &position, const glm::quat &orientation) {
     actor.drivenExternally = true;
     actor.previousPosition = actor.position;
     actor.position = position;
-    actor.hook = glm::translate(position);
+    actor.hook = glm::translate(position) * glm::mat4_cast(orientation);
 }
 
 void MiniGameSession::updatePlayerGuns(float dt, bool fire) {

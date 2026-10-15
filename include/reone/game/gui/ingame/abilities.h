@@ -32,8 +32,38 @@ class ListBox;
 
 namespace game {
 
+class IFeats;
+class ISpells;
+class CreatureAttributes;
+
 class AbilitiesMenu : public GameGUI {
 public:
+    /** The three tabs (K1 and K2 both author BTN_SKILLS / BTN_POWERS / BTN_FEATS). */
+    enum class Tab {
+        Skills,
+        Powers,
+        Feats
+    };
+
+    /** One row of the Powers or Feats list. */
+    struct Entry {
+        std::string tag;
+        std::string name;
+        std::string description;
+        std::shared_ptr<graphics::Texture> icon;
+    };
+
+    /**
+     * The leader's rows for the Powers tab (every known Force power,
+     * spells.2da usertype 1, conversation powers too) or the Feats tab
+     * (every feat the attributes hold), in row order; tags "p<row>" / "f<row>".
+     */
+    static std::vector<Entry> entriesFor(Tab tab, const CreatureAttributes &attributes,
+                                         const ISpells &spells, const IFeats &feats);
+
+    Tab tab() const { return _tab; }
+    void selectTab(Tab tab);
+
     AbilitiesMenu(Game &game, ServicesView &services) :
         GameGUI(game, services) {
         _resRef = guiResRef("abilities");
@@ -113,8 +143,14 @@ private:
         _controls.LB_DESC_FEATS = findControl<gui::ListBox>("LB_DESC_FEATS");
     }
 
+    Tab _tab {Tab::Skills};
+    std::vector<Entry> _entries;
+
     void loadSkills();
     void refreshPortraits();
+    void refreshList();
+    void showSkillInfo(bool show);
+    void onListItemClick(const std::string &item);
 
 };
 

@@ -60,7 +60,32 @@ public:
     void update(float dt) override;
     void openItems();
 
+    /**
+     * K1 layout: the slot a weapon slot button edits while the second set is
+     * shown (WeapL/WeapR -> WeapL2/WeapR2); others unchanged.
+     */
+    static Slot k1SetSlot(Slot slot, bool secondSet);
+    /** K1 layout: the set toggle's authored extent (640x480 canvas). */
+    static gui::Control::Extent k1WeaponSetToggleExtent() { return {172, 410, 72, 28}; }
+    static constexpr const char *kK1WeaponSetIcon = "i_2weap01";
+    bool k1SecondSetShown() const { return _k1SecondSet; }
+    /** K2 layout's BTN_SWAPWEAPONS: swap the subject's two sets. */
+    void swapWeaponSets() { swapWeaponSetsFromScreen(); }
+    /** Performs the swap; returns whether the sets changed now (false: queued or refused). */
+    void setOnSwapWeapons(std::function<bool()> fn) { _onSwapWeapons = std::move(fn); }
+
 private:
+    friend class EquipmentTestAccess;
+
+    bool _k1SecondSet {false};
+    std::function<bool()> _onSwapWeapons;
+    std::shared_ptr<gui::Button> _k1WeaponSet;
+    std::shared_ptr<gui::Label> _k1WeaponSetIcon;
+    void addK1WeaponSetToggle();
+    void refreshK1WeaponSetToggle();
+    void swapWeaponSetsFromScreen();
+    int inventorySlotFor(Slot slot) const;
+
     static constexpr int kNumControlsBar = 5;
 
     struct Controls {

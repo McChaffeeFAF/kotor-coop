@@ -53,7 +53,22 @@ public:
      */
     static std::string alignmentAnimation(int goodEvil);
 
+    /**
+     * Party AI style (GetPartyAIStyle / SetPartyAIStyle): 0 aggressive,
+     * 1 defensive, 2 passive, as the companion brain reads it. The character
+     * screen's Scripts button cycles it (design note k1hud_parity_2, follow-up).
+     */
+    static constexpr int kPartyAIStyleCount = 3;
+    static int nextPartyAIStyle(int style) { return (style < 0 || style >= kPartyAIStyleCount - 1) ? 0 : style + 1; }
+    /** TLK names, in both games' dialog.tlk (1096 Aggressive, 1097 Defensive, 1098 Passive). */
+    static int partyAIStyleStrRef(int style);
+    /** The K2 layout authors no Scripts button: this one is added in code. */
+    static gui::Control::Extent k2ScriptsButtonExtent() { return {205, 516, 160, 28}; }
+
 private:
+    std::shared_ptr<gui::Button> _scripts; // BTN_SCRIPTS (K1) or the added K2 button
+    void refreshPartyAIStyle();
+
     static constexpr int kNumControlsGood = 10;
     static constexpr int kNumControlsBar = 6;
 

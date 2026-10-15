@@ -343,6 +343,9 @@ private:
     glm::ivec2 controlCoordinates(const Control &control, int screenX, int screenY) const;
     float scaledFactor() const;
     void updateSelection(int screenX, int screenY);
+    void setSelection(std::optional<std::reference_wrapper<Control>> control);
+    /** Gamepad navigation: move the focus, step into the focused control, or use it. */
+    bool handleNavigate(input::NavigateAction action);
 
     void renderBackground(scene::IRenderPass &pass);
 

@@ -43,6 +43,8 @@ namespace reone {
 
 namespace game {
 
+// The baseitems.2da model type of an item drawn as its wearer's body model.
+static constexpr int kBodyModelType = 1;
 // baseitems.2da reqfeat0..reqfeat4 (K1 fills 0..2).
 static constexpr int kMaxRequiredFeats = 5;
 
@@ -179,6 +181,17 @@ void Item::deserializeBase(const resource::Gff &gff) {
         static_cast<int>(ACBonus::Invalid)));
     _weaponType = static_cast<WeaponType>(
         baseItems->getInt(_baseItem, "weapontype", 0));
+    // A table without the column (a test's) falls back on the weapon type.
+    auto hasColumn = [&baseItems](const char *column) {
+        const auto &columns = baseItems->columns();
+        return std::find(columns.begin(), columns.end(), column) != columns.end();
+    };
+    _rangedWeapon = hasColumn("rangedweapon")
+                        ? baseItems->getInt(_baseItem, "rangedweapon", 0) != 0
+                        : _weaponType == WeaponType::Ranged;
+    _bodyModel = hasColumn("modeltype")
+                     ? baseItems->getInt(_baseItem, "modeltype", 0) == kBodyModelType
+                     : true;
     _weaponWield = static_cast<WeaponWield>(
         baseItems->getInt(_baseItem, "weaponwield", 0));
     _weaponSize = static_cast<CreatureSize>(
@@ -292,6 +305,8 @@ void Item::clone(const Item &from) {
     _dieToRoll = from._dieToRoll;
     _damageFlags = from._damageFlags;
     _weaponType = from._weaponType;
+    _rangedWeapon = from._rangedWeapon;
+    _bodyModel = from._bodyModel;
     _weaponWield = from._weaponWield;
     _weaponSize = from._weaponSize;
 

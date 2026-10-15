@@ -55,3 +55,26 @@ TEST(TpcReader, should_load_tpc) {
     auto pixels = reinterpret_cast<unsigned char *>(texture->layers()[0].pixels->data());
     EXPECT_EQ(255, pixels[0]);
 }
+
+TEST(TpcReader, keeps_the_header_alpha_test_for_cut_out_textures) {
+    // The second header field: K1's fx_LensRing carries 1/255 there
+    // (design note v15_vfx_leftovers).
+    float alphaTest = 1.0f / 255.0f;
+    std::string field(reinterpret_cast<const char *>(&alphaTest), 4);
+    auto tpcBytes = StringBuilder()
+                        .append("\x00\x00\x00\x00", 4) // data size
+                        .append(field)                 // alpha test
+                        .append("\x01\x00", 2)         // width
+                        .append("\x01\x00", 2)         // height
+                        .append("\x01\x00", 2)         // encoding
+                        .append("\x01\x00", 2)         // number of mip maps
+                        .append('\x00', 112)           // padding
+                        .append("\xff", 1)
+                        .string();
+    auto tpc = MemoryInputStream(tpcBytes);
+    auto reader = TpcReader(tpc, "fx_lensring", TextureUsage::Default);
+
+    reader.load();
+
+    EXPECT_FLOAT_EQ(alphaTest, reader.texture()->features().alphaTest);
+}

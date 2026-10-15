@@ -32,6 +32,7 @@ set(GRAPHICS_HEADERS
     ${GRAPHICS_INCLUDE_DIR}/bcutil.h
     ${GRAPHICS_INCLUDE_DIR}/dxtutil.h
     ${GRAPHICS_INCLUDE_DIR}/font.h
+    ${GRAPHICS_INCLUDE_DIR}/gamepadevents.h
     ${GRAPHICS_INCLUDE_DIR}/format/bwmreader.h
     ${GRAPHICS_INCLUDE_DIR}/format/curreader.h
     ${GRAPHICS_INCLUDE_DIR}/format/ddsreader.h
@@ -103,6 +104,7 @@ set(GRAPHICS_SOURCES
     ${GRAPHICS_SOURCE_DIR}/surfacedetail.cpp
     ${GRAPHICS_SOURCE_DIR}/grading.cpp
     ${GRAPHICS_SOURCE_DIR}/lipanimation.cpp
+    ${GRAPHICS_SOURCE_DIR}/gamepadevents.cpp
     ${GRAPHICS_SOURCE_DIR}/mesh.cpp
     ${GRAPHICS_SOURCE_DIR}/meshregistry.cpp
     ${GRAPHICS_SOURCE_DIR}/model.cpp

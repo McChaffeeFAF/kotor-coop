@@ -17,6 +17,9 @@
 
 #include "reone/resource/2da.h"
 
+#include <limits>
+#include <stdexcept>
+
 #include "reone/system/logutil.h"
 
 namespace reone {
@@ -160,6 +163,25 @@ std::optional<int> TwoDA::getIntOpt(int row, const std::string &column) const {
 
 uint32_t TwoDA::getHexInt(int row, const std::string &column, uint32_t defValue) const {
     return getHexIntOpt(row, column).value_or(defValue);
+}
+
+uint32_t TwoDA::getUint(int row, const std::string &column, uint32_t defValue) const {
+    return getUintOpt(row, column).value_or(defValue);
+}
+
+std::optional<uint32_t> TwoDA::getUintOpt(int row, const std::string &column) const {
+    const std::string &value = getString(row, column);
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    bool hexadecimal = value.size() > 2 &&
+                       value[0] == '0' &&
+                       (value[1] == 'x' || value[1] == 'X');
+    const unsigned long long number = std::stoull(value, nullptr, hexadecimal ? 16 : 10);
+    if (number > std::numeric_limits<uint32_t>::max()) {
+        throw std::out_of_range("2DA: unsigned value out of range: " + value);
+    }
+    return static_cast<uint32_t>(number);
 }
 
 std::optional<uint32_t> TwoDA::getHexIntOpt(int row, const std::string &column) const {

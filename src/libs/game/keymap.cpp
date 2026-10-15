@@ -65,6 +65,8 @@ const std::vector<KeyActionInfo> &keyActionInfos() {
         {KeyAction::CancelCombat, "CancleCombat", KeyCode::F, KeyCode::Unknown, true},
         {KeyAction::ClearOneAction, "ClearOneAction", KeyCode::Y, KeyCode::Unknown, true},
         {KeyAction::Stealth, "STEALTH", KeyCode::G, KeyCode::Unknown, true},
+        // K2 keymap.2da "SwitchWeaps" (H); K1 has no row (design note k1hud_parity_2).
+        {KeyAction::SwitchWeapons, "SwitchWeaps", KeyCode::H, KeyCode::Unknown, true},
         {KeyAction::GameMenu, "GUI", KeyCode::Escape, KeyCode::Unknown, false},
     };
     return infos;
@@ -213,6 +215,33 @@ std::optional<KeyAction> Keymap::actionFor(KeyCode code) const {
         }
     }
     return std::nullopt;
+}
+
+std::optional<KeyAction> Keymap::conflict(KeyAction action, KeyCode code) const {
+    auto holder = actionFor(code);
+    if (holder && *holder != action) {
+        return holder;
+    }
+    return std::nullopt;
+}
+
+bool Keymap::locked(KeyAction action, KeyCode code) const {
+    if (!keyActionInfo(action).remappable) {
+        return true;
+    }
+    auto holder = conflict(action, code);
+    return holder && !keyActionInfo(*holder).remappable;
+}
+
+Keymap::Translation Keymap::translateAction(KeyAction action) const {
+    Translation result;
+    const auto &info = keyActionInfo(action);
+    if (info.engineKey != KeyCode::Unknown) {
+        result.forward = info.engineKey;
+    } else {
+        result.dispatch = action;
+    }
+    return result;
 }
 
 void Keymap::bind(KeyAction action, KeyCode code) {

@@ -669,3 +669,114 @@ TEST(VisualEffectPresenter, a_cast_hand_visual_plays_cast01_on_the_right_hand_un
     scene.frame();
     EXPECT_EQ(0u, scene.presenter.numModels());
 }
+
+// Design note v15_vfx_leftovers
+
+TEST(VisualEffects, the_speed_rows_and_the_programmed_model_rows_are_recognised) {
+    TwoDA::Builder builder;
+    builder.columns(kColumns);
+    builder.row("1020", row({{"label", "VFX_IMP_SPEED_KNIGHT"}, {"type_fd", "F"}, {"progfx_impact", "1500"}}));
+    builder.row("2004", row({{"label", "VFX_DUR_SPEED"}, {"type_fd", "D"}, {"imp_impact_node", "v_speed_dur"}, {"progfx_duration", "1601"}}));
+    builder.row("4036", row({{"label", "VFX_COM_JEDI_FORCE_FIZZLE"}, {"type_fd", "F"}, {"progfx_impact", "1201"}}));
+    builder.row("4038", row({{"label", "VFX_COM_SNIPER_SHOT"}, {"type_fd", "F"}, {"imp_impact_node", "v_sn_r_gen"}, {"progfx_impact", "1202"}}));
+    builder.row("6000", row({{"label", "VFX_IMP_MIRV"}, {"type_fd", "F"}, {"progfx_impact", "1300"}}));
+    builder.row("7000", row({{"label", "VFX_DUR_MEDAL"}, {"type_fd", "D"}, {"progfx_duration", "1700"}}));
+    builder.row("7002", row({{"label", "VFX_DUR_MASK_02"}, {"type_fd", "D"}, {"progfx_duration", "1702"}}));
+    auto table = builder.build();
+    std::map<std::string, std::shared_ptr<Model>> models {
+        {"v_fizzle_imp", effectModel("v_fizzle_imp", {"impact"})},
+        {"v_medal_dur", effectModel("v_medal_dur", {})},
+        {"v_revmask2_dur", effectModel("v_revmask2_dur", {})}};
+
+    auto effects = VisualEffects::parse(
+        *table,
+        [&](const std::string &resRef) -> std::shared_ptr<Model> {
+            auto it = models.find(resRef);
+            return it != models.end() ? it->second : nullptr;
+        },
+        [](const std::string &) { return nullptr; });
+
+    EXPECT_TRUE(effects.at(1020).speedTrail);
+    EXPECT_TRUE(effects.at(2004).speedTrail);
+    EXPECT_FALSE(effects.at(4036).speedTrail);
+    EXPECT_EQ(models["v_fizzle_imp"], effects.at(4036).progfxModel);
+    EXPECT_EQ(VisualEffectDesc::ProgfxPlace::AboveHead, effects.at(4036).progfxPlace);
+    EXPECT_EQ(models["v_medal_dur"], effects.at(7000).progfxModel);
+    EXPECT_EQ(VisualEffectDesc::ProgfxPlace::Chest, effects.at(7000).progfxPlace);
+    EXPECT_EQ(models["v_revmask2_dur"], effects.at(7002).progfxModel);
+    EXPECT_EQ(VisualEffectDesc::ProgfxPlace::Head, effects.at(7002).progfxPlace);
+    EXPECT_EQ(nullptr, effects.at(4038).progfxModel) << "1202 is shared with the sniper shot: left undrawn";
+    EXPECT_EQ(nullptr, effects.at(6000).progfxModel) << "MIRV has no model";
+}
+
+TEST(VisualEffectPresenter, speed_afterimages_trail_a_moving_target_and_a_standing_one_pulses) {
+    auto standing = VisualEffectPresenter::speedGhosts(glm::vec3(0.0f), 1.0f, 0.1f);
+    ASSERT_EQ(1u, standing.size());
+    EXPECT_TRUE(standing[0].ghost);
+    EXPECT_EQ(glm::vec3(0.0f), standing[0].offset);
+    EXPECT_GT(standing[0].inflate, 0.01f);
+    EXPECT_GT(standing[0].strength, 0.0f);
+
+    auto running = VisualEffectPresenter::speedGhosts(glm::vec3(4.0f, 0.0f, 0.0f), 1.0f, 0.1f);
+    ASSERT_EQ(3u, running.size()) << "no pulse at full speed";
+    for (size_t i = 0; i < running.size(); ++i) {
+        EXPECT_TRUE(running[i].ghost);
+        EXPECT_NEAR(-0.2f * static_cast<float>(i + 1), running[i].offset.x, 1e-5f) << "behind it";
+        if (i > 0) {
+            EXPECT_LT(running[i].strength, running[i - 1].strength) << "fainter further back";
+        }
+    }
+    EXPECT_TRUE(VisualEffectPresenter::speedGhosts(glm::vec3(4.0f, 0.0f, 0.0f), 0.0f, 0.1f).empty());
+}
+
+TEST(VisualEffectPresenter, a_speed_effect_gives_the_moving_target_afterimages_until_it_ends) {
+    PresenterScene scene;
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.speedTrail = true;
+
+    auto request = scene.begin(desc);
+    glm::vec3 position(10.0f, 20.0f, 0.0f);
+    for (int i = 0; i < 20; ++i) {
+        position.y += 0.25f; // 5 m/s at 0.05 s frames
+        scene.creature->setLocalTransform(glm::translate(position));
+        scene.frame();
+    }
+    const auto &overlays = scene.creature->bodyOverlays();
+    ASSERT_EQ(3u, overlays.size());
+    EXPECT_TRUE(overlays[0].ghost);
+    EXPECT_LT(overlays[0].offset.y, -0.1f) << "trailing behind the motion";
+    EXPECT_NEAR(0.0f, overlays[0].offset.x, 1e-3f);
+    EXPECT_FLOAT_EQ(1.0f, scene.creature->bodyOpacity()) << "the body itself is untouched";
+
+    request->ended = true;
+    for (int i = 0; i < 10; ++i) {
+        scene.frame();
+    }
+    EXPECT_TRUE(scene.creature->bodyOverlays().empty());
+    EXPECT_EQ(0u, scene.presenter.numActive());
+}
+
+TEST(VisualEffectPresenter, the_medal_is_pinned_to_the_front_of_the_chest) {
+    PresenterScene scene;
+    VisualEffectDesc desc;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    desc.progfxModel = effectModel("v_medal_dur", {});
+    desc.progfxPlace = VisualEffectDesc::ProgfxPlace::Chest;
+
+    scene.begin(desc);
+    scene.frame();
+    auto models = scene.presenter.models();
+    ASSERT_EQ(1u, models.size());
+    const glm::mat4 &transform = models[0]->localTransform();
+    // The creature stands at (10, 20) turned a quarter left (facing -X), its
+    // impact node 1.2 m up: in front is -X, its left is -Y.
+    glm::vec3 position(transform[3]);
+    EXPECT_NEAR(10.0f - 0.14f, position.x, 1e-4f);
+    EXPECT_NEAR(20.0f - 0.08f, position.y, 1e-4f);
+    EXPECT_NEAR(1.3f, position.z, 1e-4f);
+    glm::vec3 back(transform[1]);
+    EXPECT_NEAR(1.0f, back.x, 1e-4f) << "its face (-Y) looks where the creature does";
+    glm::vec3 up(transform[2]);
+    EXPECT_NEAR(1.0f, up.z, 1e-4f);
+}

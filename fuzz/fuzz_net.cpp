@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -27,6 +28,51 @@ void tryDecode(const std::vector<uint8_t> &bytes) {
     T second;
     if (!decode(again, second) || encode(second) != again) {
         __builtin_trap();
+    }
+}
+
+// What a client does with a decoded snapshot: merge every field it names into its own copy. Merging all
+// the fields of an entity (or of the world) into a blank one must reproduce it exactly, and the diff of the
+// two must then be empty; the quantisers must take any float.
+void tryDeltas(const std::vector<uint8_t> &bytes) {
+    Snapshot snapshot;
+    if (!decode(bytes, snapshot)) {
+        return;
+    }
+    for (const auto &record : snapshot.entities) {
+        EntityState merged;
+        mergeEntity(merged, record.state, kFieldAllMask);
+        if ((exactDiffEntity(merged, record.state) & kFieldAllMask) != 0) {
+            __builtin_trap();
+        }
+        (void)diffEntity(EntityState(), record.state);
+        EntityState partial;
+        mergeEntity(partial, record.state, record.fields);
+        (void)exactDiffEntity(partial, record.state);
+    }
+    WorldState world;
+    mergeWorld(world, snapshot.world, kWorldAllMask);
+    if ((exactDiffWorld(world, snapshot.world) & kWorldAllMask) != 0) {
+        __builtin_trap();
+    }
+    mergeWorld(world, snapshot.world, snapshot.worldFields);
+}
+
+void tryNames(const std::vector<uint8_t> &bytes) {
+    // The tables that name and classify the enums take any byte.
+    for (uint8_t value : bytes) {
+        (void)commandTypeName(static_cast<CommandType>(value));
+        (void)commandRejectName(static_cast<CommandReject>(value));
+        (void)rejectReasonName(static_cast<RejectReason>(value));
+        (void)slotStatusName(static_cast<SlotStatus>(value));
+        (void)messageTypeName(static_cast<MessageType>(value));
+        (void)isClientMessage(static_cast<MessageType>(value));
+        (void)isHostMessage(static_cast<MessageType>(value));
+    }
+    for (size_t i = 0; i + 4 <= bytes.size(); i += 4) {
+        float value;
+        std::memcpy(&value, &bytes[i], 4);
+        (void)dequantizeFacing(quantizeFacing(value));
     }
 }
 
@@ -58,6 +104,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     tryDecode<StoreView>(bytes);
     tryDecode<GuestRoster>(bytes);
     tryDecode<Offer>(bytes);
+    tryDecode<BenchView>(bytes);
+    tryDecode<MiniGameControl>(bytes);
+    tryDecode<MiniGameState>(bytes);
+    tryDeltas(bytes);
+    tryNames(bytes);
 
     std::string text(reinterpret_cast<const char *>(data), size);
     (void)normalizeJoinCode(text);

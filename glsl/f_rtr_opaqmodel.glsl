@@ -2,6 +2,7 @@
 #include "u_locals.glsl"
 
 #include "i_fog.glsl"
+#include "i_forcesight.glsl"
 #include "i_hash.glsl"
 #include "i_lighting.glsl"
 #include "i_math.glsl"
@@ -136,7 +137,10 @@ void main() {
         // Shiny parts reflect more, rough parts less.
         envScale = mix(1.0, clamp((1.0 - 0.6 * roughness) * (0.5 + specularHint), 0.0, 1.5), surfaceStrength);
     }
-    if (isFeatureEnabled(FEATURE_ENVMAP)) {
+    if (uForceSight.x > 0.5) {
+        // Force Sight (upstream #356): the lit colour turns grey.
+        color = forceSightGrey(color);
+    } else if (isFeatureEnabled(FEATURE_ENVMAP)) {
         vec3 R = reflect(-viewDir, normal);
         vec4 envmapSample = sampleEnvMap(sEnvMap, sEnvMapCube, R);
         color += envmapSample.rgb * (1.0 - mainTexSample.a) * envScale;

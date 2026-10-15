@@ -77,6 +77,11 @@ void SceneGraph::clear() {
     _modelRoots.clear();
     _walkmeshRoots.clear();
     _triggerRoots.clear();
+    // A sound leaves the scene silent (#356): the mixer would otherwise keep
+    // playing a looping source no node owns any more.
+    for (auto &root : _soundRoots) {
+        root->stopSound();
+    }
     _soundRoots.clear();
     _grassRoots.clear();
     _activeLights.clear();
@@ -142,6 +147,7 @@ void SceneGraph::removeRoot(GrassSceneNode &node) {
 }
 
 void SceneGraph::removeRoot(SoundSceneNode &node) {
+    node.stopSound();
     auto it = std::remove_if(
         _soundRoots.begin(),
         _soundRoots.end(),
@@ -149,9 +155,16 @@ void SceneGraph::removeRoot(SoundSceneNode &node) {
     _soundRoots.erase(it, _soundRoots.end());
 }
 
+static constexpr float kForceSightPulsePeriod = 2.048f;
+
 void SceneGraph::update(float dt) {
+    _forceSightPhase = std::fmod(_forceSightPhase + dt, kForceSightPulsePeriod);
     updateModelRoots(dt);
     updatePresentation(dt);
+}
+
+float SceneGraph::forceSightPulse() const {
+    return 0.75f + 0.25f * std::sin(glm::two_pi<float>() * _forceSightPhase / kForceSightPulsePeriod);
 }
 
 void SceneGraph::updateModelRoots(float dt) {
@@ -714,10 +727,16 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
                 globals.shadowStrength = shadowStrength();
                 globals.shadowRadius = shadowRadius();
             }
+            globals.forceSight = glm::vec4(isForceSightEnabled() ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f);
             if (isFogEnabled()) {
                 globals.fogNear = fogNear();
                 globals.fogFar = fogFar();
-                globals.fogColor = glm::vec4(fogColor(), 1.0f);
+                // Under Force Sight the fog turns to the darkened grey of its
+                // colour (upstream #356).
+                static const glm::vec3 kForceSightFogLuminance {0.30f, 0.59f, 0.11f};
+                globals.fogColor = isForceSightEnabled()
+                                       ? glm::vec4(glm::vec3(glm::dot(fogColor(), kForceSightFogLuminance) * 0.65f), 1.0f)
+                                       : glm::vec4(fogColor(), 1.0f);
             }
         });
         auto halfDim = dim / 2;
@@ -762,6 +781,7 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
         });
     }
 
+    pipeline.setFrameEffects(_frameEffects);
     return pipeline.render();
 }
 

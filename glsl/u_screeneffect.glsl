@@ -31,4 +31,5 @@ layout(std140) uniform ScreenEffect {
     vec4 uMotionParams;
     vec4 uLensFlags;
     vec4 uLensParams;
+    vec4 uFrameEffectParams;
 };

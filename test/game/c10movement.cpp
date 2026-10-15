@@ -755,3 +755,67 @@ TEST(C10DoorBetween, a_ranged_attacker_walks_to_a_door_ahead_and_opens_it) {
     EXPECT_LT(glm::distance(glm::vec2(harness.pc->position()), glm::vec2(door->position())), 3.0f);
     EXPECT_EQ(40, target->currentHitPoints());
 }
+
+// An attack on a target no path reaches gives up, as a walk does, rather than
+// holding the attacker for good. Before, the PC's attack on a guest locked in
+// a side room of Davik's estate (tar08_davikguest03 behind ptar_lowdoor)
+// never ended: 80 rounds, no move, no blow, and a companion's equip order
+// queued behind such an attack never ran.
+TEST(C10DoorBetween, an_attack_on_an_unreachable_target_gives_up) {
+    MovementHarness harness;
+    auto target = harness.spawn(glm::vec3(10.0f, 8.0f, 0.0f));
+    target->setFaction(Faction::Hostile1);
+    target->setMaxHitPoints(40);
+    target->setCurrentHitPoints(40);
+
+    auto action = harness.game->newAction<AttackObjectAction>(target);
+    harness.pc->addAction(action);
+    int tick = 0;
+    for (; tick < 30 * 30 && !harness.pc->actions().empty(); ++tick) {
+        harness.pc->update(kTick);
+        harness.game->combat().update(kTick);
+    }
+    EXPECT_TRUE(harness.pc->actions().empty()) << "attack still queued after " << tick << " ticks";
+    EXPECT_EQ(40, target->currentHitPoints());
+}
+
+// The same for a ranged attacker in range with a wall in the way and no path
+// to close in: the close-in walk is one walk, so its failures add up. Before,
+// the walk into range ended "reached" every frame and reset them, and the PC
+// stood for good 23 m from tar08_davikguest03 (locked in a side room).
+TEST(C10DoorBetween, a_ranged_attack_with_no_line_of_fire_and_no_path_gives_up) {
+    MovementHarness harness;
+    ON_CALL(harness.engine.resourceModule().twoDas(), get("baseitems"))
+        .WillByDefault(Return(pistolBaseItems()));
+    auto gff = resource::Gff::Builder()
+                   .field(resource::Gff::Field::newCExoString("Tag", "pistol"))
+                   .field(resource::Gff::Field::newInt("BaseItem", kDoorTestPistol))
+                   .field(resource::Gff::Field::newWord("StackSize", 1))
+                   .build();
+    auto pistol = harness.game->newItem();
+    pistol->deserialize(*gff, SerializedIdentityContext::templateResource());
+    ASSERT_TRUE(harness.pc->equip(InventorySlots::rightWeapon, pistol));
+
+    auto target = harness.spawn(glm::vec3(8.0f, 8.0f, 0.0f));
+    target->setFaction(Faction::Hostile1);
+    target->setMaxHitPoints(40);
+    target->setCurrentHitPoints(40);
+    ASSERT_LT(harness.pc->getDistanceTo(*target), harness.pc->getAttackRange());
+    // A wall (no door) between the two.
+    ON_CALL(harness.sceneGraph, testLineOfSight(_, _, _))
+        .WillByDefault(Invoke([](const glm::vec3 &origin, const glm::vec3 &dest, scene::Collision &collision) {
+            collision.user = nullptr;
+            collision.intersection = 0.5f * (origin + dest);
+            return true;
+        }));
+
+    auto action = harness.game->newAction<AttackObjectAction>(target);
+    harness.pc->addAction(action);
+    int tick = 0;
+    for (; tick < 30 * 30 && !harness.pc->actions().empty(); ++tick) {
+        harness.pc->update(kTick);
+        harness.game->combat().update(kTick);
+    }
+    EXPECT_TRUE(harness.pc->actions().empty()) << "attack still queued after " << tick << " ticks";
+    EXPECT_EQ(40, target->currentHitPoints());
+}

@@ -58,6 +58,8 @@ public:
     void fadeOut(float seconds);
 
     bool isSoundPlaying() const;
+    /** Stops and releases the sound, and any fading one, if playing. */
+    void stopSound();
     bool isFading() const { return static_cast<bool>(_fading); }
 
     int priority() const { return _priority; }

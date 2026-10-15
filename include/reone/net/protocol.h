@@ -21,7 +21,7 @@ namespace net {
  * floats, so nothing malformed reaches the game.
  */
 
-constexpr uint16_t kProtocolVersion = 4; // 4: VfxBegin carries a beam source
+constexpr uint16_t kProtocolVersion = 5; // 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit)
 
 /** A client message is small: a hello, a slot request or one command. */
 constexpr size_t kMaxClientMessageBytes = 2048;
@@ -70,7 +70,10 @@ enum class MessageType : uint8_t {
     StoreView = 24,       // host -> client: the store a guest trades with, priced for them
     GuestRoster = 25,     // host -> client: every guest's name, hit points and level, for the HUD list
     Offer = 26,           // host -> client: a store or minigame prompt instead of a conversation
-    BenchView = 27        // host -> client: the workbench or lab a guest uses, with what it can do there
+    BenchView = 27,       // host -> client: the workbench or lab a guest uses, with what it can do there
+    // Guest minigames (swoop races, turret sequences): the host simulates, the owner steers
+    MiniGameControl = 28, // client -> host: the owner's input for the running minigame
+    MiniGameState = 29    // host -> client: what a client needs to draw the running minigame
 };
 
 /** The largest message a client may send, by its leading type byte. */
@@ -397,7 +400,8 @@ enum class CommandType : uint8_t {
     BenchRemove = 28,    // param: host id of the item; item: decimal slot index (BenchItem::slots) to empty
     BenchCraft = 29,     // param: material (0 components, 1 chemicals); item: the recipe's template
     BenchBreak = 30,     // param: host id of the item to break down
-    BenchClose = 31
+    BenchClose = 31,
+    MiniGameQuit = 32    // the owner of the running minigame leaves it
 };
 
 const char *commandTypeName(CommandType type);
@@ -452,7 +456,9 @@ enum class CommandReject : uint8_t {
     UpgradeIncompatible = 34,   // the part does not fit the item, or the slot is taken
     NotEnoughMaterial = 35,     // not enough components or chemicals
     SkillTooLow = 36,           // the crafter's skill does not reach the recipe
-    NotBreakable = 37           // the item cannot be broken down, or has nothing to remove
+    NotBreakable = 37,          // the item cannot be broken down, or has nothing to remove
+    NotYourMiniGame = 38,       // a minigame command from a player who is not driving it
+    MiniGameBusy = 39           // a minigame is running already, or the host does not allow guest minigames now
 };
 
 const char *commandRejectName(CommandReject reason);
@@ -694,6 +700,93 @@ struct BenchView {
     std::vector<BenchRecipe> recipes;
 };
 
+/** Limits on a minigame input: nothing outside them is ever sent. */
+constexpr float kMaxMiniGameDelta = 45.0f; // degrees of one-shot aim in a message
+constexpr size_t kMaxMiniGameActors = 160;
+constexpr size_t kMaxMiniGameAnimations = 64;
+constexpr size_t kMaxMiniGameSounds = 16;
+
+/**
+ * Client -> host: the input of the player who owns the running minigame (a guest racing
+ * a swoop or aiming a turret the host handed over). The host uses the newest one it has;
+ * input that stops arriving decays to neutral. Mirrors MiniGameInput (steer, fire, turret
+ * aim directions and one-shot aim deltas).
+ */
+struct MiniGameControl {
+    uint32_t seq {0};     // rises with each message; an old one is dropped
+    float steer {0.0f};   // -1 left .. +1 right
+    bool fire {false};
+    float pitchRate {0.0f}; // -1 .. +1, the turret's aim keys
+    float yawRate {0.0f};
+    float pitchDelta {0.0f}; // degrees, one shot (mouse)
+    float yawDelta {0.0f};
+};
+
+enum class MiniGameKind : uint8_t {
+    SwoopRace = 1,
+    Turret = 2
+};
+
+enum class MiniGameRole : uint8_t {
+    Player = 0,
+    Enemy = 1,   // a rival, a pad or a turret target
+    Obstacle = 2
+};
+
+/** A unit rotation (x, y, z, w), sent as four 16-bit fractions. */
+struct MiniGameRotation {
+    float x {0.0f};
+    float y {0.0f};
+    float z {0.0f};
+    float w {1.0f};
+};
+
+/** An animation the minigame's scripts played (or removed) on an actor's models since the last state. */
+struct MiniGameAnimation {
+    enum Flags : uint8_t {
+        Looping = 1,
+        Queue = 2,
+        Overlay = 4,
+        Remove = 8
+    };
+    uint16_t actor {0}; // index into MiniGameState::actors
+    std::string name;
+    uint8_t flags {0};
+};
+
+struct MiniGameActorState {
+    MiniGameRole kind {MiniGameRole::Enemy};
+    int16_t hp {0};
+    bool dead {false};
+    Vec3 position;
+    MiniGameRotation rotation; // the actor's track frame (a swoop's hook, a fighter's heading)
+};
+
+/**
+ * Host -> client: the running minigame, about ten times a second, for the client to draw
+ * (and for the results). `owner` names the player driving it, empty for the host.
+ */
+struct MiniGameState {
+    bool active {true}; // false once it has ended
+    MiniGameKind kind {MiniGameKind::SwoopRace};
+    std::string module;
+    std::string owner;
+    uint32_t tick {0};      // simulation ticks since it started
+    float elapsed {0.0f};   // seconds
+    float speed {0.0f};     // the swoop's current speed
+    Vec3 offset;            // the player's offset from its track (the turret's aim in degrees)
+    int16_t hp {0};
+    int16_t maxHp {0};
+    bool finished {false};  // the player's part is over (ended, or killed)
+    bool quit {false};      // the owner left it
+    bool firing {false};    // the player's fire input this tick (clients draw its shots)
+    uint32_t controlSeq {0}; // the owner's newest MiniGameControl the host has used (0: none)
+    int32_t prize {0};      // credits this player was paid, set on the final message
+    std::vector<MiniGameActorState> actors;
+    std::vector<MiniGameAnimation> animations; // in the order the scripts played them
+    std::vector<std::string> sounds;           // sound resrefs the host played since the last state
+};
+
 struct GuestRosterEntry {
     std::string name;
     int16_t hp {0};
@@ -753,6 +846,8 @@ std::vector<uint8_t> encode(const StoreView &message);
 std::vector<uint8_t> encode(const GuestRoster &message);
 std::vector<uint8_t> encode(const Offer &message);
 std::vector<uint8_t> encode(const BenchView &message);
+std::vector<uint8_t> encode(const MiniGameControl &message);
+std::vector<uint8_t> encode(const MiniGameState &message);
 
 // Decoding: false for anything malformed; the output is then unspecified.
 
@@ -779,6 +874,8 @@ bool decode(const std::vector<uint8_t> &bytes, StoreView &out);
 bool decode(const std::vector<uint8_t> &bytes, GuestRoster &out);
 bool decode(const std::vector<uint8_t> &bytes, Offer &out);
 bool decode(const std::vector<uint8_t> &bytes, BenchView &out);
+bool decode(const std::vector<uint8_t> &bytes, MiniGameControl &out);
+bool decode(const std::vector<uint8_t> &bytes, MiniGameState &out);
 
 // Entity deltas
 

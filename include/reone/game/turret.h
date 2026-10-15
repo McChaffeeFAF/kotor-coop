@@ -69,6 +69,12 @@ public:
     void addPitch(float radians);
     void addYaw(float radians);
 
+    /**
+     * Aim as another simulation reports it (a co-op client drawing the host's turret):
+     * a yaw a whole turn away is taken the nearest way, then bounded as usual.
+     */
+    void set(float pitchRadians, float yawRadians);
+
     float pitch() const { return _pitch; }
     float yaw() const { return _yaw; }
 
@@ -385,6 +391,26 @@ public:
     /** After the session step: enemy guns, bullets, death effects, HUD animations. */
     void update(float dt);
 
+    /**
+     * A co-op client's turret: drawn from the host's simulation, never simulating. Set
+     * before start(). Enemy guns and bullets are drawn but hit nothing and run no script.
+     */
+    void setReplica(bool replica) { _replica = replica; }
+    bool replica() const { return _replica; }
+
+    /**
+     * In place of prepare() on a co-op client: the aim, the player and every fighter from
+     * the session (which holds the host's state), and the player's shots drawn at the guns'
+     * own rate while the host reports \p firing.
+     */
+    void prepareReplica(float dt, bool firing);
+
+    /**
+     * On a co-op client: the aim (degrees, X pitch, Y yaw) the keyboard rates in \p input give
+     * over \p dt, as the host's turret integrates them, for drawing the owner's aim ahead.
+     */
+    glm::vec2 replicaRateStep(const MiniGameInput &input, float dt);
+
     bool handle(const input::Event &event);
 
     bool isActive() const { return _active; }
@@ -489,6 +515,7 @@ private:
     float _playerSphereRadius {0.0f};
     float _elapsed {0.0f};
     size_t _shotsFired {0};
+    bool _replica {false};
     size_t _hitsLanded {0};
     size_t _hitsTaken {0};
 

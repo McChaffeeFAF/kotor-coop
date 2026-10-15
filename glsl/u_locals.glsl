@@ -17,6 +17,8 @@ const int FEATURE_OBJECTLIGHTS = 1 << 15;
 const int FEATURE_SURFACEDETAIL = 1 << 16;
 const int FEATURE_MATERIALMAP = 1 << 17;
 const int FEATURE_SHELL = 1 << 18;
+const int FEATURE_CUTOUT = 1 << 19;
+const int FEATURE_FORCEGLOW = 1 << 20;
 
 const int MAX_OBJECT_LIGHTS = 3;
 
@@ -47,6 +49,7 @@ layout(std140) uniform Locals {
     float uUVJitterTime;
     ObjectLight uObjectLights[MAX_OBJECT_LIGHTS];
     int uNumObjectLights;
+    vec4 uForceSightColor;
     vec4 uSurfaceParams;
 };
 

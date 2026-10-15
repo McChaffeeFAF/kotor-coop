@@ -95,6 +95,21 @@ public:
 
     virtual void clear() = 0;
 
+    // Frame effects (upstream #356): presentation only.
+
+    /** Turns on or off the speed blur, which blends each frame with earlier ones. */
+    virtual void setSpeedBlur(bool enabled) = 0;
+    /** Sets the weight of the earlier frames in the speed blur. */
+    virtual void setSpeedBlurRatio(float ratio) = 0;
+    /** Whether the speed blur is on. */
+    virtual bool isSpeedBlurEnabled() const = 0;
+    /** The power's video effect laid over the rendered frame (Force Sight, distortions), if any. */
+    virtual void setVideoEffect(std::optional<VideoEffect> effect) = 0;
+    /** Whether the video effect turns the scene to Force Sight. */
+    virtual bool isForceSightEnabled() const = 0;
+    /** The Force Sight glow's pulse, between 0.5 and 1. */
+    virtual float forceSightPulse() const = 0;
+
     virtual bool testElevation(const glm::vec3 &position, Collision &outCollision) const = 0;
     virtual bool testLineOfSight(const glm::vec3 &origin, const glm::vec3 &dest, Collision &outCollision) const = 0;
     virtual bool testWalk(const glm::vec3 &origin, const glm::vec3 &dest, const IUser *excludeUser, Collision &outCollision) const = 0;
@@ -237,6 +252,13 @@ public:
 
     void clear() override;
 
+    void setSpeedBlur(bool enabled) override { _frameEffects.speedBlur = enabled; }
+    void setSpeedBlurRatio(float ratio) override { _frameEffects.speedBlurRatio = ratio; }
+    bool isSpeedBlurEnabled() const override { return _frameEffects.speedBlur; }
+    void setVideoEffect(std::optional<VideoEffect> effect) override { _frameEffects.videoEffect = std::move(effect); }
+    bool isForceSightEnabled() const override { return _frameEffects.videoEffect && _frameEffects.videoEffect->forceSight; }
+    float forceSightPulse() const override;
+
     void addRoot(std::shared_ptr<ModelSceneNode> node) override;
     void addRoot(std::shared_ptr<WalkmeshSceneNode> node) override;
     void addRoot(std::shared_ptr<TriggerSceneNode> node) override;
@@ -345,6 +367,8 @@ private:
     resource::ResourceServices *_nodeResourceSvc {nullptr};
 
     std::unique_ptr<IRenderPipeline> _renderPipeline;
+    FrameEffects _frameEffects;
+    float _forceSightPhase {0.0f}; /**< seconds into the current Force Sight pulse */
     /** The options the pipeline's render targets were made for (renderPipelineKey). */
     std::string _renderPipelineKey;
     std::shared_ptr<CameraSceneNode> _probeCamera;

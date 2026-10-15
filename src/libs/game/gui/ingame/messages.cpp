@@ -18,7 +18,14 @@
 #include "reone/game/gui/ingame/messages.h"
 
 #include "reone/game/game.h"
+#include "reone/game/creaturestates.h"
 #include "reone/game/messagelog.h"
+#include "reone/game/object/creature.h"
+#include "reone/game/party.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/provider/textures.h"
+#include "reone/resource/2da.h"
+#include "reone/resource/provider/2das.h"
 #include "reone/gui/control/button.h"
 #include "reone/resource/strings.h"
 
@@ -58,8 +65,12 @@ void MessagesMenu::onGUILoaded() {
         _controls.BTN_SHOW->setOnClick([this]() {
             toggleMessages();
         });
-        _controls.LB_MESSAGES->setItemsInteractive(false);
-        _controls.LB_MESSAGES->setProtoMatchContent(true);
+        for (auto &list : {_controls.LB_MESSAGES, _controls.LB_DIALOG}) {
+            if (list) {
+                list->setItemsInteractive(false);
+                list->setProtoMatchContent(true);
+            }
+        }
         return;
     }
 
@@ -85,30 +96,108 @@ void MessagesMenu::onGUILoaded() {
     _controls.BTN_EFFECTS->setOnClick([this]() {
         setFilter(Filter::Effects);
     });
+    for (auto &list : {_controls.LB_MESSAGES, _controls.LB_DIALOG, _controls.LB_COMBAT,
+                       _controls.LB_EFFECTS_GOOD, _controls.LB_EFFECTS_BAD}) {
+        if (list) {
+            list->setItemsInteractive(false);
+            list->setProtoMatchContent(true);
+        }
+    }
 
     resetFilter();
 }
 
-void MessagesMenu::refresh() {
-    if (isTSL()) {
+MessagesMenu::Split MessagesMenu::split(const std::deque<MessageLog::Entry> &entries) {
+    Split result;
+    for (const MessageLog::Entry &entry : entries) {
+        if (entry.type & MessageLog::kFeedbackMessageType) {
+            result.feedback.push_back(&entry);
+            (entry.style == MessageLog::Style::Combat ? result.combat : result.general).push_back(&entry);
+        } else if (entry.type & MessageLog::kDialogMessageType) {
+            result.dialog.push_back(&entry);
+        }
+    }
+    return result;
+}
+
+static void fillList(const std::shared_ptr<ListBox> &list, const std::vector<const MessageLog::Entry *> &entries,
+                     std::optional<glm::vec3> color) {
+    if (!list) {
         return;
     }
+    list->clearItems();
+    for (const MessageLog::Entry *entry : entries) {
+        gui::ListBox::Item item;
+        item.text = entry->text;
+        if (color) {
+            item.textColor = *color;
+        } else {
+            item.textColor = entry->style == MessageLog::Style::Combat ? kCombatColor : kFeedbackColor;
+        }
+        list->addItem(std::move(item));
+    }
+    list->scrollToBottom();
+}
 
-    _controls.LB_MESSAGES->clearItems();
-
-    for (const MessageLog::Entry &entry : _game.messageLog().entries()) {
-        if ((entry.type & MessageLog::kFeedbackMessageType) == 0) {
+static std::string effectName(resource::IStrings &strings, resource::ITwoDAs &twoDas, const EffectIconEntry &icon) {
+    if (icon.descriptionStrRef >= 0) {
+        if (auto text = strings.getText(icon.descriptionStrRef); !text.empty()) {
+            return text;
+        }
+    }
+    // effecticon.2da ships no descriptions: its label, made readable
+    // (FORCE_POWER_SPEED_BURST -> Speed Burst).
+    auto table = twoDas.get("effecticon");
+    std::string label = table ? table->getString(icon.row, "label") : std::string();
+    for (auto prefix : {"FORCE_POWER_", "ITEM_ABILITY_", "DROID_ITEM_"}) {
+        if (label.rfind(prefix, 0) == 0) {
+            label = label.substr(std::string(prefix).size());
+        }
+    }
+    std::string result;
+    bool start = true;
+    for (char c : label) {
+        if (c == '_') {
+            result += ' ';
+            start = true;
             continue;
         }
-
-        gui::ListBox::Item item;
-        item.text = entry.text;
-        item.textColor = entry.style == MessageLog::Style::Combat
-                             ? kCombatColor
-                             : kFeedbackColor;
-        _controls.LB_MESSAGES->addItem(std::move(item));
+        result += start ? static_cast<char>(std::toupper(static_cast<unsigned char>(c)))
+                        : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        start = false;
     }
-    _controls.LB_MESSAGES->scrollToBottom();
+    return result;
+}
+
+void MessagesMenu::refresh() {
+    Split lists = split(_game.messageLog().entries());
+    // The dialog log: K1's BTN_SHOW page and K2's Dialog filter.
+    fillList(_controls.LB_DIALOG, lists.dialog, _baseColor);
+    if (isTSL()) {
+        fillList(_controls.LB_MESSAGES, lists.general, kFeedbackColor);
+        fillList(_controls.LB_COMBAT, lists.combat, kCombatColor);
+        // Effects: the leader's effect icons, good and bad (effecticon.2da).
+        for (auto list : {_controls.LB_EFFECTS_GOOD, _controls.LB_EFFECTS_BAD}) {
+            if (list) {
+                list->clearItems();
+            }
+        }
+        if (auto leader = _game.party().getLeader()) {
+            for (const auto &icon : creatureEffectIcons(_services.resource.twoDas, *leader)) {
+                auto &list = icon.good ? _controls.LB_EFFECTS_GOOD : _controls.LB_EFFECTS_BAD;
+                if (!list) {
+                    continue;
+                }
+                gui::ListBox::Item item;
+                item.text = effectName(_services.resource.strings, _services.resource.twoDas, icon);
+                item.iconTexture = _services.resource.textures.get(icon.icon, graphics::TextureUsage::GUI);
+                list->addItem(std::move(item));
+            }
+        }
+        refreshFilterVisibility();
+        return;
+    }
+    fillList(_controls.LB_MESSAGES, lists.feedback, std::nullopt);
 
     if (_showingFeedback) {
         showFeedbackMessages();

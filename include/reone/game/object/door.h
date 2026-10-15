@@ -60,8 +60,18 @@ public:
         const std::shared_ptr<Object> &damager) override;
     void update(float dt) override;
 
-    void open();
-    void close();
+    /**
+     * Swing open, away from the opener when one is given: a door opens to its Opened1 side for an
+     * opener in front of it (its local +Y side), else to Opened2. A door linked to another door
+     * (LinkedToFlags, LinkedTo naming a door in this area) moves it the same way, unless
+     * `linked` is false (a co-op client: each door is replicated on its own).
+     */
+    void open(const Object *opener = nullptr, bool linked = true);
+    void close(bool linked = true);
+    /** The door LinkedTo names in this area, for a door linked to a door and no module. */
+    std::shared_ptr<Door> linkedDoor() const;
+    /** 1 or 2: the opened side the door last swung to. */
+    int openSide() const { return _openSide; }
     /** YavinHackCloseDoor: shut at once, no transition and no events. */
     void snapClosed();
 
@@ -242,6 +252,7 @@ private:
      * which is what stops the superseded transition from ever completing.
      */
     DoorTransition _transition {DoorTransition::None};
+    int _openSide {1};
     uint32_t _pendingTransitionUser {0};
     float _pendingTransitionTimeout {0.0f};
 
@@ -261,8 +272,8 @@ private:
     void finishTransition();
     void updatePendingTransitionUse(float dt);
     bool isTransitionComplete() const;
-    static const char *transitionAnimation(DoorTransition transition);
-    static DoorState transitionTarget(DoorTransition transition);
+    const char *transitionAnimation(DoorTransition transition) const;
+    DoorState transitionTarget(DoorTransition transition) const;
     void loadLinkedTransitionGeometry(const graphics::Walkmesh &walkmesh);
     void updateTransform() override;
 };

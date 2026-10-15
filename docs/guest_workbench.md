@@ -41,8 +41,53 @@ K1/K2 upgrades and crafting cost no credits, so no credit check applies.
 colour, and the guest keeps its own components and chemicals. `GuestCharacter` ends with an
 optional extension for these; files saved before it decode with none.
 
+## The guest's screen
+
+The guest's client draws the view on the single-player upgrade screen (`UpgradeGUI`, the
+`ShowUpgradeScreen` screens: category page, items page, slots page, and the crafting page).
+Each `BenchView` rebuilds local stand-in items from this install's templates (with the host's
+upgrade bits and blade colour) in a hidden store shell, and the screen's `UpgradeBench` and
+`CraftingBench` work on that holder, so the guest picks and stages slots exactly as in single
+player. Nothing is applied locally:
+
+- **Assemble** turns the staged slots into requests (`GuestBenchScreen::assemble`): removals
+  first (a taken slot offers no parts until it is empty), then installs by the part's host id.
+  A saber's colour slot is swapped by installing a crystal, never removed.
+- **Create / Break Down** on the crafting page send `BenchCraft` / `BenchBreak`; the rows,
+  costs, yields and the skilled/affordable marks come from the view (names from this install).
+- A **lab** opens straight on the crafting page (Back closes it); K1 has no lab placeable or lab
+  GUI, so this page is the lab's screen in both games.
+- A slot's icon and the first row of its list both show what the slot holds as staged
+  (`UpgradeBench::installedTemplate`); for a saber's colour slot that is the current colour
+  crystal, listed before the crystals it could take (single player too).
+- K1's slots page (single player too) fits LB_ITEMS between the item name / "Upgrades:" /
+  slot-name lines and the slot buttons (`fitListBetween`; a saber's list stops above "Color
+  Crystal"), and LB_DESC, authored without a proto item, borrows LB_DESC_LS's
+  (`ListBox::adoptProtoItem`), so a non-saber item's description shows.
+- A new view redraws the page the guest is on (the slots page reopens the same item by host id).
+- **Back/Close** sends `BenchClose`; a closed view from the host takes the screen down.
+- A **rejected** bench request shows the host's reason at the top of the page's description, in
+  the feedback message log and as a notice ("That upgrade does not fit there", "Not enough
+  material", "Your skill is too low to make that", ...).
+
+A placeable whose `OnUsed` calls `ShowUpgradeScreen` is a bench use even when it also has a
+conversation: K1's Taris apartment workbench talks once before its script opens the screen.
+
+Harness: `coopbench [state|item <tpl>|install <part tpl>|remove <slot>|assemble|craft <tpl>|break
+<tpl>|close]` drives the guest's screen as its buttons do (`send remove|upgrade <item> <n>` sends a
+raw request, as a stale screen would). The host's `netstatus` lists each guest's `bench` and its
+`upgraded` items. An integration probe (not included) runs it end to end (Free Mode, tar_m02af).
+
 ## Not done
 
-The guest's client has no workbench screen yet: `CoopSession` keeps the latest `BenchView` and
-offers `clientBenchUpgrade/Remove/Craft/Break/Close`, and the status JSON lists it under `bench`,
-but nothing draws it. A screen for it (reusing the upgrade GUI) is the next step.
+- The host picks the slot for `BenchUpgrade` (the first one whose candidates hold the part). For
+  items whose slots take different kinds this is the slot the guest staged; for two empty slots
+  of the same kind (a K1 saber's power crystals) the part may land in the other one.
+- Labs are covered by unit tests only: no K2 co-op run reaches a lab station yet, and K1 has none.
+- Crafting needs the K2 systems merge on the host (otherwise the view has no recipes and the
+  guest's workbench shows no crafting rows).
+- K1 upgrade slots come from each item's own upgrade properties (properties carrying an
+  `UpgradeType` row of upgrade.2da), as in single player: K1 has no base-item column for them.
+  Only upgradeable variants carry them (e.g. `g_w_blstrpstl005`, `g_w_blstrrfl005`,
+  `g_w_vbroshort04`, `g_a_class8005`, the sabers); plain `g_w_blstrpstl001` has none and an
+  upgrade in it would change nothing. The probe uses the 005 blaster and a saber.

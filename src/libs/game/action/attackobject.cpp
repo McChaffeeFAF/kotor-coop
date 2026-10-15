@@ -178,6 +178,12 @@ void AttackObjectAction::execute(std::shared_ptr<Action> self, Object &actor, fl
     }
 
     if (!navigateToAttackTarget(_game, attacker, *target, dt, _reachedTarget, &_doorApproach)) {
+        if (attacker.navigationFailed()) {
+            // No path reaches the target (a locked room, off the walkmesh)
+            // or the walk made no progress: give up, as a walk does. The
+            // attack used to hold the attacker for good.
+            finish(attacker);
+        }
         return;
     }
 

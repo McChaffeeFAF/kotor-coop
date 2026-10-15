@@ -47,6 +47,7 @@ struct ShaderProgramId {
     static constexpr char oitBlend[] = "oit_blend";
     static constexpr char oitModel[] = "oit_model";
     static constexpr char oitParticles[] = "oit_particles";
+    static constexpr char oitProjectedBeam[] = "oit_projected_beam";
     static constexpr char pointLightShadows[] = "point_light_shadows";
     static constexpr char postBoxBlur4[] = "post_box_blur4";
     static constexpr char postFXAA[] = "post_fxaa";
@@ -55,6 +56,8 @@ struct ShaderProgramId {
     static constexpr char postMedianFilter3[] = "post_median_filter3";
     static constexpr char postMedianFilter5[] = "post_median_filter5";
     static constexpr char postSharpen[] = "post_sharpen";
+    static constexpr char postSpeedBlur[] = "post_speed_blur";
+    static constexpr char postDistortionOverlay[] = "post_distortion_overlay";
     // Enhanced preset
     static constexpr char postBloomExtract[] = "post_bloom_extract";
     static constexpr char postBloomDown[] = "post_bloom_down";

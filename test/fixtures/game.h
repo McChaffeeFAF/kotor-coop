@@ -24,6 +24,7 @@
 
 #include "reone/game/animations.h"
 #include "reone/game/camerastyles.h"
+#include "reone/game/combattables.h"
 #include "reone/game/d20/classes.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/d20/skills.h"
@@ -378,6 +379,7 @@ public:
         _projectiles = std::make_unique<MockProjectiles>();
         _animations = std::make_unique<MockAnimations>();
         _visualEffects = std::make_unique<MockVisualEffects>();
+        _combatTables = std::make_unique<CombatTables>();
 
         _services = std::make_unique<GameServices>(
             *_cameraStyles,
@@ -393,7 +395,8 @@ public:
             *_surfaces,
             *_projectiles,
             *_animations,
-            *_visualEffects);
+            *_visualEffects,
+            *_combatTables);
     }
 
     GameServices &services() {
@@ -405,6 +408,8 @@ public:
     MockFeats &feats() { return *_feats; }
     MockPortraits &portraits() { return *_portraits; }
     MockReputes &reputes() { return *_reputes; }
+    MockVisualEffects &visualEffects() { return *_visualEffects; }
+    CombatTables &combatTables() { return *_combatTables; }
 
 private:
     std::unique_ptr<MockCameraStyles> _cameraStyles;
@@ -421,6 +426,7 @@ private:
     std::unique_ptr<MockProjectiles> _projectiles;
     std::unique_ptr<MockAnimations> _animations;
     std::unique_ptr<MockVisualEffects> _visualEffects;
+    std::unique_ptr<CombatTables> _combatTables;
 
     std::unique_ptr<GameServices> _services;
 };

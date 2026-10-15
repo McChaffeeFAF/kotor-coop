@@ -45,6 +45,12 @@ public:
 
     static constexpr std::size_t kMaxEntries = 64;
     static constexpr uint32_t kFeedbackMessageType = 0x80;
+    /** A conversation line (speaker and text), for the Messages screen's dialog log. */
+    static constexpr uint32_t kDialogMessageType = 0x01;
+
+    /** One logged conversation line: "Speaker: text", or the text alone. */
+    static std::string dialogLine(const std::string &speaker, const std::string &text);
+    void addDialog(const std::string &speaker, const std::string &text);
 
     void add(uint32_t type, Style style, std::string text);
     void reset() { _entries.clear(); }

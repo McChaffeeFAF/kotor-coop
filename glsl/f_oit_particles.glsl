@@ -2,6 +2,7 @@
 #include "u_locals.glsl"
 #include "u_particles.glsl"
 
+#include "i_forcesight.glsl"
 #include "i_luma.glsl"
 #include "i_oit.glsl"
 
@@ -68,7 +69,20 @@ void main() {
         return;
     }
     vec3 objectColor = uParticles[fragInstanceID].color.rgb * mainTexColor;
-    float objectAlpha = uParticles[fragInstanceID].color.a * mainTexAlpha * softParticleFade();
+    if (uForceSight.x > 0.5) {
+        objectColor = forceSightGrey(objectColor);
+    }
+    float objectAlpha;
+    if (isFeatureEnabled(FEATURE_CUTOUT)) {
+        // "Punch-Through": a cut-out. Texels at or under the texture's alpha
+        // test are not drawn, the rest are as opaque as the particle is.
+        if (mainTexAlpha <= uSurfaceParams.x) {
+            discard;
+        }
+        objectAlpha = uParticles[fragInstanceID].color.a * softParticleFade();
+    } else {
+        objectAlpha = uParticles[fragInstanceID].color.a * mainTexAlpha * softParticleFade();
+    }
     if (objectAlpha == 0.0) {
         discard;
     }

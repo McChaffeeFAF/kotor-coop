@@ -15,6 +15,9 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <cmath>
+#include <cstdio>
+
 #include "reone/system/portablemath.h"
 #include "reone/game/d20/forms.h"
 #include "reone/resource/k2merge.h"
@@ -162,9 +165,18 @@ static Variable FloatToString(const std::vector<Variable> &args, const RoutineCo
     auto nDecimals = getIntOrElse(args, 2, 9);
 
     // Transform
+    // nwscript.nss: the width is 0 to 18 and the decimals 0 to 9; the number is
+    // right-justified in that width, and keeps its decimal point when there are
+    // no decimals (printf "%#*.*f"): the swoop dashboard builds "meter" +
+    // FloatToString(x, 1, 0) and drops the last character to name its
+    // animation, which only gives "meter4" when the result is "4.".
+    int width = glm::clamp(nWidth, 0, 18);
+    int decimals = glm::clamp(nDecimals, 0, 9);
 
     // Execute
-    return Variable::ofString(std::to_string(fFloat));
+    char text[64];
+    std::snprintf(text, sizeof(text), "%#*.*f", width, decimals, std::isfinite(fFloat) ? fFloat : 0.0f);
+    return Variable::ofString(text);
 }
 
 static Variable PrintInteger(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -346,9 +358,21 @@ static Variable SetPartyLeader(const std::vector<Variable> &args, const RoutineC
 
     // Transform
 
-    // Execute
-    ctx.game.party().setPartyLeader(nNPC);
-    return Variable::ofNull();
+    // Execute: handing the lead to the player character stands a downed one up first (and
+    // leaves it raiseable), whether or not it already leads.
+    auto &party = ctx.game.party();
+    if (nNPC == kNpcPlayer) {
+        for (int i = 0; i < static_cast<int>(party.getSize()); ++i) {
+            auto member = party.getMember(i);
+            if (member && member->isPC() && member->isTemporarilyDead()) {
+                member->setRaiseable(true);
+                if (!member->resurrect(0)) {
+                    member->setCurrentHitPoints(1); // down but not dead: back on its feet
+                }
+            }
+        }
+    }
+    return Variable::ofInt(party.setPartyLeader(nNPC) ? 1 : 0);
 }
 
 static Variable SetAreaUnescapable(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -421,7 +445,13 @@ static Variable GetArea(const std::vector<Variable> &args, const RoutineContext 
 }
 
 static Variable GetEnteringObject(const std::vector<Variable> &args, const RoutineContext &ctx) {
-    // Execute
+    // Execute: what the caller keeps (so a delayed or executed script still reads it), else the
+    // event's own argument.
+    const Variable *callerArg = ctx.execution.findArg(ArgKind::Caller);
+    auto caller = callerArg ? ctx.game.getObjectById(callerArg->objectId) : nullptr;
+    if (caller && caller->lastEnteredId() != kObjectInvalid) {
+        return Variable::ofObject(caller->lastEnteredId());
+    }
     if (const Variable *entering = ctx.execution.findArg(ArgKind::EnteringObject)) {
         return *entering;
     }
@@ -430,7 +460,12 @@ static Variable GetEnteringObject(const std::vector<Variable> &args, const Routi
 }
 
 static Variable GetExitingObject(const std::vector<Variable> &args, const RoutineContext &ctx) {
-    // Execute
+    // Execute: as GetEnteringObject, for who last left.
+    const Variable *callerArg = ctx.execution.findArg(ArgKind::Caller);
+    auto caller = callerArg ? ctx.game.getObjectById(callerArg->objectId) : nullptr;
+    if (caller && caller->lastLeftId() != kObjectInvalid) {
+        return Variable::ofObject(caller->lastLeftId());
+    }
     if (const Variable *exiting = ctx.execution.findArg(ArgKind::ExitingObject)) {
         return *exiting;
     }
@@ -628,6 +663,8 @@ static Variable PlaySound(const std::vector<Variable> &args, const RoutineContex
         position.z += 1.7f; // head height, as creature sound sets
     }
     ctx.services.audio.mixer.play(std::move(clip), audio::AudioType::Sound, 1.0f, false, position);
+    // A minigame's scripts run on the co-op host only: its guests hear this through the state.
+    ctx.game.recordMiniGameSound(boost::to_lower_copy(sSoundName));
     return Variable::ofNull();
 }
 
@@ -4037,7 +4074,7 @@ static Variable DoDoorAction(const std::vector<Variable> &args, const RoutineCon
         // movement action that was blocked by this door stays in place and
         // resumes once the door stops obstructing.
         if (!targetDoor->isLocked()) {
-            targetDoor->open();
+            targetDoor->open(caller.get());
             targetDoor->onOpen(caller->id());
         }
         break;
@@ -4841,16 +4878,16 @@ static Variable GetStartingLocation(const std::vector<Variable> &args, const Rou
 
 static Variable ChangeToStandardFaction(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
-    auto oCreatureToChange = getObject(args, 0, ctx);
+    auto oCreatureToChange = getObjectOrNull(args, 0, ctx);
     auto nStandardFaction = getInt(args, 1);
 
-    // Transform
-    if (nStandardFaction <= (int)Faction::Invalid || nStandardFaction >= (int)Faction::Last) {
-        throw RoutineArgumentException(str(boost::format("Invalid faction: %d") % nStandardFaction));
+    // Execute: only a standard (NPC) faction is taken, and a player character keeps its own;
+    // anything else is ignored rather than stopping the script.
+    auto creature = dyn_cast<Creature>(oCreatureToChange);
+    if (!creature || nStandardFaction <= (int)Faction::Invalid || nStandardFaction >= (int)Faction::Last ||
+        creature->isPC()) {
+        return Variable::ofNull();
     }
-
-    // Execute
-    auto creature = checkCreature(oCreatureToChange);
     creature->setFaction((Faction)nStandardFaction);
     return Variable::ofNull();
 }
@@ -7122,11 +7159,13 @@ static Variable GetLastAttackAction(const std::vector<Variable> &args, const Rou
     // Load
     auto oAttacker = getObjectOrCaller(args, 0, ctx);
 
-    // Transform
-    auto attacker = checkCreature(oAttacker);
-
-    // Execute
-    return Variable::ofInt(static_cast<int>(attacker->getLastAttackAction()));
+    // Execute: the action of the attacker's last round, -1 when it had none; 0 for a non-creature.
+    auto attacker = dyn_cast<Creature>(oAttacker);
+    if (!attacker) {
+        return Variable::ofInt(0);
+    }
+    auto action = attacker->getLastAttackAction();
+    return Variable::ofInt(action == ActionType::QueueEmpty ? -1 : static_cast<int>(action));
 }
 
 static Variable GetLastForcePowerUsed(const std::vector<Variable> &args, const RoutineContext &ctx) {

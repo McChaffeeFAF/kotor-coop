@@ -33,7 +33,7 @@ namespace game {
 
 static constexpr int kDefaultRepute = 50;
 static constexpr int kMinRepute = 0;
-static constexpr int kMaxRepute = 100;
+static constexpr int kMaxRepute = IReputes::kMaxReputation;
 
 void Reputes::init() {
     replace(baseState());

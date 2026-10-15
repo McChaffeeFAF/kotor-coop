@@ -86,6 +86,14 @@ public:
      */
     std::optional<glm::vec3> shell;
 
+    /** Under Force Sight, whether the surface glows (upstream #356). */
+    bool forceGlow {false};
+    /**
+     * Under Force Sight, the glow colour of a glowing surface, or the alpha
+     * the grey of any other surface is drawn with.
+     */
+    glm::vec4 forceSightColor {0.0f, 0.0f, 0.0f, 1.0f};
+
     std::optional<BlendMode> blending;
     std::optional<FaceCullMode> faceCulling;
     std::optional<PolygonMode> polygonMode;

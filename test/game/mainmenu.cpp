@@ -166,6 +166,37 @@ TEST(MenuPresentation, round_trip_preserves_unrelated_configuration_bytes) {
     std::filesystem::remove(path);
 }
 
+TEST(MenuPresentation, feedback_and_autopause_options_round_trip_and_keep_the_other_lines) {
+    // Upstream #356: the configuration is kept line by line.
+    auto path = std::filesystem::temp_directory_path() / ("reone-feedback-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".cfg");
+    {
+        std::ofstream file(path, std::ios::binary);
+        file << "; kept\n[Graphics Options]\nWidth=1280\n";
+    }
+    EXPECT_TRUE(FeedbackOptions::load(path).subtitles) << "an option the file does not set keeps its default";
+    EXPECT_TRUE(AutoPauseOptions::load(path, false).mineSighted) << "on by default in KotOR";
+    EXPECT_FALSE(AutoPauseOptions::load(path, true).mineSighted) << "off in TSL";
+
+    FeedbackOptions feedback;
+    feedback.subtitles = false;
+    feedback.tooltips = false;
+    feedback.save(path);
+    AutoPauseOptions pause = AutoPauseOptions::defaults(false);
+    pause.endOfCombatRound = true;
+    pause.save(path);
+
+    EXPECT_FALSE(FeedbackOptions::load(path).subtitles);
+    EXPECT_FALSE(FeedbackOptions::load(path).tooltips);
+    EXPECT_TRUE(FeedbackOptions::load(path).miniMap);
+    EXPECT_TRUE(AutoPauseOptions::load(path, false).endOfCombatRound);
+    std::ifstream input(path, std::ios::binary);
+    std::string content((std::istreambuf_iterator<char>(input)), {});
+    input.close();
+    EXPECT_NE(std::string::npos, content.find("; kept"));
+    EXPECT_NE(std::string::npos, content.find("Width=1280"));
+    std::filesystem::remove(path);
+}
+
 TEST_F(MainMenuTest, returning_to_retained_menu_captures_before_teardown_and_refreshes) {
     menu->refreshScene();
     ASSERT_EQ(1u, graph->roots.size());

@@ -72,6 +72,16 @@ static void runScript(Game &game, const Spell &spell, const Object &caster, cons
 }
 
 void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
+    // A placeable (a trap console, a turret) casts in full on its first update, whatever the
+    // distance: it neither approaches, conjures nor waits for a cast time.
+    if (actor.type() != ObjectType::Creature) {
+        if (!_target->isDead()) {
+            runScript(_game, *_spell, actor, *_target);
+        }
+        releaseConsumedItem();
+        complete();
+        return;
+    }
     Creature &caster = cast<Creature>(actor);
 
     // A K2 Force form (the K2 systems merge): using it makes it the active
@@ -100,10 +110,10 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
     }
 
     // Close to the spell's range (spells.2da range via ranges.2da) before the
-    // cast starts. Personal spells and spells on oneself need no approach.
+    // cast starts. Personal spells, spells on oneself and instant casts need no approach.
     if (!_inRange) {
         float range = _spell->range;
-        if (range > 0.0f && _target.get() != &caster && caster.getDistanceTo(*_target) > range) {
+        if (!_instant && range > 0.0f && _target.get() != &caster && caster.getDistanceTo(*_target) > range) {
             if (caster.navigationFailed()) {
                 finish(caster);
                 return;
@@ -238,7 +248,11 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
 void CastSpellAtObjectAction::cancel(std::shared_ptr<Action> self, Object &actor) {
     // A cancelled cast (e.g. its combat round was pruned) must release the
     // movement restriction it took at Conjure, like finishing does.
-    finish(cast<Creature>(actor));
+    if (auto *caster = dyn_cast<Creature>(&actor)) {
+        finish(*caster);
+        return;
+    }
+    complete();
 }
 
 void CastSpellAtObjectAction::releaseCastPose(Creature &caster) {

@@ -22,13 +22,30 @@
  *   unchanged;
  * - every new control uses K1 art only;
  * - a queued weapon switch shows K1 art in the K1 combat queue;
+ * - pass 2 (design note k1hud_parity_2): Force powers on the quick bar and the
+ *   target menu, live pause / solo toggles, portrait status indicators and
+ *   the leader's effect icons on both layouts, the K1 equipment screen's
+ *   weapon-set toggle and the weapon-swap key;
  * - the difficulty tables: diffsettings at the game's fixed "normal" column
  *   changes nothing, and its rules behave as K2's at the other columns.
  */
 
 #include "../fixtures/engine.h"
 #include "reone/game/action/switchweapons.h"
+#include "reone/game/d20/forcepowers.h"
+#include "reone/game/d20/spell.h"
 #include "reone/game/difficultyoptions.h"
+#include "reone/game/effect/stunned.h"
+#include "reone/game/d20/attributes.h"
+#include "reone/game/d20/feat.h"
+#include "reone/game/gui/ingame/abilities.h"
+#include "reone/game/gui/ingame/character.h"
+#include "reone/game/gui/ingame/equip.h"
+#include "reone/game/gui/ingame/journal.h"
+#include "reone/game/gui/ingame/messages.h"
+#include "reone/game/messagelog.h"
+#include "reone/game/keymap.h"
+#include "reone/gui/control/togglebutton.h"
 #include "reone/game/game.h"
 #include "reone/game/gui/hud.h"
 #include "reone/game/gui/k1hudcontrols.h"
@@ -56,6 +73,8 @@ public:
     static std::shared_ptr<IGUI> gui(HUD &hud) { return hud._gui; }
     static K1HUDControls *k1Controls(HUD &hud) { return hud._k1Controls.get(); }
     static void refreshQueue(HUD &hud) { hud.refreshActionQueueItems(); }
+    static void updateToggles(HUD &hud) { hud.updateModeToggles(); }
+    static void updateParty(HUD &hud) { hud.updatePartyPresentation(); }
 };
 
 } // namespace reone::game
@@ -369,6 +388,307 @@ TEST_F(K1HUD, queued_weapon_switch_shows_k1_art_in_the_k1_queue) {
             EXPECT_TRUE(isK1Art(queue->borderFillResRef()));
         }
     }
+}
+
+// Pass 2
+
+namespace {
+
+std::shared_ptr<Spell> makeSpell(SpellType type, int userType, uint32_t category, bool hostile) {
+    auto spell = std::make_shared<Spell>();
+    spell->type = type;
+    spell->userType = userType;
+    spell->category = category;
+    spell->hostile = hostile;
+    return spell;
+}
+
+} // namespace
+
+TEST(K1HUDPass2, force_powers_split_between_quick_bar_and_target_menu) {
+    // spells.2da: 8 Speed Burst (personal), 28 Heal (personal), 46 Stun
+    // (hostile), 6 Affect Mind (no category: conversation only), and a K2
+    // form (usertype 6); the last two never reach the HUD's power lists.
+    NiceMock<MockSpells> spells;
+    std::map<int, std::shared_ptr<Spell>> table {
+        {8, makeSpell(static_cast<SpellType>(8), kForcePowerUserType, 0x1808, false)},
+        {28, makeSpell(static_cast<SpellType>(28), kForcePowerUserType, 0x2441, false)},
+        {46, makeSpell(static_cast<SpellType>(46), kForcePowerUserType, 0x1201, true)},
+        {6, makeSpell(static_cast<SpellType>(6), kForcePowerUserType, 0, false)},
+        {260, makeSpell(static_cast<SpellType>(260), 6, 0x1000, false)}};
+    ON_CALL(spells, get(_)).WillByDefault([&table](SpellType type) -> std::shared_ptr<Spell> {
+        auto it = table.find(static_cast<int>(type));
+        return it == table.end() ? nullptr : it->second;
+    });
+    std::set<SpellType> known;
+    for (int row : {6, 8, 28, 46, 260, 999}) {
+        known.insert(static_cast<SpellType>(row));
+    }
+
+    auto personal = hudForcePowers(known, spells, false);
+    ASSERT_EQ(2u, personal.size());
+    EXPECT_EQ(static_cast<SpellType>(8), personal[0]->type);
+    EXPECT_EQ(static_cast<SpellType>(28), personal[1]->type);
+    auto hostile = hudForcePowers(known, spells, true);
+    ASSERT_EQ(1u, hostile.size());
+    EXPECT_EQ(static_cast<SpellType>(46), hostile[0]->type);
+    EXPECT_FALSE(isHUDForcePower(*table[6]));
+    EXPECT_FALSE(isHUDForcePower(*table[260]));
+}
+
+TEST_F(K1HUD, pause_and_solo_toggles_show_and_follow_the_game_on_both_layouts) {
+    for (bool k2 : {false, true}) {
+        SCOPED_TRACE(k2 ? "k2" : "k1");
+        Session session(engine, k2);
+        HUD hud(session.game, session.services);
+        hud.init();
+        auto gui = K1HUDTestAccess::gui(hud);
+        auto pause = std::dynamic_pointer_cast<ToggleButton>(gui->findControl("TB_PAUSE"));
+        auto solo = std::dynamic_pointer_cast<ToggleButton>(gui->findControl("TB_SOLO"));
+        auto stealth = gui->findControl("TB_STEALTH");
+        ASSERT_TRUE(pause && solo && stealth);
+
+        K1HUDTestAccess::updateToggles(hud);
+        EXPECT_FALSE(pause->isVisible()) << "no character, no toggles";
+
+        auto pc = session.game.newCreature();
+        ASSERT_TRUE(session.game.party().addMember(kNpcPlayer, pc));
+        session.game.party().setPlayer(pc);
+        K1HUDTestAccess::updateToggles(hud);
+        EXPECT_TRUE(pause->isVisible());
+        EXPECT_TRUE(solo->isVisible());
+        // No stealth mode in the build.
+        EXPECT_FALSE(stealth->isVisible());
+        if (!k2) {
+            EXPECT_TRUE(gui->findControl("LBL_MOULDING1")->isVisible());
+        }
+
+        EXPECT_FALSE(pause->isOn());
+        pause->handleClick(0, 0);
+        EXPECT_TRUE(session.game.isPaused());
+        K1HUDTestAccess::updateToggles(hud);
+        EXPECT_TRUE(pause->isOn());
+        pause->handleClick(0, 0);
+        EXPECT_FALSE(session.game.isPaused());
+
+        solo->handleClick(0, 0);
+        EXPECT_TRUE(session.game.party().isSoloMode());
+        K1HUDTestAccess::updateToggles(hud);
+        EXPECT_TRUE(solo->isOn());
+        // The PartyActive key reaches the same state.
+        session.game.toggleSoloModeAsKey();
+        EXPECT_FALSE(session.game.party().isSoloMode());
+        K1HUDTestAccess::updateToggles(hud);
+        EXPECT_FALSE(solo->isOn());
+    }
+}
+
+TEST_F(K1HUD, portrait_status_shows_a_downed_member_on_both_layouts) {
+    for (bool k2 : {false, true}) {
+        SCOPED_TRACE(k2 ? "k2" : "k1");
+        Session session(engine, k2);
+        HUD hud(session.game, session.services);
+        hud.init();
+        auto gui = K1HUDTestAccess::gui(hud);
+        auto pc = session.game.newCreature();
+        ASSERT_TRUE(session.game.party().addMember(kNpcPlayer, pc));
+        session.game.party().setPlayer(pc);
+        pc->setMaxHitPoints(20);
+        pc->setCurrentHitPoints(20);
+
+        auto status = HUD::memberStatus(engine.services().resource.twoDas, *pc);
+        EXPECT_FALSE(status.down);
+        EXPECT_FALSE(status.debilitated);
+        EXPECT_FALSE(status.helped);
+        EXPECT_FALSE(status.hindered);
+        K1HUDTestAccess::updateParty(hud);
+        EXPECT_FALSE(gui->findControl("LBL_DISABLE1")->isVisible());
+        ASSERT_TRUE(gui->findControl("LBL_EFFECTICON0"));
+        EXPECT_FALSE(gui->findControl("LBL_EFFECTICON0")->isVisible());
+
+        // Stunned: cannot act.
+        pc->applyEffect(std::make_shared<StunnedEffect>(), DurationType::Temporary, 60.0f);
+        EXPECT_TRUE(HUD::memberStatus(engine.services().resource.twoDas, *pc).debilitated);
+        K1HUDTestAccess::updateParty(hud);
+        EXPECT_TRUE(gui->findControl("LBL_DEBILATATED1")->isVisible());
+        EXPECT_FALSE(gui->findControl("LBL_DISABLE1")->isVisible());
+
+        // Down: the downed overlay replaces the stunned one.
+        pc->setCurrentHitPoints(0);
+        EXPECT_TRUE(HUD::memberStatus(engine.services().resource.twoDas, *pc).down);
+        K1HUDTestAccess::updateParty(hud);
+        EXPECT_TRUE(gui->findControl("LBL_DISABLE1")->isVisible());
+        EXPECT_FALSE(gui->findControl("LBL_DEBILATATED1")->isVisible());
+        EXPECT_FALSE(gui->findControl("LBL_DISABLE2")->isVisible()) << "no second member";
+    }
+}
+
+TEST(K1HUDPass2, effect_icon_rows_clear_the_toggles_and_portraits) {
+    // Authored extents of mipc28x6 (K1) and mipc28x6_p (K2).
+    struct Case {
+        bool tsl;
+        Control::Extent portrait;
+        std::vector<Control::Extent> keepClear;
+    };
+    std::vector<Case> cases {
+        {false, {4, 534, 75, 61},
+         {{6, 465, 35, 35}, {6, 500, 35, 35}, {37, 500, 35, 35}, {4, 534, 75, 61}, {79, 560, 48, 35},
+          {127, 560, 48, 35}, {332, 508, 131, 90}}},
+        {true, {704, 520, 78, 78},
+         {{548, 562, 36, 36}, {584, 562, 36, 36}, {620, 562, 36, 36}, {656, 562, 36, 36}, {704, 520, 78, 78},
+          {677, 520, 39, 78}, {750, 482, 36, 36}, {737, 482, 18, 36}, {310, 498, 180, 90}}}};
+    for (const auto &c : cases) {
+        SCOPED_TRACE(c.tsl ? "k2" : "k1");
+        auto row = HUD::effectIconRowFor(c.portrait, c.tsl);
+        for (int i = 0; i < HUD::kEffectIconCount; ++i) {
+            Control::Extent icon {row.left + i * row.step, row.top, row.size, row.size};
+            EXPECT_GE(icon.left, 0);
+            EXPECT_LE(icon.left + icon.width, 800);
+            for (const auto &other : c.keepClear) {
+                EXPECT_FALSE(overlaps(icon, other)) << i << " vs " << other.left << "," << other.top;
+            }
+        }
+    }
+}
+
+TEST(K1HUDPass2, k1_equipment_set_toggle_maps_the_weapon_slots) {
+    using Slot = Equipment::Slot;
+    EXPECT_EQ(Slot::WeapL, Equipment::k1SetSlot(Slot::WeapL, false));
+    EXPECT_EQ(Slot::WeapR, Equipment::k1SetSlot(Slot::WeapR, false));
+    EXPECT_EQ(Slot::WeapL2, Equipment::k1SetSlot(Slot::WeapL, true));
+    EXPECT_EQ(Slot::WeapR2, Equipment::k1SetSlot(Slot::WeapR, true));
+    for (auto slot : {Slot::Head, Slot::Body, Slot::Belt, Slot::Implant}) {
+        EXPECT_EQ(slot, Equipment::k1SetSlot(slot, true));
+    }
+    // K1 equip layout (640x480): between BTN_CHANGE2 and BTN_EQUIP, clear of
+    // both and of the attack panel.
+    auto toggle = Equipment::k1WeaponSetToggleExtent();
+    EXPECT_FALSE(overlaps(toggle, Control::Extent(140, 410, 28, 28)));
+    EXPECT_FALSE(overlaps(toggle, Control::Extent(247, 410, 146, 28)));
+    EXPECT_FALSE(overlaps(toggle, Control::Extent(157, 290, 256, 118)));
+    EXPECT_LE(toggle.top + toggle.height, 480);
+    EXPECT_TRUE(isK1Art(Equipment::kK1WeaponSetIcon));
+}
+
+TEST(K1HUDPass2, weapon_swap_key_defaults_to_h_and_is_free) {
+    Keymap keymap;
+    EXPECT_EQ(input::KeyCode::H, keymap.keyFor(KeyAction::SwitchWeapons));
+    auto action = keymap.actionFor(input::KeyCode::H);
+    ASSERT_TRUE(action);
+    EXPECT_EQ(KeyAction::SwitchWeapons, *action);
+    EXPECT_EQ(std::string("SwitchWeaps"), keyActionInfo(KeyAction::SwitchWeapons).name);
+}
+
+// Pass 2 follow-up: screens missing on both sides
+
+TEST(K1HUDScreens, abilities_powers_and_feats_tabs_list_the_leaders_own) {
+    NiceMock<MockSpells> spells;
+    NiceMock<MockFeats> feats;
+    auto speed = makeSpell(static_cast<SpellType>(8), kForcePowerUserType, 0x1808, false);
+    speed->name = "Burst of Speed";
+    auto affect = makeSpell(static_cast<SpellType>(6), kForcePowerUserType, 0, false);
+    affect->name = "Affect Mind";
+    auto grenade = makeSpell(static_cast<SpellType>(100), 2, 0x10, true); // an item ability
+    grenade->name = "Frag Grenade";
+    ON_CALL(spells, get(_)).WillByDefault([&](SpellType type) -> std::shared_ptr<Spell> {
+        switch (static_cast<int>(type)) {
+        case 8: return speed;
+        case 6: return affect;
+        case 100: return grenade;
+        default: return nullptr;
+        }
+    });
+    auto power = std::make_shared<Feat>();
+    power->name = "Power Attack";
+    power->description = "A strong blow.";
+    auto hidden = std::make_shared<Feat>(); // no name: never listed
+    ON_CALL(feats, get(_)).WillByDefault([&](FeatType type) -> std::shared_ptr<Feat> {
+        return static_cast<int>(type) == 28 ? power : (static_cast<int>(type) == 29 ? hidden : nullptr);
+    });
+
+    CreatureAttributes attributes;
+    attributes.addSpell(static_cast<SpellType>(8));
+    attributes.addSpell(static_cast<SpellType>(6));
+    attributes.addSpell(static_cast<SpellType>(100));
+    attributes.addFeat(static_cast<FeatType>(28));
+    attributes.addFeat(static_cast<FeatType>(29));
+
+    auto powers = AbilitiesMenu::entriesFor(AbilitiesMenu::Tab::Powers, attributes, spells, feats);
+    ASSERT_EQ(2u, powers.size()) << "Force powers only, conversation powers included";
+    EXPECT_EQ("p6", powers[0].tag);
+    EXPECT_EQ("Affect Mind", powers[0].name);
+    EXPECT_EQ("p8", powers[1].tag);
+    auto featRows = AbilitiesMenu::entriesFor(AbilitiesMenu::Tab::Feats, attributes, spells, feats);
+    ASSERT_EQ(1u, featRows.size());
+    EXPECT_EQ("f28", featRows[0].tag);
+    EXPECT_EQ("A strong blow.", featRows[0].description);
+    EXPECT_TRUE(AbilitiesMenu::entriesFor(AbilitiesMenu::Tab::Skills, attributes, spells, feats).empty());
+}
+
+TEST(K1HUDScreens, message_log_keeps_dialog_and_splits_feedback) {
+    MessageLog log;
+    log.addDialog("Trask Ulgo", "We have to get to the bridge!");
+    log.addDialog("Harness", "Let's go.");
+    log.addDialog("", "(A door opens.)");
+    log.addDialog("Nobody", ""); // empty lines are not logged
+    log.addDialog("Nobody", " \n");
+    log.add(MessageLog::kFeedbackMessageType, MessageLog::Style::Combat, "Sith Soldier attacks Harness: hit");
+    log.add(MessageLog::kFeedbackMessageType, MessageLog::Style::Normal, "You have failed to unlock it.");
+    ASSERT_EQ(5u, log.entries().size());
+    EXPECT_EQ("Trask Ulgo: We have to get to the bridge!", log.entries()[0].text);
+    EXPECT_EQ("(A door opens.)", log.entries()[2].text);
+
+    auto split = MessagesMenu::split(log.entries());
+    EXPECT_EQ(3u, split.dialog.size());
+    EXPECT_EQ(2u, split.feedback.size()) << "K1's feedback page lists combat too";
+    ASSERT_EQ(1u, split.combat.size());
+    EXPECT_EQ(MessageLog::Style::Combat, split.combat[0]->style);
+    ASSERT_EQ(1u, split.general.size());
+    EXPECT_EQ("You have failed to unlock it.", split.general[0]->text);
+}
+
+TEST(K1HUDScreens, journal_sorts_and_splits_active_from_completed) {
+    using Row = JournalMenu::Row;
+    using Filter = JournalMenu::Filter;
+    std::vector<Row> rows {
+        {"q_b", "Bravo", 2, 3, 0, false},
+        {"q_a", "alpha", 1, 5, 1, false},
+        {"q_c", "Charlie", 0, 3, 2, false},
+        {"q_done", "Done", 0, 1, 3, true}};
+    auto tags = [](const std::vector<Row> &sorted) {
+        std::vector<std::string> result;
+        for (const auto &row : sorted) {
+            result.push_back(row.plotId);
+        }
+        return result;
+    };
+    EXPECT_EQ((std::vector<std::string> {"q_b", "q_a", "q_c"}), tags(JournalMenu::arrange(rows, Filter::Time, false)));
+    EXPECT_EQ((std::vector<std::string> {"q_a", "q_b", "q_c"}), tags(JournalMenu::arrange(rows, Filter::Name, false)));
+    EXPECT_EQ((std::vector<std::string> {"q_c", "q_a", "q_b"}), tags(JournalMenu::arrange(rows, Filter::Priority, false)));
+    // Planet ties keep the order received.
+    EXPECT_EQ((std::vector<std::string> {"q_b", "q_c", "q_a"}), tags(JournalMenu::arrange(rows, Filter::Planet, false)));
+    EXPECT_EQ((std::vector<std::string> {"q_done"}), tags(JournalMenu::arrange(rows, Filter::Time, true)));
+
+    // K1's BTN_SORT cycles back to the start.
+    Filter filter = Filter::Time;
+    for (Filter expected : {Filter::Name, Filter::Priority, Filter::Planet, Filter::Time}) {
+        filter = JournalMenu::nextK1Sort(filter);
+        EXPECT_EQ(expected, filter);
+    }
+}
+
+TEST(K1HUDScreens, character_scripts_button_cycles_the_party_ai_style) {
+    EXPECT_EQ(1, CharacterMenu::nextPartyAIStyle(0));
+    EXPECT_EQ(2, CharacterMenu::nextPartyAIStyle(1));
+    EXPECT_EQ(0, CharacterMenu::nextPartyAIStyle(2));
+    EXPECT_EQ(0, CharacterMenu::nextPartyAIStyle(7)) << "an unknown style resets";
+    EXPECT_EQ(1096, CharacterMenu::partyAIStyleStrRef(0));
+    EXPECT_EQ(1097, CharacterMenu::partyAIStyleStrRef(1));
+    EXPECT_EQ(1098, CharacterMenu::partyAIStyleStrRef(2));
+    // character_p: the added button sits on the footer row, clear of Exit.
+    auto extent = CharacterMenu::k2ScriptsButtonExtent();
+    EXPECT_FALSE(overlaps(extent, Control::Extent(75, 516, 120, 28)));
+    EXPECT_LE(extent.left + extent.width, 800);
 }
 
 // Difficulty

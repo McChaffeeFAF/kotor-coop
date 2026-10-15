@@ -88,6 +88,26 @@ bool Slider::handleClick(int x, int y, int clicks) {
     return handleMouseDrag(x, y);
 }
 
+bool Slider::handlePadDirection(input::NavigateAction direction) {
+    float step = 0.1f;
+    float value = _value;
+    if (direction == input::NavigateAction::Left) {
+        value -= step;
+    } else if (direction == input::NavigateAction::Right) {
+        value += step;
+    } else {
+        return false;
+    }
+    value = std::clamp(value, 0.0f, 1.0f);
+    if (value != _value) {
+        _value = value;
+        if (_onValueChanged) {
+            _onValueChanged(_value);
+        }
+    }
+    return true;
+}
+
 bool Slider::handleMouseDrag(int x, int y) {
     float value = valueAt(x, y);
     if (value != _value) {

@@ -608,6 +608,105 @@ void RenderPipelineBase::applyBloom(Texture &scene, Texture &hilights, Texture &
     drawFullscreen(ShaderProgramId::postBloomCombine, dst, _targetSize);
 }
 
+// Frame effects (upstream #356)
+
+static constexpr int kSpeedBlurHistorySize = 128;
+
+void RenderPipelineBase::initSpeedBlurHistory() {
+    if (_speedBlurHistory) {
+        return;
+    }
+    _speedBlurHistoryColor = std::make_shared<Texture>(
+        "speed_blur_history",
+        TextureType::TwoDim,
+        getTextureProperties(TextureUsage::ColorBuffer));
+    _speedBlurHistoryColor->clear(kSpeedBlurHistorySize, kSpeedBlurHistorySize, PixelFormat::RGBA8);
+    _speedBlurHistoryColor->init();
+    _speedBlurHistory = std::make_unique<Framebuffer>();
+    _speedBlurHistory->attachColorDepth(_speedBlurHistoryColor, nullptr);
+    _speedBlurHistory->init();
+}
+
+void RenderPipelineBase::applyFrameEffects(Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    applySpeedBlur(output, outputColor, scratch);
+    if (_frameEffects.videoEffect && _frameEffects.videoEffect->distortion) {
+        const VideoEffect &effect = *_frameEffects.videoEffect;
+        if (effect.clairvoyance) {
+            drawDistortionOverlay(*effect.distortion, *effect.clairvoyance, output, outputColor, scratch);
+        }
+        if (effect.fury) {
+            drawDistortionOverlay(*effect.distortion, *effect.fury, output, outputColor, scratch);
+        }
+    }
+}
+
+void RenderPipelineBase::applySpeedBlur(Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    if (!_frameEffects.speedBlur) {
+        _previousFrameWasSpeed = false;
+        return;
+    }
+    initSpeedBlurHistory();
+    const glm::ivec4 screenRect {0, 0, _targetSize.x, _targetSize.y};
+    // The first blurred frame only fills the history.
+    if (_previousFrameWasSpeed) {
+        float ratio = glm::clamp(_frameEffects.speedBlurRatio, 0.0f, 1.0f);
+        _uniforms.setScreenEffect([this, ratio](auto &se) {
+            se.screenResolution = glm::vec2(_targetSize);
+            se.screenResolutionRcp = 1.0f / se.screenResolution;
+            se.frameEffectParams.x = ratio;
+        });
+        _context.useProgram(_shaderRegistry.get(ShaderProgramId::postSpeedBlur));
+        _context.bindDrawFramebuffer(scratch, {0});
+        _context.bindTexture(outputColor, TextureUnits::mainTex);
+        _context.bindTexture(*_speedBlurHistoryColor, TextureUnits::lightmap);
+        _context.withViewport(glm::ivec4(0, 0, _targetSize), [this]() {
+            _context.clearColorDepth();
+            _meshRegistry.get(MeshName::quadNDC).draw(_statistic);
+        });
+        _context.blitFramebuffer(scratch, output, screenRect, screenRect);
+    }
+    _context.blitFramebuffer(
+        output,
+        *_speedBlurHistory,
+        screenRect,
+        glm::ivec4(0, 0, kSpeedBlurHistorySize, kSpeedBlurHistorySize),
+        0, 0,
+        FramebufferBlitFlags::color,
+        FramebufferBlitFilter::Linear);
+    _previousFrameWasSpeed = true;
+}
+
+// Each overlay first shrinks the frame into the 128x128 history the speed
+// blur also keeps, then lays its texture over the frame, showing the shrunken
+// frame, distorted, where the texture is not transparent.
+void RenderPipelineBase::drawDistortionOverlay(Texture &distortion, Texture &overlay, Framebuffer &output, Texture &outputColor, Framebuffer &scratch) {
+    initSpeedBlurHistory();
+    const glm::ivec4 screenRect {0, 0, _targetSize.x, _targetSize.y};
+    _context.blitFramebuffer(
+        output,
+        *_speedBlurHistory,
+        screenRect,
+        glm::ivec4(0, 0, kSpeedBlurHistorySize, kSpeedBlurHistorySize),
+        0, 0,
+        FramebufferBlitFlags::color,
+        FramebufferBlitFilter::Linear);
+    _uniforms.setScreenEffect([this](auto &se) {
+        se.screenResolution = glm::vec2(_targetSize);
+        se.screenResolutionRcp = 1.0f / se.screenResolution;
+    });
+    _context.useProgram(_shaderRegistry.get(ShaderProgramId::postDistortionOverlay));
+    _context.bindDrawFramebuffer(scratch, {0});
+    _context.bindTexture(outputColor, TextureUnits::mainTex);
+    _context.bindTexture(*_speedBlurHistoryColor, TextureUnits::lightmap);
+    _context.bindTexture(distortion, TextureUnits::envMap);
+    _context.bindTexture(overlay, TextureUnits::normalMap);
+    _context.withViewport(glm::ivec4(0, 0, _targetSize), [this]() {
+        _context.clearColorDepth();
+        _meshRegistry.get(MeshName::quadNDC).draw(_statistic);
+    });
+    _context.blitFramebuffer(scratch, output, screenRect, screenRect);
+}
+
 std::unique_ptr<IRenderPipeline> RenderPipelineFactory::create(RendererType type, glm::ivec2 targetSize) {
     switch (type) {
     case RendererType::Retro:

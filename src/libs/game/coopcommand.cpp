@@ -299,19 +299,20 @@ net::CommandReject validateCoopCommand(
                 targets.use = CoopUse::Container;
                 return CommandReject::None;
             }
+            // A workbench or lab opens a screen on whoever runs its script: the host's. A guest
+            // gets its own bench view instead (the script is not run for it). Checked before
+            // the conversation: K1's Taris workbench talks once before it opens the screen.
+            if (placeable->isUsable() && !placeable->getOnUsed().empty() &&
+                coopScriptBench(game, placeable->getOnUsed()) != CoopBench::None) {
+                targets.use = CoopUse::Bench;
+                return CommandReject::None;
+            }
             if (!placeable->conversation().empty()) {
                 return talk(*placeable);
             }
             // A console with no conversation (the terminal design): its
             // OnUsed script decides whether it is a story use.
             if (placeable->isUsable() && !placeable->getOnUsed().empty()) {
-                // A workbench or lab opens a screen on whoever runs its
-                // script: the host's. A guest gets its own bench view instead
-                // (the script is not run for it).
-                if (coopScriptBench(game, placeable->getOnUsed()) != CoopBench::None) {
-                    targets.use = CoopUse::Bench;
-                    return CommandReject::None;
-                }
                 if (coopScriptOpensScreen(game, placeable->getOnUsed())) {
                     return CommandReject::NotSupported;
                 }

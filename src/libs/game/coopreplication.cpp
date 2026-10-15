@@ -185,9 +185,9 @@ void CoopReplication::apply(Game &game, Object &object, const EntityState &state
         auto transition = static_cast<DoorTransition>(state.doorTransition);
         auto resting = static_cast<DoorState>(state.doorState);
         if (transition == DoorTransition::Opening && door._transition != DoorTransition::Opening) {
-            door.open();
+            door.open(nullptr, false);
         } else if (transition == DoorTransition::Closing && door._transition != DoorTransition::Closing) {
-            door.close();
+            door.close(false);
         } else if (transition == DoorTransition::None &&
                    (door._state != resting || door._transition != DoorTransition::None)) {
             door._transition = DoorTransition::None;

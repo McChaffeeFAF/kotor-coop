@@ -21,6 +21,8 @@
 #include <cmath>
 #include <stack>
 
+#include <glm/gtc/constants.hpp>
+
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
 #include "reone/game/di/services.h"
@@ -277,6 +279,23 @@ void TurretAim::addYaw(float radians) {
     } else {
         _yaw = normalizeAngle(_yaw);
     }
+}
+
+void TurretAim::set(float pitchRadians, float yawRadians) {
+    if (!std::isfinite(pitchRadians) || !std::isfinite(yawRadians)) {
+        return;
+    }
+    float turn = glm::two_pi<float>();
+    float yaw = yawRadians;
+    for (float candidate : {yawRadians - turn, yawRadians + turn}) {
+        if (std::fabs(candidate - _yaw) < std::fabs(yaw - _yaw)) {
+            yaw = candidate;
+        }
+    }
+    _pitch = 0.0f;
+    _yaw = 0.0f;
+    addPitch(pitchRadians);
+    addYaw(yaw);
 }
 
 glm::quat TurretAim::orientation() const {
@@ -863,7 +882,7 @@ void Turret::prepare(float dt) {
     }
     _session->setPlayerAim(glm::vec3(glm::degrees(_aim.pitch()), 0.0f, yawDegrees));
     if (auto player = _session->player()) {
-        _session->setActorPosition(*player, _anchorPosition);
+        _session->setActorPosition(*player, _anchorPosition, transformOrientation(_anchorTransform));
     }
     for (auto &enemy : _enemies) {
         if (!enemy.modelNode || enemy.actorIndex >= _session->actors().size()) {
@@ -876,9 +895,53 @@ void Turret::prepare(float dt) {
         enemy.forward = turretFireDirection(enemy.orientation);
         auto &actor = _session->actors()[enemy.actorIndex];
         if (!actor.dead) {
-            _session->setActorPosition(actor, enemy.position);
+            _session->setActorPosition(actor, enemy.position, enemy.orientation);
         }
     }
+}
+
+void Turret::prepareReplica(float dt, bool firing) {
+    if (!_active || !_session) {
+        return;
+    }
+    // The host's aim, reported as the player offset in degrees: X pitch, Z yaw.
+    const glm::vec3 &aim = _session->offset();
+    _aim.set(glm::radians(aim.x), glm::radians(aim.z));
+    updateAnchor();
+    updatePlayerTransforms();
+    auto &actors = _session->actors();
+    for (auto &enemy : _enemies) {
+        if (!enemy.modelNode || enemy.actorIndex >= actors.size() || !enemy.alive) {
+            continue;
+        }
+        // Off its rail: the host says where the fighter is, and the rail's own clock here
+        // would only drift from it.
+        detachEnemyFromTrack(enemy);
+        const auto &actor = actors[enemy.actorIndex];
+        enemy.modelNode->setLocalTransform(actor.hook);
+        enemy.previousPosition = enemy.position;
+        enemy.position = actor.position;
+        enemy.orientation = transformOrientation(actor.hook);
+        enemy.forward = turretFireDirection(enemy.orientation);
+    }
+    // The player's shots, at each gun's own rate while the host's player holds fire.
+    auto player = _session->player();
+    for (size_t b = 0; b < _gunBanks.size(); ++b) {
+        auto &timer = _gunBanks[b].timer;
+        timer.update(dt);
+        if (firing && player && !player->dead && timer.tryFire()) {
+            onMiniGameGunFired(*player, b);
+        }
+    }
+}
+
+glm::vec2 Turret::replicaRateStep(const MiniGameInput &input, float dt) {
+    _pitchRate.setDirection(directionOf(input.pitchRate));
+    _yawRate.setDirection(directionOf(input.yawRate));
+    if (dt <= 0.0f) {
+        return glm::vec2(0.0f);
+    }
+    return glm::vec2(glm::degrees(_pitchRate.advance(dt)), glm::degrees(_yawRate.advance(dt)));
 }
 
 void Turret::update(float dt) {
@@ -1104,7 +1167,7 @@ void Turret::updateEnemies(float dt) {
             if (!bank.spec->fireSound.empty()) {
                 playSound(bank.spec->fireSound);
             }
-            if (_session && enemy.actorIndex < _session->actors().size()) {
+            if (_session && !_replica && enemy.actorIndex < _session->actors().size()) {
                 _session->gunFired(_session->actors()[enemy.actorIndex], b);
             }
         }
@@ -1123,9 +1186,10 @@ void Turret::updateBullets(float dt) {
             bullet.modelNode->setLocalTransform(turretBulletTransform(bullet.sim));
         }
 
-        // Target type: 1 = the player, 2 = the enemies, 3 = both.
+        // Target type: 1 = the player, 2 = the enemies, 3 = both. A co-op client's bolts
+        // are only drawn: the host decides what they hit.
         MiniGameActor *target = nullptr;
-        if (_session) {
+        if (_session && !_replica) {
             if ((bullet.targetType & 2) != 0 || (bullet.targetType == 0 && bullet.sim.fromPlayer)) {
                 for (auto &enemy : _enemies) {
                     if (!enemy.alive || !enemy.spec || enemy.actorIndex == bullet.shooterActor) {
@@ -1147,6 +1211,7 @@ void Turret::updateBullets(float dt) {
         if (target) {
             if (!bullet.collisionSound.empty()) {
                 playSound(bullet.collisionSound);
+                _game.recordMiniGameSound(bullet.collisionSound);
             }
             uint32_t shooter = bullet.shooterActor < _session->actors().size()
                                    ? _session->actors()[bullet.shooterActor].objectId

@@ -33,6 +33,8 @@
 #include "reone/game/di/services.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/game.h"
+#include "reone/game/messagelog.h"
+#include "reone/game/party.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/module.h"
@@ -590,13 +592,16 @@ void Conversation::loadReplies() {
     }
 
     // If there is only one empty reply, pick it automatically when the current entry ends
-    _autoPickFirstReply = _replies.size() == 1ll && _replies.front()->text.empty();
+    // A sole reply whose text resolves to nothing is taken when the entry
+    // ends (upstream #356): a reply holding only a {note} still advances.
+    _autoPickFirstReply = _replies.size() == 1ll && _game.substituteCustomTokens(_replies.front()->text).empty();
 
     refreshReplies();
 }
 
 static std::string getReplyText(const Dialog::EntryReply &reply, int index, const Game &game) {
-    return str(boost::format("%d. %s") % (index + 1) % (reply.text.empty() ? "[empty]" : game.substituteCustomTokens(reply.text)));
+    std::string text(game.substituteCustomTokens(reply.text));
+    return str(boost::format("%d. %s") % (index + 1) % (text.empty() ? "[empty]" : text));
 }
 
 void Conversation::refreshReplies() {
@@ -629,6 +634,10 @@ void Conversation::pickReply(int index) {
     auto generation = _generation;
     debug("Pick reply " + std::to_string(index), LogChannel::Conversation);
     const Dialog::EntryReply &reply = *_replies[index];
+    if (!reply.text.empty()) {
+        auto pc = _game.party().player();
+        _game.messageLog().addDialog(pc ? pc->name() : std::string(), _game.substituteCustomTokens(reply.text));
+    }
 
     applyStatusSummaryEntries(reply);
     applyNodeFade(reply);
@@ -819,7 +828,9 @@ void Conversation::showReplicaEntry(int entry, const std::vector<int> &replies, 
             _replies.push_back(&_dialog->getReply(index));
         }
     }
-    _autoPickFirstReply = _replies.size() == 1ll && _replies.front()->text.empty();
+    // A sole reply whose text resolves to nothing is taken when the entry
+    // ends (upstream #356): a reply holding only a {note} still advances.
+    _autoPickFirstReply = _replies.size() == 1ll && _game.substituteCustomTokens(_replies.front()->text).empty();
     refreshReplies();
     if (newEntry) {
         loadVoiceOver();

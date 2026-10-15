@@ -42,6 +42,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 
+#include "reone/game/equipmentoperation.h"
 #include "reone/game/equipmentrules.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/castspellatobject.h"
@@ -61,6 +62,7 @@
 #include "reone/game/gui/ingame.h"
 #include "reone/game/gui/ingame/options.h"
 #include "reone/game/upgradebench.h"
+#include "reone/game/coopsession.h"
 #include "reone/resource/provider/2das.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/item.h"
@@ -747,8 +749,15 @@ void Game::consoleEquipSlot(const ConsoleArgs &args) {
     if (!found) {
         throw std::runtime_error("equipslot: no unequipped item " + parsed.positional[0]);
     }
-    // The same action the equipment screen issues.
-    actor->addAction(newAction<EquipItemAction>(found, slot, true));
+    // What the equipment screen does: the change applies at once, whatever
+    // the creature is doing. A queued ActionEquipItem waited behind the
+    // creature's actions, so a companion still holding an attack (Canderous
+    // at Davik's hangar) never put the suit on, though equipslot said ok.
+    auto outcome = applyEquipmentFromHolder(*this, *actor, found, slot);
+    if (outcome == EquipmentOperationOutcome::Rejected || outcome == EquipmentOperationOutcome::Failed) {
+        throw std::runtime_error("equipslot: " + found->tag() + " cannot go in slot " + std::to_string(slot) +
+                                 " on " + actor->tag());
+    }
     _console.printLine("equipslot " + found->tag() + "@" + std::to_string(slot) + " by " + actor->tag());
 }
 
@@ -1480,6 +1489,11 @@ void Game::consoleGuiClick(const ConsoleArgs &args) {
             control = page->controlByTag(parsed.positional[0]);
         }
     }
+    if (!control && _screen == Screen::InGameMenu && _inGame && _inGame->activeTabPage()) {
+        // The open tab's own controls (equipment slots, its buttons).
+        page = _inGame->activeTabPage()->inputPage();
+        control = page->controlByTag(parsed.positional[0]);
+    }
     if (!control) {
         throw std::runtime_error("guiclick: no control " + parsed.positional[0]);
     }
@@ -1523,9 +1537,22 @@ void Game::consoleGuiDump(const ConsoleArgs &args) {
         page = panels->active()->inputPage();
     }
     glm::ivec2 offset = page->guiControlOffset();
+    PresentationGUI *tabPage = _screen == Screen::InGameMenu && _inGame ? _inGame->activeTabPage() : nullptr;
     for (size_t i = 1; i < args.size(); ++i) {
         std::string tag(args[i].value());
         auto control = page->controlByTag(tag);
+        if (!control && tabPage) {
+            // The open tab's own controls.
+            control = tabPage->inputPage()->controlByTag(tag);
+            if (control) {
+                const auto &e = control->extent();
+                glm::ivec2 tabOffset = tabPage->inputPage()->guiControlOffset();
+                _console.printLine(str(boost::format("%s at=%d,%d size=%dx%d visible=%d text=\"%s\"") % tag %
+                                       (tabOffset.x + e.left) % (tabOffset.y + e.top) % e.width % e.height %
+                                       (control->isVisible() ? 1 : 0) % control->text().text));
+                continue;
+            }
+        }
         if (!control) {
             _console.printLine(tag + " missing");
             continue;
@@ -2000,6 +2027,13 @@ void Game::consoleMiniGameState(const ConsoleArgs &args) {
                            % _miniGameInput.steer % static_cast<int>(_miniGameInput.fire)
                            % static_cast<int>(_swoopAutopilot) % static_cast<int>(_turretAutopilot)
                            % globals % turret);
+    // A co-op client draws the host's minigame: say so, with the playback's state.
+    line.pop_back();
+    line += str(boost::format(",\"replica\":%d") % static_cast<int>(_miniGameReplica));
+    if (_coop) {
+        line += ",\"coop\":" + boost::json::serialize(_coop->miniGameJson());
+    }
+    line += "}";
     _console.printLine(line);
     info(line);
 }

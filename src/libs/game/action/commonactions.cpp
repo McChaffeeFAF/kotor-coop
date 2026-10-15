@@ -171,7 +171,7 @@ bool unlockDoor(Game &game, Door &door, Object &actor, bool &useApproachPoint, f
         door.setLocked(false);
     }
 
-    door.open();
+    door.open(&actor);
     door.onOpen(actor.id());
 
     return true;

@@ -19,6 +19,7 @@
 
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
+#include "reone/audio/source.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/object/camera/firstperson.h"
@@ -121,6 +122,12 @@ bool SwoopRace::start(MiniGameSession &session,
 
     _steerLeft = _steerRight = _fireKey = _fireButton = false;
     _active = true;
+    if (const auto *player = session.player(); player && !player->sounds.engine.empty()) {
+        if (auto clip = _services.resource.audioClips.get(player->sounds.engine)) {
+            _engineSound = _services.audio.mixer.play(std::move(clip), AudioType::Sound, 1.0f, true);
+            _engineSoundResRef = player->sounds.engine;
+        }
+    }
     float nearClip = spec.nearClip > 0.0f ? spec.nearClip : kDefaultClipPlaneNear;
     float farClip = spec.farClip > 0.0f ? spec.farClip : kDefaultClipPlaneFar;
     setCameraProjection(spec.cameraViewAngle > 0.0f ? spec.cameraViewAngle : kDefaultCameraFovDegrees, nearClip, farClip);
@@ -154,6 +161,11 @@ void SwoopRace::stop() {
     }
     _actors.clear();
     _animator.clear();
+    if (_engineSound) {
+        _engineSound->stop();
+        _engineSound.reset();
+    }
+    _engineSoundResRef.clear();
     _cameraHook = nullptr;
     _camera = nullptr;
     _session = nullptr;
@@ -204,6 +216,16 @@ void SwoopRace::update(float dt) {
     _animator.update(dt);
     placeActors();
     updateCamera();
+    if (_engineSound) {
+        // Idle to full throttle: a low hum rising with the bike's speed, at the volume the
+        // scripts set for the engine (SWMG_SetSoundVolume, sound 1).
+        const auto *player = _session->player();
+        // A co-op guest's session never hears the scripts' gear limits: the top gear's 420.
+        float top = _session->maxSpeed() > 0.0f ? _session->maxSpeed() : 420.0f;
+        float ratio = glm::clamp(_session->playerSpeed() / top, 0.0f, 1.0f);
+        _engineSound->setPitch(0.7f + 0.8f * ratio);
+        _engineSound->setGain(player ? glm::clamp(player->soundVolume[1] / 127.0f, 0.0f, 1.0f) : 1.0f);
+    }
 }
 
 void SwoopRace::updateCamera() {
@@ -246,9 +268,86 @@ void SwoopRace::playMiniGameAnimation(const MiniGameActor &actor,
     if (index >= _actors.size()) {
         return;
     }
+    bool found = false;
     for (auto &node : _actors[index].nodes) {
-        _animator.play(*node, name, looping, queue, overlay);
+        found = _animator.play(*node, name, looping, queue, overlay) || found;
     }
+    _recentAnimations.push_back(found ? name : "!" + name);
+    while (_recentAnimations.size() > 24) {
+        _recentAnimations.pop_front();
+    }
+}
+
+std::string SwoopRace::describeAnimation(const std::string &name) const {
+    std::string out = "[";
+    if (name.empty()) {
+        // Every actor's models and the animations each has.
+        for (size_t i = 0; i < _actors.size() && i < 4; ++i) {
+            for (const auto &node : _actors[i].nodes) {
+                std::string names;
+                auto all = node->model().getAnimationNames();
+                for (size_t k = 0; k < all.size() && k < 400; ++k) {
+                    names += (names.empty() ? "\"" : ",\"") + all[k] + "\"";
+                }
+                out += std::string(out.size() > 1 ? "," : "") + "{\"actor\":" + std::to_string(i) + ",\"model\":\"" + node->model().name() +
+                       "\",\"animations\":[" + names + "]}";
+            }
+        }
+        return out + "]";
+    }
+    for (const auto &slot : _actors) {
+        for (const auto &node : slot.nodes) {
+            auto anim = node->model().getAnimation(name);
+            if (!anim) {
+                continue;
+            }
+            if (out.size() > 1) {
+                out += ",";
+            }
+            out += "{\"model\":\"" + node->model().name() + "\",\"length\":" + std::to_string(anim->length()) + ",\"nodes\":[";
+            std::vector<const graphics::ModelNode *> stack {anim->rootNode().get()};
+            bool first = true;
+            while (!stack.empty()) {
+                auto n = const_cast<graphics::ModelNode *>(stack.back());
+                stack.pop_back();
+                if (!n) {
+                    continue;
+                }
+                for (auto &child : n->children()) {
+                    stack.push_back(child.get());
+                }
+                std::string tracks;
+                auto add = [&](int type, size_t keys, const std::string &values) {
+                    tracks += (tracks.empty() ? "" : ",") + std::string("[") + std::to_string(type) + "," + std::to_string(keys) + ",\"" + values + "\"]";
+                };
+                for (auto &[type, track] : n->floatTracks()) {
+                    std::string values;
+                    for (const auto &kf : track.keyframes()) {
+                        values += (values.empty() ? "" : " ") + std::to_string(kf.time) + ":" + std::to_string(kf.value);
+                    }
+                    add(type, track.keyframes().size(), values.substr(0, 200));
+                }
+                for (auto &[type, track] : n->vectorTracks()) {
+                    std::string values;
+                    for (const auto &kf : track.keyframes()) {
+                        values += (values.empty() ? "" : " ") + std::to_string(kf.time) + ":" + std::to_string(kf.value.x) + "/" +
+                                  std::to_string(kf.value.y) + "/" + std::to_string(kf.value.z);
+                    }
+                    add(type, track.keyframes().size(), values.substr(0, 200));
+                }
+                for (auto &[type, track] : n->quaternionTracks()) {
+                    add(type, track.keyframes().size(), "");
+                }
+                if (tracks.empty()) {
+                    continue;
+                }
+                out += std::string(first ? "" : ",") + "{\"name\":\"" + n->name() + "\",\"tracks\":[" + tracks + "]}";
+                first = false;
+            }
+            out += "]}";
+        }
+    }
+    return out + "]";
 }
 
 void SwoopRace::removeMiniGameAnimation(const MiniGameActor &actor, const std::string &name) {

@@ -36,6 +36,7 @@
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/party.h"
+#include "reone/game/messagelog.h"
 
 using namespace reone::audio;
 
@@ -500,6 +501,9 @@ void DialogGUI::loadCurrentSpeaker() {
         listener = _previousListener.resolve();
     }
     _firstNodeShown = true;
+    // The Messages screen's dialog log (design note k1hud_parity_2, follow-up).
+    _game.messageLog().addDialog(speaker ? speaker->name() : std::string(),
+                                 _game.substituteCustomTokens(_currentEntry->text));
     setSpeakerAndListener(speaker, listener);
 
     if (auto speakerCreature = std::dynamic_pointer_cast<Creature>(speaker)) {

@@ -17,6 +17,7 @@
 
 #include "reone/game/equipmentoperation.h"
 #include "reone/game/action/equipitem.h"
+#include "reone/game/action/wait.h"
 #include "../fixtures/engine.h"
 #include "reone/game/game.h"
 #include "reone/game/object/creature.h"
@@ -248,4 +249,34 @@ TEST_F(EquipmentOperation, equip_action_refuses_an_off_hand_weapon_beside_a_two_
     EXPECT_FALSE(subject->getEquippedItem(InventorySlots::leftWeapon));
     EXPECT_FALSE(pistol->isEquipped());
     EXPECT_EQ(subject->id(), pistol->owner());
+}
+
+TEST_F(EquipmentOperation, equips_a_busy_companion_at_once_from_the_inventory_that_holds_the_item) {
+    // The harness's equipslot queued ActionEquipItem behind the creature's
+    // actions: a companion still holding an attack (Canderous at Davik's
+    // hangar) never put the suit on. The equipment screen changes the
+    // equipment at once and leaves the creature's actions alone.
+    auto holder = game.newCreature();
+    auto companion = game.newCreature();
+    auto worn = makeItem(game, "worn", 3, 1);
+    auto better = makeItem(game, "better", 8, 1);
+    ASSERT_TRUE(companion->equip(InventorySlots::rightWeapon, worn));
+    holder->addItem(better);
+    companion->addAction(game.newAction<WaitAction>(1000.0f));
+
+    EXPECT_EQ(EquipmentOperationOutcome::Applied,
+              applyEquipmentFromHolder(game, *companion, better, InventorySlots::rightWeapon));
+
+    EXPECT_EQ(better, companion->getEquippedItem(InventorySlots::rightWeapon));
+    EXPECT_EQ(companion->id(), better->owner());
+    EXPECT_EQ(holder->id(), worn->owner());
+    EXPECT_FALSE(worn->isEquipped());
+    ASSERT_EQ(1u, companion->actions().size());
+    EXPECT_EQ(ActionType::Wait, companion->actions().front()->type());
+
+    auto loose = makeItem(game, "loose", 8, 1);
+    EXPECT_EQ(EquipmentOperationOutcome::Rejected,
+              applyEquipmentFromHolder(game, *companion, loose, InventorySlots::rightWeapon));
+    EXPECT_EQ(EquipmentOperationOutcome::Rejected,
+              applyEquipmentFromHolder(game, *companion, nullptr, InventorySlots::rightWeapon));
 }

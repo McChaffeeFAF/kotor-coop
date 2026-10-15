@@ -124,6 +124,10 @@ enum class ArgKind {
     ItemActivated,
     ItemActivator,
     FactionMembers,
+    SpellCasterLevel,    /**< upstream #356 */
+    SpellMetaMagic,      /**< upstream #356 */
+    SpellForcePointCost, /**< upstream #356 */
+    LastDisarmed,        /**< upstream #356 */
 };
 
 struct Argument {

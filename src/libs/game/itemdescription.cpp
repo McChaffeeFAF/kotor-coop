@@ -718,7 +718,7 @@ static void addBaseFacts(ServicesView &services, const Item &item, DerivedProper
         baseFacts.lines.push_back(line);
     }
 
-    if (item.weaponType() == WeaponType::Ranged && item.attackRange() > 0.0f) {
+    if (item.isRanged() && item.attackRange() > 0.0f) {
         baseFacts.lines.push_back("Range: " + std::to_string(static_cast<int>(item.attackRange())) + "m");
     }
 

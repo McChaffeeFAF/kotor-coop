@@ -41,6 +41,8 @@ public:
         std::shared_ptr<graphics::Texture> iconTexture;
         std::shared_ptr<graphics::Texture> iconFrame;
         std::optional<glm::vec3> textColor;
+        /** A row drawn through a toggle-button prototype shows this state (upstream #356). */
+        std::optional<bool> on;
         bool invalid {false};
 
         std::vector<std::string> _textLines;
@@ -62,6 +64,8 @@ public:
     }
 
     void clearItems();
+    /** Change a row's on state without rebuilding the list. */
+    void setItemOn(int index, bool on) { _items.at(static_cast<size_t>(index)).on = on; }
     void addItem(Item &&item);
     void addTextLinesAsItems(const std::string &text);
 
@@ -71,10 +75,26 @@ public:
     bool handleMouseMotion(int x, int y) override;
     bool handleMouseWheel(int x, int y) override;
     bool handleClick(int x, int y, int clicks = 1) override;
+    bool handlePadDirection(input::NavigateAction direction) override;
+    bool handlePadAccept() override;
     void render(const glm::ivec2 &screenSize, const glm::ivec2 &offset, scene::IRenderPass &pass) override;
     void stretch(float x, float y, int mask) override;
 
     void changeProtoItemType(ControlType type);
+
+    /**
+     * A list authored without a proto item (K1's upgrade.gui LB_DESC) draws no rows: borrow
+     * another list's, at the same offset inside this list and as much narrower as this list is.
+     * False when this list has a proto item already or the donor has none.
+     */
+    bool adoptProtoItem(const ListBox &donor);
+    /**
+     * Move and resize the list with its rows: the proto item keeps its offset from the list's
+     * top-left, and the scroll bar its side, spanning the new height.
+     */
+    void relocate(Extent extent);
+    /** Where a donor list's proto item lands in `list` (adoptProtoItem). */
+    static Extent rebasedProtoExtent(const Extent &donorList, const Extent &donorProto, const Extent &list);
 
     void setSelected(bool selected) override;
     void setExtent(Extent extent) override;

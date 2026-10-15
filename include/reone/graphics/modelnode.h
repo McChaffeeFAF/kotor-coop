@@ -98,6 +98,7 @@ public:
         std::shared_ptr<Danglymesh> danglymesh;
         std::shared_ptr<AABBTree> aabbTree;
         bool saber {false};
+        bool beaming {false}; /**< drawn as a projected beam (upstream #356) */
 
         // END Specialization
     };

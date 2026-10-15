@@ -916,8 +916,7 @@ CommandReject CoopSession::hostOfferCommand(HostClient &client, const Command &c
             info("Co-op: " + client.name + " plays Pazaak at their own table (no story effect)");
             return CommandReject::None;
         default:
-            client.offer = Offer();
-            return CommandReject::GuestsCannotRace;
+            return hostRequestGuestMiniGame(client);
         }
     }
     // The guest's own Pazaak game ended: settle its own credits, nothing else.
@@ -941,8 +940,17 @@ CommandReject CoopSession::hostOfferCommand(HostClient &client, const Command &c
 void CoopSession::clientHandleOffer(const Offer &offer) {
     _offer = offer;
     if (offer.kind == OfferKind::MiniGame) {
-        showNotice(NoticeKind::Info, "Only the host plays this minigame in Free Mode");
-        _offer = Offer();
+        // A prompt like the others: the answer starts the minigame on the host, which this player then drives.
+        if (!showsPrompts()) {
+            return; // headless: coopoffer answers
+        }
+        if (!_game._confirmPopup) {
+            _game._confirmPopup = _game.tryLoadGUI<ConfirmPopup>();
+        }
+        if (_game._confirmPopup) {
+            _game._confirmPopup->showChoices(offer.name + " offers a race.",
+                                             {{"Race", [this]() { clientAnswerOffer(true); }}, {"Cancel", [this]() { clientAnswerOffer(false); }}});
+        }
         return;
     }
     if (!showsPrompts()) {

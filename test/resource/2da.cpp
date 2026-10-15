@@ -135,3 +135,17 @@ TEST(TwoDARowLabel, survives_a_write_and_read_round_trip) {
     EXPECT_EQ(0, reloaded->getInt(row, "includeinsave"));
     EXPECT_EQ(1, reloaded->getInt(reloaded->indexByLabel("001ebo"), "includeinsave"));
 }
+
+TEST(TwoDA, an_unsigned_cell_reads_decimal_and_hexadecimal) {
+    // Upstream #356.
+    auto table = TwoDA::Builder()
+                     .columns({"value"})
+                     .row("0", {"4294967295"})
+                     .row("1", {"0x10"})
+                     .row("2", {"****"})
+                     .build();
+    EXPECT_EQ(4294967295u, table->getUint(0, "value"));
+    EXPECT_EQ(16u, table->getUint(1, "value"));
+    EXPECT_FALSE(table->getUintOpt(2, "value"));
+    EXPECT_EQ(7u, table->getUint(2, "value", 7));
+}

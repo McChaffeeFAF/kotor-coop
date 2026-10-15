@@ -189,6 +189,8 @@ std::unique_ptr<Options> OptionsParser::parse() {
     options->game.hud = game::parseHudProfile(vars["hud"].as<std::string>());
     options->game.configurationPath = std::filesystem::absolute(kConfigFilename);
     options->game.menuPresentation = game::MenuPresentation::load(options->game.configurationPath);
+    options->game.feedback = game::FeedbackOptions::load(options->game.configurationPath);
+    options->game.autoPause = game::AutoPauseOptions::load(options->game.configurationPath, false);
     options->graphics.width = vars["width"].as<int>();
     options->graphics.height = vars["height"].as<int>();
     options->graphics.winScale = vars["winscale"].as<int>();

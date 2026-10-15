@@ -116,6 +116,8 @@ public:
      * Free Mode) rather than the party's. Both counts must outlive the bench.
      */
     void useHolder(std::shared_ptr<Object> inventory, int *components, int *chemicals);
+    /** Back to the party's inventory and material (undoes useHolder). */
+    void useParty();
 
     int components() const;
     int chemicals() const;

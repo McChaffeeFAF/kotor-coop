@@ -102,7 +102,7 @@ UpgradeCategory upgradeCategoryOf(const Item &item) {
     if (item.isLightsaber()) {
         return UpgradeCategory::Lightsaber;
     }
-    if (item.weaponType() == WeaponType::Ranged) {
+    if (item.isRanged()) {
         return UpgradeCategory::Ranged;
     }
     if (item.weaponType() == WeaponType::Melee) {
@@ -296,6 +296,44 @@ void UpgradeBench::useHolder(std::shared_ptr<Object> inventory, std::vector<uint
     _holder = std::move(inventory);
     _wearers = std::move(wearers);
     _hasHolder = true;
+}
+
+void UpgradeBench::useParty() {
+    cancel();
+    _holder.reset();
+    _wearers.clear();
+    _hasHolder = false;
+}
+
+std::shared_ptr<Item> UpgradeBench::stagedPart(int slotIndex) const {
+    auto allSlots = slots();
+    if (slotIndex < 0 || slotIndex >= static_cast<int>(allSlots.size())) {
+        return nullptr;
+    }
+    const UpgradeSlot &slot = allSlots[slotIndex];
+    int key = slot.color ? kColorCrystalKey : slot.installedRow;
+    if (!slot.color && key < 0) {
+        return nullptr;
+    }
+    for (const auto &[row, ref] : _consumed) {
+        if (row == key) {
+            return ref.resolve();
+        }
+    }
+    return nullptr;
+}
+
+std::string UpgradeBench::installedTemplate(int slotIndex) const {
+    auto allSlots = slots();
+    if (slotIndex < 0 || slotIndex >= static_cast<int>(allSlots.size())) {
+        return "";
+    }
+    const UpgradeSlot &slot = allSlots[slotIndex];
+    if (slot.color) {
+        return colorCrystalFor(_stagedModelVariation);
+    }
+    const UpgradeKind *kind = _table.kind(slot.installedRow);
+    return kind ? kind->templateResRef : "";
 }
 
 std::shared_ptr<Object> UpgradeBench::partyInventory() const {

@@ -19,6 +19,8 @@
 
 #include <deque>
 
+#include "reone/graphics/mesh.h"
+
 #include "modelnode.h"
 
 namespace reone {
@@ -33,6 +35,7 @@ struct Material;
 namespace scene {
 
 class ModelSceneNode;
+struct BodyOverlay;
 
 /** The frame of a numX x numY flipbook ("proceduretype cycle") after time seconds. */
 int overlayCycleFrame(int numX, int numY, float fps, float time);
@@ -79,6 +82,7 @@ public:
      * with the transparent geometry.
      */
     void renderOverlays(IRenderPass &pass);
+    void renderGhost(IRenderPass &pass, const BodyOverlay &overlay);
     bool hasOverlays() const;
 
     bool shouldRender() const;
@@ -96,7 +100,40 @@ public:
     void setAlpha(float alpha) { _alpha = alpha; }
     void setSelfIllumColor(glm::vec3 color) { _selfIllumColor = std::move(color); }
 
+    /**
+     * Draws this mesh as a beam: a translucent shadow its silhouette casts
+     * away from \p target, in place of the mesh itself (upstream #356; a
+     * mesh flagged "beaming" in its MDL).
+     */
+    void setProjectedBeamTarget(const SceneNode &target);
+    /** Leaves the beam without a target; it is not drawn until it has one. */
+    void clearProjectedBeamTarget();
+    bool isProjectedBeam() const { return static_cast<bool>(_projectedBeam); }
+
 private:
+    /** A beam's target and the geometry it is rebuilt in each frame. */
+    struct ProjectedBeam {
+        const SceneNode *target {nullptr};
+        std::unique_ptr<graphics::Mesh> mesh;
+        std::vector<glm::vec3> sourceVertices;
+        std::vector<float> faceSides;
+        std::vector<std::pair<uint16_t, uint16_t>> edges;
+        std::vector<bool> usedVertices;
+        std::vector<uint16_t> nearBySource;
+        std::vector<graphics::Mesh::Vertex> vertices;
+        std::vector<graphics::Mesh::Face> faces;
+    };
+    std::unique_ptr<ProjectedBeam> _projectedBeam;
+
+    /** The skinning transforms of the bones, in this node's space. */
+    std::vector<glm::mat4> buildSkinBoneTransforms() const;
+    /** Sets the Force Sight look of the model on \p material. */
+    void applyForceSight(graphics::Material &material) const;
+    /** Rebuilds the beam geometry for where the target is now and draws it. */
+    void renderProjectedBeam(IRenderPass &pass);
+    /** The bumped-out shell of the model (stealth, cloak), over this mesh. */
+    void renderBumpedOutShell(IRenderPass &pass);
+
     std::deque<glm::mat4> _trail; /**< newest first; presentation frames */
     float _renderColorScale {1.0f};
 
@@ -155,7 +192,7 @@ private:
     /** The opacity a cloak (BodyOverlay) leaves this mesh at, times its own alpha. */
     float effectiveAlpha() const;
 
-    void drawMesh(IRenderPass &pass, graphics::Material &material);
+    void drawMesh(IRenderPass &pass, graphics::Material &material, const glm::vec3 &worldOffset = glm::vec3(0.0f));
 
     void initTextures();
     void initDanglyMesh();

@@ -91,6 +91,8 @@ struct GameOptions {
     bool neo {false};
     uint8_t clientDifficulty {1}; // Easy=0, Normal=1, Difficult=2, Default=3
     MenuPresentation menuPresentation;
+    FeedbackOptions feedback;    /**< the feedback options page (upstream #356) */
+    AutoPauseOptions autoPause; /**< the autopause options page (upstream #356) */
     std::filesystem::path configurationPath; // Empty for embedded/test hosts.
     // Fixed simulation rate, in ticks per second.
     int tickRate {30};

@@ -7336,3 +7336,115 @@ TEST(CreatureScriptAnimation, a_missing_clip_leaves_the_pending_state_refresh_in
     modelNode->update(0.25f);
     EXPECT_EQ("cpause1", modelNode->activeAnimationName());
 }
+
+// --- Ported from vrifftech 64f5cb984 (doors, entering objects) ---------------
+
+namespace {
+
+std::shared_ptr<Door> makeLinkableDoor(Game &game, TestEngine &engine, const std::string &tag, const std::string &linkedTo,
+                                       uint8_t linkedToFlags, bool locked, glm::vec3 position) {
+    testSceneGraph(engine);
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("genericdoors"))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(makeGenericDoorsTable()));
+    EXPECT_CALL(engine.resourceModule().models(), get(_)).Times(AnyNumber());
+    EXPECT_CALL(engine.resourceModule().walkmeshes(), get(_, ResType::Dwk))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(makeDoorWalkmesh()));
+    auto gff = Gff::Builder()
+                   .field(Gff::Field::newCExoString("Tag", tag))
+                   .field(Gff::Field::newByte("GenericType", 1))
+                   .field(Gff::Field::newByte("Static", 0))
+                   .field(Gff::Field::newByte("Locked", locked ? 1 : 0))
+                   .field(Gff::Field::newShort("HP", 20))
+                   .field(Gff::Field::newCExoString("LinkedTo", linkedTo))
+                   .field(Gff::Field::newByte("LinkedToFlags", linkedToFlags))
+                   .field(Gff::Field::newFloat("X", position.x))
+                   .field(Gff::Field::newFloat("Y", position.y))
+                   .field(Gff::Field::newFloat("Z", position.z))
+                   .build();
+    auto door = game.newDoor();
+    door->deserialize(*gff, SerializedIdentityContext::templateResource());
+    return door;
+}
+
+} // namespace
+
+TEST(PortedDoors, a_door_swings_away_from_whoever_opens_it) {
+    BlockedDoorFixtureBase fixture;
+    auto door = makeLinkableDoor(fixture.game, fixture.engine, "door_a", "", 0, false, glm::vec3(0.0f));
+    fixture.area->add(door);
+    auto front = fixture.addCreature("");
+    front->setPosition(glm::vec3(0.0f, 2.0f, 0.0f)); // the door's local +Y side
+    door->open(front.get());
+    EXPECT_EQ(1, door->openSide());
+    EXPECT_EQ(DoorState::Opened1, door->state());
+
+    door->close();
+    auto behind = fixture.addCreature("");
+    behind->setPosition(glm::vec3(0.0f, -2.0f, 0.0f));
+    door->open(behind.get());
+    EXPECT_EQ(2, door->openSide());
+    EXPECT_EQ(DoorState::Opened2, door->state());
+}
+
+TEST(PortedDoors, a_door_linked_to_a_door_moves_it_too_but_an_area_exit_does_not) {
+    BlockedDoorFixtureBase fixture;
+    auto left = makeLinkableDoor(fixture.game, fixture.engine, "dbl_left", "dbl_right", 1, false, glm::vec3(0.0f));
+    auto right = makeLinkableDoor(fixture.game, fixture.engine, "dbl_right", "dbl_left", 1, false, glm::vec3(2.0f, 0.0f, 0.0f));
+    auto lone = makeLinkableDoor(fixture.game, fixture.engine, "lone", "dbl_left", 2, false, glm::vec3(5.0f, 0.0f, 0.0f));
+    fixture.area->add(left);
+    fixture.area->add(right);
+    fixture.area->add(lone);
+    EXPECT_EQ(right, left->linkedDoor());
+    EXPECT_EQ(nullptr, lone->linkedDoor()) << "LinkedToFlags 2 names a waypoint";
+
+    left->open();
+    EXPECT_TRUE(left->isOpen());
+    EXPECT_TRUE(right->isOpen());
+    right->close();
+    EXPECT_FALSE(left->isOpen());
+    EXPECT_FALSE(right->isOpen());
+    // A co-op client moves each door on its own.
+    left->open(nullptr, false);
+    EXPECT_FALSE(right->isOpen());
+}
+
+TEST(PortedDoors, anything_but_a_creature_opens_a_locked_door_outright) {
+    BlockedDoorFixtureBase fixture;
+    auto door = makeLinkableDoor(fixture.game, fixture.engine, "locked", "", 0, true, glm::vec3(0.0f));
+    fixture.area->add(door);
+    auto console = fixture.game.newPlaceable();
+    fixture.area->add(console);
+    auto action = fixture.game.newAction<OpenDoorAction>(door);
+    action->execute(action, *console, 0.0f);
+    EXPECT_TRUE(door->isOpen());
+    EXPECT_TRUE(action->isCompleted());
+}
+
+TEST(PortedEnteringObject, a_trigger_keeps_who_entered_and_left_for_later_scripts) {
+    BlockedDoorFixtureBase fixture;
+    auto trigger = fixture.game.newTrigger();
+    fixture.area->add(trigger);
+    auto walker = fixture.addCreature("");
+    trigger->addTenant(walker);
+    EXPECT_EQ(walker->id(), trigger->lastEnteredId());
+
+    // A script the trigger runs later (no event arguments) still reads it.
+    Routines routines(GameID::KotOR, &fixture.game, &fixture.engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+    execution.args.emplace_back(script::ArgKind::Caller, script::Variable::ofObject(trigger->id()));
+    auto entering = routines.get(routines.getIndexByName("GetEnteringObject")).invoke({}, execution);
+    EXPECT_EQ(walker->id(), entering.objectId);
+    auto exiting = routines.get(routines.getIndexByName("GetExitingObject")).invoke({}, execution);
+    EXPECT_EQ(script::kObjectInvalid, exiting.objectId);
+
+    // Without a stored value the event's own argument still answers.
+    auto placeable = fixture.game.newPlaceable();
+    fixture.area->add(placeable);
+    script::ExecutionContext event;
+    event.args.emplace_back(script::ArgKind::Caller, script::Variable::ofObject(placeable->id()));
+    event.args.emplace_back(script::ArgKind::EnteringObject, script::Variable::ofObject(walker->id()));
+    EXPECT_EQ(walker->id(), routines.get(routines.getIndexByName("GetEnteringObject")).invoke({}, event).objectId);
+}

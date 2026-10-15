@@ -416,6 +416,9 @@ Texture &PBRRenderPipeline::render() {
                 screenRect, screenRect);
         }
 
+        // Frame effects a power or a minigame names (upstream #356).
+        applyFrameEffects(*_targets.fbOutput, *_targets.cbOutput, *_targets.fbPing);
+
         // Draw debug elements (lines, points, etc.)
         beginDebugPass();
         if (_passCallbacks.count(RenderPassName::Debug) > 0) {

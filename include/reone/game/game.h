@@ -69,6 +69,7 @@
 #include "hudpresentation.h"
 #include "journal.h"
 #include "keymap.h"
+#include "padinput.h"
 #include "location.h"
 #include "messagelog.h"
 #include "scripteventqueue.h"
@@ -175,6 +176,9 @@ std::string loadScreenImage(const resource::TwoDA *loadscreens, const std::strin
 
 /** loadscreenhints.2da gameplayhint of a row, or -1. */
 int loadScreenHint(const resource::TwoDA &hints, int row);
+
+/** A tutorial string with its key-binding tokens ("<ActionLeft>") replaced by this engine's keys. */
+std::string tutorialKeyText(std::string text);
 
 class Game : boost::noncopyable {
 public:
@@ -463,6 +467,9 @@ public:
     void endMiniGame();
 
     MiniGameSession *miniGame() { return _miniGame.get(); }
+
+    /** A co-op client's minigame: drawn from the host's MiniGameState, never simulated here. */
+    bool miniGameReplica() const { return _miniGame && _miniGameReplica; }
     const MiniGameSession *miniGame() const { return _miniGame.get(); }
 
     /**
@@ -514,6 +521,18 @@ public:
     /** The player's settings (options panels, bindings); see usersettings.h. */
     UserSettings &userSettings() { return _userSettings; }
     Keymap &keymap() { return _keymap; }
+    PadBindings &padBindings() { return _padBindings; }
+    PadInput &padInput() { return _padInput; }
+    /** What the gamepad drives on the current screen. */
+    PadMode padMode() const;
+    /**
+     * While set, a pad button pressed goes to this instead of the game (the controls screen waiting for
+     * the button to bind); it answers true when it took the press.
+     */
+    void setPadCapture(std::function<bool(input::GamepadButton)> capture) { _padCapture = std::move(capture); }
+    bool hasPadCapture() const { return static_cast<bool>(_padCapture); }
+    /** Time passes for the pad: held menu directions repeat. */
+    void updatePad(float dt);
     /** Push the settings into the running options, then save them. */
     void applyUserSettings(bool save = true);
     /** Pick and cycle radius, metres from the camera (design note p1_ui, "Selection radius"). */
@@ -538,6 +557,12 @@ public:
     void requestUpgradeScreen(const std::shared_ptr<Item> &item);
     void openUpgradeScreen(const std::shared_ptr<Item> &item);
     void closeUpgradeScreen();
+    /**
+     * Co-op guest: show the workbench or lab the host sent (CoopSession::benchScreen), or
+     * redraw it when a new view arrives. closeGuestBench takes it down without a request.
+     */
+    void showGuestBench();
+    void closeGuestBench();
     UpgradeGUI *upgradeGUI() { return _upgrade.get(); }
     /** Apply the bench's staged slots, as the Assemble button does. */
     bool assembleUpgrades();
@@ -683,7 +708,8 @@ public:
     const std::string &ambientResRef() const { return _ambientResRef; }
 
     /**
-     * ShowTutorialWindow: pop tutorial.2da row `window`, once per game.
+     * ShowTutorialWindow: pop tutorial window `window` (a TUTORIAL_WINDOW_* constant,
+     * which names a tutorial.2da row by its label), once per game.
      * Returns true when the window was shown by this call.
      */
     bool showTutorialWindow(int window);
@@ -841,6 +867,10 @@ public:
      */
     void setAutoCombat(Creature &creature, bool on);
     void toggleLeaderAutoCombat();
+    /** The pause key (and the HUD pause toggle): co-op pauses for everyone. */
+    void togglePauseAsKey();
+    /** The PartyActive key (and the HUD solo toggle); a co-op client cannot. */
+    void toggleSoloModeAsKey();
 
     // While a leader's auto-combat round is being decided, the generic AI
     // scripts must see it as a follower: they skip party member 0.
@@ -1265,6 +1295,7 @@ private:
 
     DeveloperOverlay _developerOverlay;
     std::shared_ptr<graphics::Font> _developerFont;
+    std::shared_ptr<graphics::Font> _resultFont;
 
     // Minigame runtime. The session is the simulation; _miniGameHost runs its
     // scripts and forwards presentation calls to the swoop or turret view.
@@ -1274,6 +1305,7 @@ private:
     MiniGameInput _miniGameInput;
     bool _swoopAutopilot {false};
     bool _turretAutopilot {false};
+    bool _miniGameReplica {false};
     bool _instantDoorTransitions {false};
     std::string _miniGameModule;
 
@@ -1433,6 +1465,13 @@ private:
     StoreSession _storeSession {*this};
     UserSettings _userSettings;
     Keymap _keymap;
+    PadBindings _padBindings;
+    PadInput _padInput {_padBindings};
+    std::function<bool(input::GamepadButton)> _padCapture;
+    bool handlePad(const input::Event &event);
+    void applyPadOutput(const PadOutput &output);
+    /** From the keymap's translation on: the rest of handle. */
+    bool handleTranslated(const input::Event &event);
     float _selectionRadius {kDefaultSelectionRadius};
     bool _fixedActionBar {true};
     // The command-line values settings fall back to when a key is unset.
@@ -1649,6 +1688,13 @@ private:
     // One minigame tick: autopilot, presentation inputs, the session step and
     // the minigame objects' own action queues (DelayCommand).
     void tickMiniGame(float dt);
+    void tickMiniGameReplica(float dt);
+
+public:
+    /** A co-op host: a sound the running minigame played, for the guests (they run no script). */
+    void recordMiniGameSound(const std::string &resRef);
+
+private:
     void applySwoopAutopilot();
     void applyTurretAutopilot();
 
@@ -1707,6 +1753,7 @@ private:
     void renderDeveloperTriggerOverlay(const glm::mat4 &projection, const glm::mat4 &view);
     void renderDeveloperActorLabels(const glm::mat4 &projection, const glm::mat4 &view);
     void renderDeveloperWatchedValues();
+    void renderMiniGameResult();
     void renderDeveloperText(const std::string &text, const glm::vec3 &position, const glm::vec3 &color, graphics::TextGravity gravity = graphics::TextGravity::LeftTop);
     void renderDeveloperPanel(const std::vector<std::string> &lines, glm::vec2 position, glm::vec3 color);
     void renderDeveloperRect(glm::vec2 position, glm::vec2 size, glm::vec4 color);

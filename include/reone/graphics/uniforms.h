@@ -57,6 +57,8 @@ struct UniformsFeatureFlags {
     static constexpr int surfacedetail = 1 << 16; /**< the normal map is a generated one (Tier 4) */
     static constexpr int materialmap = 1 << 17;   /**< a generated material map is bound (Tier 4) */
     static constexpr int shell = 1 << 18;         /**< a programmed body overlay pass (surfaceParams.yzw) */
+    static constexpr int cutout = 1 << 19;        /**< a Punch-Through particle: alpha test at surfaceParams.x */
+    static constexpr int forceglow = 1 << 20;     /**< under Force Sight the surface glows (forceSightColor) */
 };
 
 struct alignas(16) GlobalUniformsLight {
@@ -94,6 +96,7 @@ struct GlobalUniforms {
     glm::vec4 volumeTint {0.0f};               /**< medium colour, steps */
     glm::vec4 volumeShadow {0.0f};             /**< shadow type (0 none, 1 sun, 2 point), noise frame, ambient weight */
     glm::vec4 particleParams {0.0f};           /**< soft-particle fade distance (m; 0 off); y: 1 writes reflectivity to the opaque alpha; z: 1 core-and-halo blades */
+    glm::vec4 forceSight {0.0f};               /**< x: 1 under Force Sight (upstream #356) */
 
     void reset() {
         projection = glm::mat4(1.0f);
@@ -137,7 +140,8 @@ struct LocalUniforms {
     GlobalUniformsLight objectLights[kMaxObjectLights]; /**< lights chosen for this object (FEATURE_OBJECTLIGHTS) */
     int numObjectLights;
     int padding1[3];
-    glm::vec4 surfaceParams; /**< x: surface-detail strength (0-1); yzw: body overlay (FEATURE_SHELL, Material::shell) */
+    glm::vec4 forceSightColor; /**< under Force Sight: a glowing surface's glow colour, or the alpha of a grey one */
+    glm::vec4 surfaceParams; /**< x: surface-detail strength (0-1), or a cut-out particle's alpha test; yzw: body overlay (FEATURE_SHELL, Material::shell) */
 
     LocalUniforms() {
         reset();
@@ -164,6 +168,7 @@ struct LocalUniforms {
         }
         numObjectLights = 0;
         padding1[0] = padding1[1] = padding1[2] = 0;
+        forceSightColor = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         surfaceParams = glm::vec4(0.0f);
     }
 };
@@ -172,7 +177,8 @@ struct LocalUniforms {
 static_assert(offsetof(LocalUniforms, uvJitterAmplitude) == 260, "Locals layout");
 static_assert(offsetof(LocalUniforms, objectLights) == 272, "Locals layout");
 static_assert(offsetof(LocalUniforms, numObjectLights) == 416, "Locals layout");
-static_assert(offsetof(LocalUniforms, surfaceParams) == 432, "Locals layout");
+static_assert(offsetof(LocalUniforms, forceSightColor) == 432, "Locals layout");
+static_assert(offsetof(LocalUniforms, surfaceParams) == 448, "Locals layout");
 
 struct BoneUniforms {
     glm::mat4 bones[kMaxBones] {glm::mat4(1.0f)};
@@ -250,6 +256,7 @@ struct ScreenEffectUniforms {
     glm::vec4 motionParams {0.0f};            /**< strength (shutter fraction), max length (px), history valid */
     glm::vec4 lensFlags {0.0f};               /**< ghosts, grain, vignette, chromatic aberration (0/1) */
     glm::vec4 lensParams {0.0f};              /**< noise frame */
+    glm::vec4 frameEffectParams {0.0f};       /**< speed blur ratio (upstream #356) */
 };
 
 // Must match the std140 layout of the ScreenEffect block in u_screeneffect.glsl.

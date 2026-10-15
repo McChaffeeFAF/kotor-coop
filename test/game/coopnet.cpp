@@ -4,7 +4,9 @@
 #include <functional>
 #include <fstream>
 #include <random>
+#include <cstdlib>
 #include <set>
+#include <sstream>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -1172,6 +1174,100 @@ TEST_F(CoopSessionTest, a_beam_event_names_its_source_so_guests_can_draw_it) {
     EXPECT_NE(0u, event.b) << "the beam's source travels";
     EXPECT_NE(event.a, event.b);
     EXPECT_EQ(static_cast<int>(BodyNode::HandRight), event.flags);
+}
+
+namespace reone {
+
+namespace game {
+
+// Drives a client session's event handling directly: the host side of these
+// tests has no client game to replicate into (design note v15_vfx_leftovers).
+class TestCoopSession {
+public:
+    static void bindId(CoopSession &session, uint32_t hostId, uint32_t localId) {
+        session._ids.bind(hostId, localId);
+    }
+
+    static void applyEvent(CoopSession &session, const net::NetEvent &event) {
+        session.clientApplyEvent(event);
+    }
+};
+
+} // namespace game
+
+} // namespace reone
+
+/**
+ * A guest's session over the fixture's game: its creatures stand in for the
+ * guest's own copies of the host's, under host ids that differ from theirs.
+ */
+class CoopClientSessionTest : public CoopNetTest {
+protected:
+    static constexpr uint32_t kHostSith = 9001;
+    static constexpr uint32_t kHostPlayer = 9002;
+
+    void SetUp() override {
+        CoopNetTest::SetUp();
+        auto [host, client] = net::createLoopbackPair();
+        _host = std::move(host);
+        CoopConfig config;
+        config.role = CoopRole::Client;
+        config.build = "build-A";
+        _session = std::make_unique<CoopSession>(*_game, config, std::move(client));
+        TestCoopSession::bindId(*_session, kHostSith, _sith->id());
+        TestCoopSession::bindId(*_session, kHostPlayer, _player->id());
+    }
+
+    void TearDown() override {
+        _session.reset();
+        CoopNetTest::TearDown();
+    }
+
+    std::unique_ptr<net::ITransport> _host;
+    std::unique_ptr<CoopSession> _session;
+};
+
+TEST_F(CoopClientSessionTest, a_guest_draws_a_beam_from_its_own_copy_of_the_source) {
+    // Design note v14_programmed_effects, section 6: the guest side.
+    VisualEffectDesc desc;
+    desc.id = 2038;
+    desc.kind = VisualEffectDesc::Kind::Duration;
+    ON_CALL(_engine.gameModule().visualEffects(), get(2038u))
+        .WillByDefault(Return(std::optional<const VisualEffectDesc *>(&desc)));
+
+    net::NetEvent begin;
+    begin.kind = net::EventKind::VfxBegin;
+    begin.handle = 7;
+    begin.row = 2038;
+    begin.a = kHostSith;
+    begin.b = kHostPlayer;
+    begin.flags = static_cast<uint8_t>(BodyNode::HandRight);
+    TestCoopSession::applyEvent(*_session, begin);
+
+    const auto &pending = _game->visualEffectPresenter().pending();
+    ASSERT_EQ(1u, pending.size());
+    EXPECT_EQ(&desc, pending[0]->desc);
+    EXPECT_EQ(_sith->id(), pending[0]->targetId) << "the target, by the guest's own id";
+    EXPECT_EQ(_player->id(), pending[0]->sourceId) << "the beam leaves the guest's copy of the source";
+    EXPECT_EQ(static_cast<int>(BodyNode::HandRight), pending[0]->sourceBodyNode);
+
+    // A source the guest does not know: the row still shows on the target,
+    // with no beam.
+    net::NetEvent unknown = begin;
+    unknown.handle = 8;
+    unknown.b = 4242;
+    TestCoopSession::applyEvent(*_session, unknown);
+    ASSERT_EQ(2u, pending.size());
+    EXPECT_EQ(_sith->id(), pending[1]->targetId);
+    EXPECT_EQ(0u, pending[1]->sourceId);
+
+    // The host's end reaches the right request.
+    net::NetEvent end;
+    end.kind = net::EventKind::VfxEnd;
+    end.handle = 7;
+    TestCoopSession::applyEvent(*_session, end);
+    EXPECT_TRUE(pending[0]->ended);
+    EXPECT_FALSE(pending[1]->ended);
 }
 
 TEST_F(CoopSessionTest, a_host_that_asks_holds_a_new_player_until_accepted) {
@@ -3333,6 +3429,14 @@ TEST_F(CoopNetTest, workbench_and_lab_placeables_are_bench_uses_where_other_scre
     ASSERT_EQ(net::CommandReject::None, validateCoopCommand(*_game, use, _trask->id(), targets));
     executeCoopCommand(*_game, use, targets);
     EXPECT_TRUE(_trask->actions().empty()) << "the session carries a bench use out, not executeCoopCommand";
+
+    // K1's Taris workbench also has a conversation (its script talks once, then opens the
+    // screen): it is still a bench use for a guest, not the host's conversation.
+    auto talking = makeUsable("wb_talks", "bench_wb", 5.0f);
+    talking->setConversation("wb_dialog");
+    use.target = talking->id();
+    EXPECT_EQ(net::CommandReject::None, validateCoopCommand(*_game, use, _trask->id(), targets));
+    EXPECT_EQ(CoopUse::Bench, targets.use);
 }
 
 namespace {
@@ -3491,4 +3595,619 @@ TEST_F(CoopStandInSessionTest, a_story_mode_guest_uses_a_workbench_with_the_part
     EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchCraft, placeable->id(), 0, "no_such_recipe"));
     EXPECT_EQ(7u, _game->party().persistedState().itemComponent) << "refusals spend nothing";
     EXPECT_EQ(net::CommandReject::None, run(net::CommandType::BenchClose, placeable->id(), 0, ""));
+}
+
+// Guest minigames
+
+namespace {
+
+class QuietMiniGameHost : public IMiniGameHost {
+public:
+    void runScript(const std::string &, uint32_t) override {}
+    void playMiniGameAnimation(const MiniGameActor &, const std::string &, bool, bool, bool) override {}
+    void onMiniGameActorDied(const MiniGameActor &) override {}
+};
+
+MinigameSpec guestRaceSpec(MinigameType type) {
+    MinigameSpec spec;
+    spec.type = type;
+    spec.movementPerSec = 100.0f;
+    spec.lateralAccel = 300.0f;
+    spec.player.models = {{"v_superbike", true}};
+    spec.player.hitPoints = 100;
+    spec.player.maxHitPoints = 100;
+    spec.player.sphereRadius = 3.0f;
+    return spec;
+}
+
+// guestCommand() (above, with the workbench tests) sends one command from the guest's end.
+
+
+// Raw MiniGameControl bytes carry the reader's checks; this sends one the way a client does.
+void sendControl(RawClient &client, uint32_t seq, float steer, bool fire = false) {
+    net::MiniGameControl control;
+    control.seq = seq;
+    control.steer = steer;
+    control.fire = fire;
+    client.send(control);
+}
+
+} // namespace
+
+TEST_F(CoopFreeSessionTest, a_guest_starts_a_race_drives_it_and_the_story_is_left_alone) {
+    // An NPC whose conversation starts a race module.
+    auto racer = addCreature("tar_racer", glm::vec3(1.0f, 1.0f, 0.0f), Faction::Friendly1);
+    racer->setConversation("race_dlg");
+    auto dialog = std::make_shared<Dialog>();
+    dialog->startEntries.push_back(dialogLink(0));
+    dialog->entries.resize(1);
+    dialog->entries[0].script = "a_startrace";
+    EXPECT_CALL(_engine.resourceModule().dialogs(), get("race_dlg")).WillRepeatedly(Return(dialog));
+    auto program = std::make_shared<script::ScriptProgram>("a_startrace");
+    program->add(script::Instruction::newCONSTS("tar_m03mg"));
+    program->add(script::Instruction::newACTION(_game->routines().getIndexByName("StartNewModule"), 8));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("a_startrace")).WillRepeatedly(Return(program));
+
+    auto record = sampleGuest();
+    record.credits = 40;
+    join(record);
+    tick();
+    uint32_t id = guestId();
+    ASSERT_NE(0u, id);
+    auto run = [&](net::CommandType type, uint32_t target, int32_t param) {
+        return guestCommand(*_session, _client, id, type, target, param, "", [this]() {
+            tick();
+            tick();
+            tick();
+        });
+    };
+
+    // Using the NPC gets a prompt; the answer starts the race module on the host.
+    _client.inbox.clear();
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, racer->id(), 0));
+    auto offers = _client.take<net::Offer>(net::MessageType::Offer);
+    ASSERT_FALSE(offers.empty());
+    EXPECT_EQ(net::OfferKind::MiniGame, offers.back().kind);
+    _game->setGlobalBoolean("TAR_RACE_WON", false);
+    _game->party().giveGold(1000);
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::OfferAnswer, racer->id(), 1));
+    EXPECT_EQ("tar_m03mg", TestGameModule::scheduledTransition(*_game).first);
+
+    // The module loads: the game tells the session, which gives the guest the controls.
+    _session->onMiniGameStarted(MinigameType::SwoopRace, "tar_m03mg");
+    EXPECT_TRUE(_session->miniGameRemoteOwned());
+    EXPECT_EQ("Alice", _session->miniGame().owner());
+    EXPECT_TRUE(_session->miniGame().sandboxed());
+    auto states = _client.take<net::MiniGameState>(net::MessageType::MiniGameState);
+    (void)states;
+
+    QuietMiniGameHost host;
+    MiniGameSession simulation(host);
+    simulation.load(guestRaceSpec(MinigameType::SwoopRace), MiniGameTrack(), {}, {});
+    simulation.setObjectId(0, 77);
+
+    // Its input arrives as messages and lands in the seam on the host's tick.
+    sendControl(_client, 1, 0.5f, true);
+    _session->pollNetwork();
+    MiniGameInput input;
+    _session->applyMiniGameInput(input);
+    EXPECT_FLOAT_EQ(0.5f, input.steer);
+    EXPECT_TRUE(input.fire);
+    sendControl(_client, 1, -1.0f); // a replay of the same number is ignored
+    _session->pollNetwork();
+    _session->applyMiniGameInput(input);
+    EXPECT_FLOAT_EQ(0.5f, input.steer);
+
+    // The minigame's scripts change the story while it runs.
+    _game->setGlobalBoolean("TAR_RACE_WON", true);
+    _game->party().giveGold(5000);
+
+    _client.inbox.clear();
+    TestGameModule::advanceTick(*_game);
+    _session->onMiniGameEnded(simulation);
+    EXPECT_FALSE(_session->miniGameRemoteOwned());
+    EXPECT_FALSE(_game->getGlobalBoolean("TAR_RACE_WON")) << "a guest's race does not win the story's race";
+    EXPECT_EQ(1000, _game->party().gold()) << "and does not pay the party";
+    auto final = _client.take<net::MiniGameState>(net::MessageType::MiniGameState);
+    EXPECT_TRUE(final.empty()) << "the transport delivers on the next poll";
+    exchange();
+    final = _client.take<net::MiniGameState>(net::MessageType::MiniGameState);
+    ASSERT_FALSE(final.empty());
+    EXPECT_FALSE(final.back().active);
+    EXPECT_TRUE(final.back().finished);
+    EXPECT_EQ(100, final.back().prize);
+    auto status = _session->statusJson();
+    EXPECT_EQ(140, status.at("clients").as_array()[0].as_object().at("guest").as_object().at("credits").to_number<int64_t>())
+        << "Free Mode pays the guest's own credits";
+}
+
+TEST_F(CoopFreeSessionTest, minigames_run_one_at_a_time_and_the_owner_can_let_go) {
+    auto racer = addCreature("tar_racer", glm::vec3(1.0f, 1.0f, 0.0f), Faction::Friendly1);
+    racer->setConversation("race_dlg");
+    auto dialog = std::make_shared<Dialog>();
+    dialog->startEntries.push_back(dialogLink(0));
+    dialog->entries.resize(1);
+    dialog->entries[0].script = "a_startrace";
+    EXPECT_CALL(_engine.resourceModule().dialogs(), get("race_dlg")).WillRepeatedly(Return(dialog));
+    auto program = std::make_shared<script::ScriptProgram>("a_startrace");
+    program->add(script::Instruction::newCONSTS("tar_m03mg"));
+    program->add(script::Instruction::newACTION(_game->routines().getIndexByName("StartNewModule"), 8));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("a_startrace")).WillRepeatedly(Return(program));
+    join(sampleGuest());
+    tick();
+    uint32_t id = guestId();
+    ASSERT_NE(0u, id);
+    auto run = [&](net::CommandType type, uint32_t target, int32_t param) {
+        return guestCommand(*_session, _client, id, type, target, param, "", [this]() {
+            tick();
+            tick();
+            tick();
+        });
+    };
+    QuietMiniGameHost host;
+    MiniGameSession simulation(host);
+    simulation.load(guestRaceSpec(MinigameType::SwoopRace), MiniGameTrack(), {}, {});
+    simulation.setObjectId(0, 79);
+
+    // The host is in a minigame of its own: a guest's request has to wait.
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, racer->id(), 0));
+    _session->onMiniGameStarted(MinigameType::SwoopRace, "tar_m03mg");
+    EXPECT_FALSE(_session->miniGameRemoteOwned());
+    EXPECT_EQ(net::CommandReject::MiniGameBusy, run(net::CommandType::OfferAnswer, racer->id(), 1)) << "one minigame at a time";
+    EXPECT_EQ(net::CommandReject::NoOffer, run(net::CommandType::OfferAnswer, racer->id(), 1)) << "the prompt is spent";
+    _session->onMiniGameEnded(simulation);
+    EXPECT_FALSE(_session->miniGame().running());
+
+    // With the host free, the answer schedules the race once.
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, racer->id(), 0));
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::OfferAnswer, racer->id(), 1));
+    EXPECT_EQ("tar_m03mg", TestGameModule::scheduledTransition(*_game).first);
+
+    // Not the owner of anything yet: letting go is refused.
+    EXPECT_EQ(net::CommandReject::NotYourMiniGame, run(net::CommandType::MiniGameQuit, 0, 0));
+    _session->onMiniGameStarted(MinigameType::SwoopRace, "tar_m03mg");
+    ASSERT_TRUE(_session->miniGameRemoteOwned());
+    EXPECT_EQ(net::CommandReject::None, run(net::CommandType::MiniGameQuit, 0, 0));
+    EXPECT_FALSE(_session->miniGameRemoteOwned()) << "the controls are the host's again";
+    EXPECT_EQ(net::CommandReject::NotYourMiniGame, run(net::CommandType::MiniGameQuit, 0, 0));
+}
+
+TEST_F(CoopFreeSessionTest, a_turret_the_host_hands_over_is_steered_by_the_guest_and_pays_nothing) {
+    join(sampleGuest());
+    tick();
+    ASSERT_NE(0u, guestId());
+    EXPECT_FALSE(_session->handMiniGame(1, true)) << "nothing is running";
+    _session->onMiniGameStarted(MinigameType::Turret, "m12ab");
+    EXPECT_TRUE(_session->miniGame().running());
+    EXPECT_FALSE(_session->miniGameRemoteOwned()) << "the host plays its own turret until it hands it over";
+    EXPECT_FALSE(_session->handMiniGame(99, true)) << "no such player";
+
+    uint32_t clientId = 0;
+    auto status = _session->statusJson();
+    for (const auto &client : status.at("clients").as_array()) {
+        clientId = static_cast<uint32_t>(client.as_object().at("id").to_number<int64_t>());
+    }
+    ASSERT_NE(0u, clientId);
+    EXPECT_TRUE(_session->handMiniGame(clientId, true));
+    EXPECT_TRUE(_session->miniGameRemoteOwned());
+    EXPECT_FALSE(_session->miniGame().sandboxed()) << "the host's own story minigame keeps its effects";
+
+    net::MiniGameControl aim;
+    aim.seq = 1;
+    aim.pitchRate = 1.0f;
+    aim.yawDelta = 12.0f;
+    aim.fire = true;
+    _client.send(aim);
+    _session->pollNetwork();
+    MiniGameInput input;
+    _session->applyMiniGameInput(input);
+    EXPECT_FLOAT_EQ(1.0f, input.pitchRate);
+    EXPECT_FLOAT_EQ(12.0f, input.yawDelta);
+    EXPECT_TRUE(input.fire);
+
+    QuietMiniGameHost host;
+    MiniGameSession simulation(host);
+    simulation.load(guestRaceSpec(MinigameType::Turret), MiniGameTrack(), {}, {});
+    simulation.setObjectId(0, 78);
+    _session->onMiniGameEnded(simulation);
+    exchange();
+    auto final = _client.take<net::MiniGameState>(net::MessageType::MiniGameState);
+    ASSERT_FALSE(final.empty());
+    EXPECT_EQ(0, final.back().prize);
+    EXPECT_EQ(net::MiniGameKind::Turret, final.back().kind);
+
+    EXPECT_TRUE(_session->handMiniGame(0, false) == false) << "taking back what is not running";
+}
+
+// Host authority (task 23): a client that names what it does not own, an index out of range or a
+// stale token gets a refusal and the world is exactly as it was.
+
+namespace {
+
+// Everything a refused command must leave alone: where creatures are and what they do, what they
+// hold and wear, what containers hold, the party's credits.
+std::string worldFingerprint(Game &game, const std::shared_ptr<Area> &area) {
+    std::ostringstream out;
+    for (const auto &object : area->objects()) {
+        out << object->id() << ':' << object->tag() << '@' << object->position().x << ',' << object->position().y << ','
+            << object->position().z << ' ' << object->items().size() << 'i';
+        for (const auto &item : object->items()) {
+            out << '[' << item->id() << ':' << item->stackSize() << ']';
+        }
+        if (auto creature = std::dynamic_pointer_cast<Creature>(object)) {
+            out << " f" << creature->getFacing() << " hp" << creature->currentHitPoints() << " a" << creature->actions().size();
+            for (const auto &[slot, item] : creature->equipment()) {
+                out << " e" << slot << '=' << (item ? item->id() : 0);
+            }
+        }
+        out << '\n';
+    }
+    out << "gold " << game.party().gold() << " xp " << game.party().xp() << " members " << game.party().getSize();
+    return out.str();
+}
+
+struct HostileCommand {
+    const char *what;
+    net::CommandType type;
+    uint32_t target;
+    int32_t param;
+    std::string item;
+};
+
+} // namespace
+
+TEST_F(CoopHostileTest, commands_naming_what_a_player_does_not_own_or_an_index_out_of_range_change_nothing) {
+    bothJoinTheParty();
+    join(1, "Alice");
+    join(2, "Bob");
+    net::SlotRequest slot;
+    say(1, slot);
+    say(2, slot);
+    exchange();
+    tick();
+    auto alice = lastSlot(1);
+    ASSERT_TRUE(alice);
+    ASSERT_EQ(net::SlotStatus::Assigned, alice->status);
+
+    // Things Alice has no claim to: a hostile's belongings, the contents of a container she has not
+    // opened, a locked container, a door, a trap trigger.
+    auto loot = _game->newItem();
+    loot->setTag("hostile_loot");
+    _sith->addItem(loot);
+    auto chest = _game->newPlaceable();
+    chest->setTag("end_chest");
+    chest->setHasInventory(true);
+    chest->setPosition(glm::vec3(4.0f, 4.0f, 0.0f));
+    auto treasure = _game->newItem();
+    treasure->setTag("chest_treasure");
+    chest->addItem(treasure);
+    _area->add(chest);
+    uint32_t lootId = loot->id();
+    uint32_t treasureId = treasure->id();
+    auto before = worldFingerprint(*_game, _area);
+
+    const uint32_t kNobody = 424242;
+    std::vector<HostileCommand> hostile {
+        {"equip a hostile's item", net::CommandType::Equip, 0, static_cast<int32_t>(lootId), "4"},
+        {"equip an item that does not exist", net::CommandType::Equip, 0, 424242, "4"},
+        {"equip into a slot that does not exist", net::CommandType::Equip, 0, static_cast<int32_t>(lootId), "999"},
+        {"equip into a negative slot", net::CommandType::Equip, 0, static_cast<int32_t>(lootId), "-1"},
+        {"equip with a slot that is no number", net::CommandType::Equip, 0, static_cast<int32_t>(lootId), "abc"},
+        {"equip with no slot at all", net::CommandType::Equip, 0, static_cast<int32_t>(lootId), ""},
+        {"equip the largest id", net::CommandType::Equip, 0, INT32_MAX, "4"},
+        {"equip the most negative id", net::CommandType::Equip, 0, INT32_MIN, "4"},
+        {"use a hostile's item by id", net::CommandType::UseItem, _sith->id(), static_cast<int32_t>(lootId), ""},
+        {"use an item by a tag nobody holds", net::CommandType::UseItem, _sith->id(), 0, "hostile_loot"},
+        {"use a negative item id", net::CommandType::UseItem, _sith->id(), -5, ""},
+        {"take from a container never opened", net::CommandType::TakeItem, chest->id(), static_cast<int32_t>(treasureId), ""},
+        {"take everything from a container never opened", net::CommandType::TakeItem, chest->id(), 0, ""},
+        {"take from a container that does not exist", net::CommandType::TakeItem, kNobody, 1, ""},
+        {"close a container never opened", net::CommandType::CloseContainer, chest->id(), 0, ""},
+        {"pick a reply with no terminal", net::CommandType::PickReply, 0, 0, ""},
+        {"pick a reply at a negative row", net::CommandType::PickReply, 0, -1, ""},
+        {"pick a reply at the largest row", net::CommandType::PickReply, 0, INT32_MAX, ""},
+        {"buy from a store that is not open", net::CommandType::StoreBuy, kNobody, 1, ""},
+        {"sell to a store that is not open", net::CommandType::StoreSell, kNobody, static_cast<int32_t>(lootId), ""},
+        {"answer an offer nobody made", net::CommandType::OfferAnswer, _sith->id(), 1, ""},
+        {"report a Pazaak result for no game", net::CommandType::PazaakResult, 0, 1000000, ""},
+        {"report a negative Pazaak result", net::CommandType::PazaakResult, 0, INT32_MIN, ""},
+        {"lay a mine that is not hers", net::CommandType::SetMine, 0, static_cast<int32_t>(lootId), ""},
+        {"disarm a door", net::CommandType::DisarmTrap, _door->id(), 0, ""},
+        {"disarm what does not exist", net::CommandType::DisarmTrap, kNobody, 0, ""},
+        {"use a feat that does not exist", net::CommandType::UseFeat, _sith->id(), -1, ""},
+        {"use the largest feat", net::CommandType::UseFeat, _sith->id(), INT32_MAX, ""},
+        {"use the smallest feat", net::CommandType::UseFeat, _sith->id(), INT32_MIN, ""},
+        {"use a power that does not exist", net::CommandType::UsePower, _sith->id(), 99999, ""},
+        {"use a negative power", net::CommandType::UsePower, _sith->id(), -7, ""},
+        {"use a skill that does not exist", net::CommandType::UseSkill, _door->id(), 99, ""},
+        {"use a negative skill", net::CommandType::UseSkill, _door->id(), -1, ""},
+        {"level up with garbage", net::CommandType::LevelUp, 0, 0, "zzzz|||"},
+        {"level up with the longest text", net::CommandType::LevelUp, 0, 0, std::string(64, '|')},
+        {"level up with a negative class", net::CommandType::LevelUp, 0, 0, "c-9999|a-1|s|f|p"},
+        {"attack what does not exist", net::CommandType::Attack, kNobody, 0, ""},
+        {"open a door that does not exist", net::CommandType::OpenDoor, kNobody, 0, ""},
+        {"use an object that does not exist", net::CommandType::UseObject, kNobody, 0, ""},
+        {"use a hostile as an object far away", net::CommandType::UseObject, _farSith->id(), 0, ""},
+        {"move to a point in another galaxy", net::CommandType::MoveTo, 0, 0, ""},
+    };
+    uint32_t seq = 1000;
+    size_t sent = 0;
+    for (const auto &entry : hostile) {
+        net::Command command;
+        command.seq = ++seq;
+        command.type = entry.type;
+        command.actor = alice->creatureId;
+        command.target = entry.target;
+        command.point = entry.type == net::CommandType::MoveTo ? net::Vec3 {99000.0f, -99000.0f, 0.0f} : net::Vec3 {};
+        command.param = entry.param;
+        command.item = entry.item;
+        say(1, command);
+        ++sent;
+        // A few ticks apart, so the host's per-second command limit is not what refuses them.
+        exchange();
+        tick();
+        tick();
+        tick();
+    }
+    auto results = _fake->received<net::CommandResult>(1, net::MessageType::CommandResult);
+    std::map<uint32_t, net::CommandResult> bySeq;
+    for (const auto &result : results) {
+        bySeq[result.seq] = result;
+    }
+    ASSERT_EQ(sent, hostile.size());
+    for (size_t i = 0; i < hostile.size(); ++i) {
+        auto found = bySeq.find(static_cast<uint32_t>(1001 + i));
+        ASSERT_NE(bySeq.end(), found) << hostile[i].what << ": no answer";
+        EXPECT_FALSE(found->second.accepted) << hostile[i].what << " was accepted";
+    }
+    EXPECT_EQ(before, worldFingerprint(*_game, _area)) << "a refused command changed the world";
+    EXPECT_EQ(1u, _sith->items().size());
+    EXPECT_EQ(1u, chest->items().size());
+    EXPECT_TRUE(_trask->actions().empty());
+    EXPECT_FALSE(_session->players().empty());
+    EXPECT_TRUE(_session->isPlayerControlled(alice->creatureId)) << "and Alice is still where she was";
+}
+
+TEST_F(CoopFreeHostileTest, a_guest_cannot_use_another_guests_things_open_a_store_it_is_not_at_or_settle_a_game_it_never_played) {
+    startFree(false);
+    joinFree(1, "Alice", "Alice");
+    joinFree(2, "Bob", "Bob");
+    tick();
+    auto idOf = [&](const char *name) {
+        auto status = clientStatus(name);
+        return status.empty() || !status.contains("guest") ? 0u : static_cast<uint32_t>(status.at("guest").as_object().at("id").to_number<int64_t>());
+    };
+    uint32_t aliceId = idOf("Alice");
+    uint32_t bobId = idOf("Bob");
+    ASSERT_NE(0u, aliceId);
+    ASSERT_NE(0u, bobId);
+    auto bob = _game->getObjectById<Creature>(bobId);
+    ASSERT_TRUE(bob);
+    // Bob's bag, and something of the host's.
+    auto bobsItem = _game->newItem();
+    bobsItem->setTag("bobs_item");
+    bob->addItem(bobsItem);
+    auto hostsItem = _game->newItem();
+    hostsItem->setTag("hosts_item");
+    _player->addItem(hostsItem);
+    auto credits = [&](const char *name) {
+        return clientStatus(name).at("guest").as_object().at("credits").to_number<int64_t>();
+    };
+    int64_t aliceCredits = credits("Alice");
+    int64_t bobCredits = credits("Bob");
+    auto before = worldFingerprint(*_game, _area);
+
+    std::vector<HostileCommand> hostile {
+        {"equip Bob's item", net::CommandType::Equip, 0, static_cast<int32_t>(bobsItem->id()), "4"},
+        {"equip the host's item", net::CommandType::Equip, 0, static_cast<int32_t>(hostsItem->id()), "4"},
+        {"use Bob's item", net::CommandType::UseItem, aliceId, static_cast<int32_t>(bobsItem->id()), ""},
+        {"use the host's item", net::CommandType::UseItem, aliceId, static_cast<int32_t>(hostsItem->id()), ""},
+        {"buy at a store that is not open", net::CommandType::StoreBuy, 77, static_cast<int32_t>(bobsItem->id()), ""},
+        {"sell Bob's item at a store that is not open", net::CommandType::StoreSell, 77, static_cast<int32_t>(bobsItem->id()), ""},
+        {"close a store that is not open", net::CommandType::StoreClose, 77, 0, ""},
+        {"answer an offer nobody made", net::CommandType::OfferAnswer, 77, 1, ""},
+        {"win at a Pazaak game never started", net::CommandType::PazaakResult, 0, 500000, ""},
+        {"lose at a Pazaak game never started", net::CommandType::PazaakResult, 0, -100, ""},
+        {"settle Pazaak for an absurd amount", net::CommandType::PazaakResult, 0, INT32_MAX, ""},
+        {"pick a terminal reply with none handed over", net::CommandType::PickReply, 0, 0, ""},
+        {"lay Bob's item as a mine", net::CommandType::SetMine, 0, static_cast<int32_t>(bobsItem->id()), ""},
+    };
+    uint32_t seq = 500;
+    for (const auto &entry : hostile) {
+        net::Command command;
+        command.seq = ++seq;
+        command.type = entry.type;
+        command.actor = aliceId;
+        command.target = entry.target;
+        command.param = entry.param;
+        command.item = entry.item;
+        say(1, command);
+        exchange();
+        tick();
+        tick();
+        tick();
+    }
+    std::map<uint32_t, net::CommandResult> bySeq;
+    for (const auto &result : _fake->received<net::CommandResult>(1, net::MessageType::CommandResult)) {
+        bySeq[result.seq] = result;
+    }
+    for (size_t i = 0; i < hostile.size(); ++i) {
+        auto found = bySeq.find(static_cast<uint32_t>(501 + i));
+        ASSERT_NE(bySeq.end(), found) << hostile[i].what << ": no answer";
+        EXPECT_FALSE(found->second.accepted) << hostile[i].what << " was accepted";
+    }
+    EXPECT_EQ(before, worldFingerprint(*_game, _area));
+    EXPECT_EQ(aliceCredits, credits("Alice"));
+    EXPECT_EQ(bobCredits, credits("Bob"));
+    EXPECT_TRUE(bob->getItemByTag("bobs_item"));
+    EXPECT_TRUE(_player->getItemByTag("hosts_item"));
+}
+
+namespace {
+
+// The random command tests run a modest number of rounds by default; the environment lengthens a hunt:
+// REONE_COOP_FUZZ_ROUNDS=50000 REONE_COOP_FUZZ_SEED=7 build/bin/tests --gtest_filter='*random_commands*:*thousands_of_random*'
+int fuzzRounds() {
+    const char *value = std::getenv("REONE_COOP_FUZZ_ROUNDS");
+    return value ? std::max(1, std::atoi(value)) : 1500;
+}
+
+uint32_t fuzzSeed(uint32_t fallback) {
+    const char *value = std::getenv("REONE_COOP_FUZZ_SEED");
+    return value ? static_cast<uint32_t>(std::strtoul(value, nullptr, 10)) : fallback;
+}
+
+// A command with every field drawn from what is worth trying: real object ids, someone else's, nothing,
+// the extremes of an integer, strings of every shape.
+net::Command randomCommand(std::mt19937 &random, uint32_t seq, uint32_t actor, const std::vector<uint32_t> &ids) {
+    auto pick = [&](size_t bound) { return static_cast<size_t>(random() % bound); };
+    auto anId = [&]() -> uint32_t {
+        switch (pick(5)) {
+        case 0:
+            return 0;
+        case 1:
+            return UINT32_MAX;
+        case 2:
+            return static_cast<uint32_t>(random());
+        default:
+            return ids[pick(ids.size())];
+        }
+    };
+    static const int32_t kInts[] {0, 1, -1, 2, 3, 7, 8, 9, 15, 30, 31, 99, 255, 256, 1000, -1000, 65535, 65536, INT32_MAX, INT32_MIN, INT32_MAX - 1, INT32_MIN + 1};
+    static const char *const kItems[] {"", "0", "1", "-1", "4", "999", "abc", "g_i_medeqpmnt01", "end_trask", "hostile_loot", "c2|a-1|s|f|p",
+                                       "c-9999|a-1|s|f|p", "||||", "c99|a99|s99|f99|p99", "99999999999999999999", " 12", "12 ", "0x10", "\xff\xfe"};
+    net::Command command;
+    command.seq = seq;
+    std::vector<net::CommandType> types;
+    for (int type = 0; type < 256; ++type) {
+        if (std::string(net::commandTypeName(static_cast<net::CommandType>(type))) != "unknown") {
+            types.push_back(static_cast<net::CommandType>(type));
+        }
+    }
+    command.type = types[pick(types.size())];
+    command.actor = pick(4) == 0 ? anId() : actor;
+    command.target = anId();
+    command.point = {pick(3) == 0 ? 1e5f : static_cast<float>(random() % 200) - 100.0f, pick(3) == 0 ? -1e5f : static_cast<float>(random() % 200) - 100.0f,
+                     pick(4) == 0 ? 99999.0f : 0.0f};
+    command.run = random() % 2 == 0;
+    command.param = pick(3) == 0 ? static_cast<int32_t>(anId()) : kInts[pick(sizeof(kInts) / sizeof(kInts[0]))];
+    command.item = pick(8) == 0 ? std::string(1 + pick(60), static_cast<char>('a' + pick(26))) : kItems[pick(sizeof(kItems) / sizeof(kItems[0]))];
+    return command;
+}
+
+} // namespace
+
+TEST_F(CoopHostileTest, thousands_of_random_commands_never_crash_the_host_and_a_refused_one_changes_nothing) {
+    bothJoinTheParty();
+    join(1, "Alice");
+    join(2, "Bob");
+    net::SlotRequest slot;
+    say(1, slot);
+    say(2, slot);
+    exchange();
+    tick();
+    auto alice = lastSlot(1);
+    ASSERT_TRUE(alice);
+    ASSERT_EQ(net::SlotStatus::Assigned, alice->status);
+
+    auto loot = _game->newItem();
+    loot->setTag("hostile_loot");
+    _sith->addItem(loot);
+    auto chest = _game->newPlaceable();
+    chest->setTag("end_chest");
+    chest->setHasInventory(true);
+    chest->setPosition(glm::vec3(4.0f, 4.0f, 0.0f));
+    chest->addItem(_game->newItem());
+    _area->add(chest);
+    std::vector<uint32_t> ids {alice->creatureId, _player->id(), _trask->id(), _mission->id(), _sith->id(), _farSith->id(), _door->id(), chest->id(), loot->id()};
+
+    std::mt19937 random(fuzzSeed(0xA11CE));
+    auto before = worldFingerprint(*_game, _area);
+    uint32_t seq = 10000;
+    int refused = 0;
+    int accepted = 0;
+    for (int round = 0; round < fuzzRounds(); ++round) {
+        auto command = randomCommand(random, ++seq, alice->creatureId, ids);
+        // Orders that ask the session itself for something (pausing, readying, picking a slot) change the
+        // session's books, not the world; the world is what is compared.
+        say(1, command);
+        exchange();
+        tick();
+        tick();
+        tick();
+        const net::CommandResult *answer = nullptr;
+        auto results = _fake->received<net::CommandResult>(1, net::MessageType::CommandResult);
+        for (const auto &result : results) {
+            if (result.seq == seq) {
+                answer = &result;
+            }
+        }
+        ASSERT_NE(nullptr, answer) << "command " << seq << " (" << net::commandTypeName(command.type) << ") got no answer";
+        auto after = worldFingerprint(*_game, _area);
+        if (answer->accepted) {
+            ++accepted;
+            before = after;
+        } else {
+            ++refused;
+            ASSERT_EQ(before, after) << "a refused " << net::commandTypeName(command.type) << " (" << net::commandRejectName(answer->reason)
+                                     << ") changed the world; param " << command.param << " item '" << command.item << "'";
+        }
+        ASSERT_FALSE(_fake->wasClosedByHost(1)) << "a valid command ended the connection";
+    }
+    EXPECT_GT(refused, fuzzRounds() / 3);
+    EXPECT_GT(accepted, 0) << "the generator should hit some real orders too";
+}
+
+TEST_F(CoopFreeHostileTest, random_commands_from_a_guest_never_crash_the_host_and_a_refused_one_changes_nothing) {
+    startFree(false);
+    joinFree(1, "Alice", "Alice");
+    tick();
+    auto status = clientStatus("Alice");
+    ASSERT_TRUE(status.contains("guest"));
+    uint32_t aliceId = static_cast<uint32_t>(status.at("guest").as_object().at("id").to_number<int64_t>());
+    ASSERT_NE(0u, aliceId);
+    auto hostsItem = _game->newItem();
+    hostsItem->setTag("hosts_item");
+    _player->addItem(hostsItem);
+    auto chest = _game->newPlaceable();
+    chest->setTag("end_chest");
+    chest->setHasInventory(true);
+    chest->addItem(_game->newItem());
+    _area->add(chest);
+    std::vector<uint32_t> ids {aliceId, _player->id(), _trask->id(), _sith->id(), _farSith->id(), _door->id(), chest->id(), hostsItem->id()};
+    auto credits = [&]() { return clientStatus("Alice").at("guest").as_object().at("credits").to_number<int64_t>(); };
+
+    std::mt19937 random(fuzzSeed(0xB0B));
+    auto before = worldFingerprint(*_game, _area);
+    int64_t money = credits();
+    uint32_t seq = 20000;
+    int refused = 0;
+    for (int round = 0; round < fuzzRounds(); ++round) {
+        auto command = randomCommand(random, ++seq, aliceId, ids);
+        say(1, command);
+        exchange();
+        tick();
+        tick();
+        tick();
+        const net::CommandResult *answer = nullptr;
+        auto results = _fake->received<net::CommandResult>(1, net::MessageType::CommandResult);
+        for (const auto &result : results) {
+            if (result.seq == seq) {
+                answer = &result;
+            }
+        }
+        ASSERT_NE(nullptr, answer) << "command " << seq << " (" << net::commandTypeName(command.type) << ") got no answer";
+        auto after = worldFingerprint(*_game, _area);
+        if (answer->accepted) {
+            before = after;
+            money = credits();
+        } else {
+            ++refused;
+            ASSERT_EQ(before, after) << "a refused " << net::commandTypeName(command.type) << " (" << net::commandRejectName(answer->reason)
+                                     << ") changed the world; param " << command.param << " item '" << command.item << "'";
+            ASSERT_EQ(money, credits()) << "a refused " << net::commandTypeName(command.type) << " moved credits";
+        }
+        ASSERT_FALSE(_fake->wasClosedByHost(1)) << "a valid command ended the connection";
+    }
+    EXPECT_GT(refused, fuzzRounds() / 3);
 }

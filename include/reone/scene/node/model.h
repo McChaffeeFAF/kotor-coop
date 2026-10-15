@@ -17,6 +17,10 @@
 
 #pragma once
 
+#include <functional>
+#include <optional>
+
+#include "reone/graphics/animation.h"
 #include "reone/graphics/lipanimation.h"
 #include "reone/graphics/material.h"
 #include "reone/graphics/model.h"
@@ -53,6 +57,14 @@ struct BodyOverlay {
     graphics::Texture *texture {nullptr}; /**< drawn on the mesh UVs, with its own TXI (cycle, blending, decal) */
     float strength {0.0f};                /**< 0-1: fade in and out */
     float time {0.0f};                    /**< seconds since it started: the cycle frame */
+
+    // An afterimage (the speed effect, progfx 1500/1601): the mesh's own
+    // texture, tinted and added, drawn moved by offset and pushed out along
+    // the normals by inflate. Its texture is ignored.
+    bool ghost {false};
+    glm::vec3 offset {0.0f}; /**< world space */
+    glm::vec3 tint {1.0f};
+    float inflate {0.0f}; /**< metres */
 };
 
 class ModelSceneNode : public SceneNode {
@@ -61,6 +73,16 @@ public:
         Single,
         Blend,
         Overlay
+    };
+
+    /**
+     * How the model looks under Force Sight: grey, grey and see-through, or
+     * glowing in its glow colour (upstream #356).
+     */
+    enum class ForceSightStyle {
+        Grey,
+        Translucent,
+        Glow
     };
 
     struct AnimationStateFlags {
@@ -90,11 +112,16 @@ public:
         bool freeze {false};     /**< channel time is not to be updated */
         bool transition {false}; /**< when computing states, use animation transition time as channel time */
         bool finished {false};   /**< finished channels will be erased from the queue */
+        float weight {1.0f};     /**< how far a layer pulls the nodes it animates toward its own state */
 
         AnimationChannel(graphics::Animation &anim, std::shared_ptr<graphics::LipAnimation> lipAnim, AnimationProperties properties) :
             anim(&anim),
             lipAnim(std::move(lipAnim)),
             properties(std::move(properties)) {
+            // A channel played backwards starts at its end.
+            if (this->properties.speed < 0.0f) {
+                time = this->lipAnim ? this->lipAnim->length() : anim.length();
+            }
         }
     };
 
@@ -149,6 +176,26 @@ public:
     void setEnvironmentMap(graphics::Texture *texture);
     void setPickable(bool pickable) { _pickable = pickable; }
     void setAnimationEventListener(IAnimationEventListener &listener) { _animEventListener = &listener; }
+    /** Stops sending animation events to the listener. */
+    void clearAnimationEventListener() { _animEventListener = nullptr; }
+
+    /**
+     * Draws a copy of every mesh pushed out along its normals by \p offset,
+     * in \p texture, over the model and its attachments (the stealth and
+     * cloak shells). Drawn by the programmed-overlay pass.
+     */
+    void setBumpedOutShell(std::shared_ptr<graphics::Texture> texture, float offset) {
+        _bumpedOutShellTexture = std::move(texture);
+        _bumpedOutShellOffset = offset;
+    }
+    /** Stops drawing the shell. */
+    void clearBumpedOutShell() {
+        _bumpedOutShellTexture.reset();
+        _bumpedOutShellOffset = 0.0f;
+    }
+    bool hasBumpedOutShell() const { return static_cast<bool>(_bumpedOutShellTexture); }
+    const std::shared_ptr<graphics::Texture> &bumpedOutShellTexture() const { return _bumpedOutShellTexture; }
+    float bumpedOutShellOffset() const { return _bumpedOutShellOffset; }
 
     // Animation
 
@@ -176,6 +223,25 @@ public:
      * @return true if a channel was removed
      */
     bool removeAnimation(const std::string &name);
+
+    /**
+     * Let the named layer blend out from where it is, as a finished layer
+     * does, leaving every other channel alone. The layer is erased once it
+     * has blended out; played again before then, it starts over and blends
+     * back in.
+     *
+     * @return true if a layer was found
+     */
+    bool fadeOutLayer(const std::string &name);
+
+    /**
+     * Stop every layer of this model, leaving the animations underneath and
+     * the attachments' layers alone.
+     */
+    void removeLayers();
+
+    /** The front channel under any layers, if there is one. */
+    std::optional<std::reference_wrapper<const AnimationChannel>> baseAnimationChannel() const;
 
     bool isAnimationPlaying(const std::string &name) const;
 
@@ -217,7 +283,49 @@ public:
     int aimReattachableReferences(const glm::vec3 &worldPoint);
     void clearReferenceAim() { _referenceAim.reset(); }
 
+    /**
+     * A whole-object fade applied over every mesh alpha, attachments
+     * included (they read it from their lighting root).
+     */
+    float fadeAlpha() const { return _fadeAlpha; }
+    void setFadeAlpha(float alpha) { _fadeAlpha = alpha; }
+
     // END Attachments
+
+    // Head look-at
+
+    /**
+     * Turn the named bone toward a world point, within the horizontal and
+     * vertical arcs (degrees), closing a quarter-second of the gap each frame.
+     * False when this model has no such bone.
+     */
+    bool beginLookAt(const std::string &bone, float arcH, float arcV);
+    /** Moves the world point a running look-at turns toward. */
+    void setLookAtPoint(const glm::vec3 &point);
+    /** Return the bone to rest over a quarter second. */
+    void endLookAt();
+    bool isLookingAt() const { return _lookAt.has_value() && !_lookAt->returning; }
+
+    // END Head look-at
+
+    // Hilite and Force Sight
+
+    /**
+     * Multiply the diffuse colour and add to the emissive colour of every
+     * mesh, attachments included (they read it from their lighting root).
+     */
+    void setHiliteColor(std::optional<glm::vec3> color) { _hiliteColor = color; }
+    const std::optional<glm::vec3> &hiliteColor() const { return _hiliteColor; }
+
+    /** Sets how the model looks under Force Sight and, for a glowing model, its glow colour. */
+    void setForceSightStyle(ForceSightStyle style, glm::vec4 glowColor = glm::vec4 {0.0f}) {
+        _forceSightStyle = style;
+        _forceGlowColor = glowColor;
+    }
+    ForceSightStyle forceSightStyle() const { return _forceSightStyle; }
+    const glm::vec4 &forceGlowColor() const { return _forceGlowColor; }
+
+    // END Hilite and Force Sight
 
     // Object lighting
 
@@ -256,8 +364,28 @@ public:
     // END Programmed body effects
 
 private:
+    /** A bone turned toward a world point, or returning to rest from one. */
+    struct LookAt {
+        std::string bone;
+        float arcH {0.0f};
+        float arcV {0.0f};
+        glm::vec3 point {0.0f};
+        bool returning {false};
+        float returnTime {0.0f};
+        glm::quat rotation {1.0f, 0.0f, 0.0f, 0.0f};
+        glm::quat returnFrom {1.0f, 0.0f, 0.0f, 0.0f};
+    };
+
     std::vector<BodyOverlay> _bodyOverlays;
     float _bodyOpacity {1.0f};
+
+    float _fadeAlpha {1.0f};
+    std::optional<glm::vec3> _hiliteColor;
+    ForceSightStyle _forceSightStyle {ForceSightStyle::Grey};
+    glm::vec4 _forceGlowColor {0.0f};
+    std::shared_ptr<graphics::Texture> _bumpedOutShellTexture;
+    float _bumpedOutShellOffset {0.0f};
+    std::optional<LookAt> _lookAt;
 
     graphics::Model *_model;
     ModelUsage _usage;
@@ -279,6 +407,10 @@ private:
 
     // Animation
 
+    /**
+     * Layers lead the channels, newest first; the rest are the base channels,
+     * which the blend mode describes.
+     */
     std::deque<AnimationChannel> _animChannels;
     AnimationBlendMode _animBlendMode {AnimationBlendMode::Single};
     bool _culledLastTick {false}; /**< bone states were not applied last update */
@@ -305,11 +437,21 @@ private:
 
     // Animation
 
+    /** Plays \p anim as a layer over the base channels. */
+    void playLayer(graphics::Animation &anim, std::shared_ptr<graphics::LipAnimation> lipAnim, AnimationProperties properties);
+    /** Plays \p anim in the base channels, under the layers. */
+    void playBase(graphics::Animation &anim, std::shared_ptr<graphics::LipAnimation> lipAnim, AnimationProperties properties);
+    /** The number of layers leading the channels. */
+    size_t layerCount() const;
+
     void updateAnimations(float dt);
     void updateAnimationChannel(AnimationChannel &channel, float dt);
     void rearmSingleEmitters(const std::string &animationRoot);
     void computeAnimationStates(AnimationChannel &channel, float time, const graphics::ModelNode &modelNode);
-    void applyAnimationStates(const graphics::ModelNode &modelNode);
+    void applyAnimationStates(const graphics::ModelNode &modelNode, size_t layers);
+
+    /** Turns the look-at bone, if any, by one frame. */
+    void applyLookAt(float dt);
 
     static AnimationBlendMode getAnimationBlendMode(int flags);
 

@@ -19,13 +19,16 @@ void main() {
     vec4 scene = texture(sMainTex, uv);
     vec3 color = scene.rgb;
     if (uAmbientColor.y > 0.5) {
+        // Each output channel is its modulation times the mix of luminance
+        // and that channel by the saturation, with every weight capped at 1
+        // except blue's own (the colour math of upstream #356's video effect).
         float s = uAmbientColor.x;
-        vec3 w = vec3(0.3086, 0.6094, 0.0820);
-        mat3 m = mat3(
-            (1.0 - s) * w.r + s, (1.0 - s) * w.r, (1.0 - s) * w.r,
-            (1.0 - s) * w.g, (1.0 - s) * w.g + s, (1.0 - s) * w.g,
-            (1.0 - s) * w.b, (1.0 - s) * w.b, (1.0 - s) * w.b + s);
-        color = uColor.rgb * clamp(m * color, 0.0, 1.0);
+        vec3 gray = (1.0 - s) * vec3(0.3086, 0.6094, 0.0820);
+        vec3 red = min(uColor.r * (gray + vec3(s, 0.0, 0.0)), vec3(1.0));
+        vec3 green = min(uColor.g * (gray + vec3(0.0, s, 0.0)), vec3(1.0));
+        vec3 blue = uColor.b * (gray + vec3(0.0, 0.0, s));
+        blue.xy = min(blue.xy, vec2(1.0));
+        color = vec3(dot(color, red), dot(color, green), dot(color, blue));
     }
     if (uAmbientColor.z > 0.5) {
         // Fine 32x32-texel grain tiled over the screen, re-randomised each frame.

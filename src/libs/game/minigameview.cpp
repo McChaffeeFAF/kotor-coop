@@ -19,6 +19,8 @@
 
 #include <algorithm>
 
+#include <boost/algorithm/string.hpp>
+
 #include "reone/graphics/animation.h"
 #include "reone/graphics/model.h"
 #include "reone/graphics/modelnode.h"
@@ -86,14 +88,28 @@ void MiniGameAnimator::start(ModelSceneNode &model, Animation &anim, bool loopin
     }
 }
 
-bool MiniGameAnimator::play(ModelSceneNode &model, const std::string &name, bool looping, bool queue, bool overlay) {
-    if (name.empty()) {
+namespace {
+
+// Scripts name animations in any case ("SecOne6"); the models store them in lower case.
+std::shared_ptr<graphics::Animation> findAnimation(const ModelSceneNode &model, const std::string &name) {
+    auto anim = model.model().getAnimation(name);
+    if (!anim) {
+        anim = model.model().getAnimation(boost::to_lower_copy(name));
+    }
+    return anim;
+}
+
+} // namespace
+
+bool MiniGameAnimator::play(ModelSceneNode &model, const std::string &requested, bool looping, bool queue, bool overlay) {
+    if (requested.empty()) {
         return false;
     }
-    auto anim = model.model().getAnimation(name);
+    auto anim = findAnimation(model, requested);
     if (!anim) {
         return false;
     }
+    const std::string &name = anim->name();
     if (looping && model.isAnimationPlaying(name)) {
         return true;
     }
@@ -108,7 +124,9 @@ bool MiniGameAnimator::play(ModelSceneNode &model, const std::string &name, bool
     return true;
 }
 
-void MiniGameAnimator::remove(ModelSceneNode &model, const std::string &name) {
+void MiniGameAnimator::remove(ModelSceneNode &model, const std::string &requested) {
+    auto anim = findAnimation(model, requested);
+    const std::string name = anim ? anim->name() : requested;
     model.removeAnimation(name);
     _pending.erase(std::remove_if(_pending.begin(), _pending.end(), [&](const Pending &p) {
                        return p.model == &model && p.name == name;

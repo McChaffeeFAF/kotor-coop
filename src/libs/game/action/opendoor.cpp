@@ -44,11 +44,10 @@ void OpenDoorAction::execute(std::shared_ptr<Action> self, Object &actor, float 
         creature.face(*_door);
     }
 
-    // Allow a door to open itself, bypassing all requirements. This is used by
-    // scripts that assign actions to doors.
-    bool isObjectSelf = _door->id() == actor.id();
-    if (isObjectSelf) {
-        _door->open();
+    // Anything but a creature opens the door outright, with no key or lock to get past: a door
+    // told to open itself, or a placeable or trigger running a script.
+    if (actor.type() != ObjectType::Creature) {
+        _door->open(_door->id() == actor.id() ? nullptr : &actor);
         _door->onOpen(actor.id());
         complete();
         return;
@@ -84,7 +83,7 @@ void OpenDoorAction::execute(std::shared_ptr<Action> self, Object &actor, float 
     tryUnlockDoorWithKey(_game, *_door, actor, _game.party());
 
     if (!_door->isLocked()) {
-        _door->open();
+        _door->open(&actor);
         _door->onOpen(actor.id());
     } else {
         _door->onFailToOpen(actor);

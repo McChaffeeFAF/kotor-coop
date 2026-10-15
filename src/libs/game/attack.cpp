@@ -1574,24 +1574,28 @@ bool navigateToAttackTarget(Game &game, Creature &attacker, Object &target, floa
         }
         if (!door->isOpening()) {
             attacker.face(*door);
-            door->open();
+            door->open(&attacker);
             door->onOpen(attacker.id());
         }
         return false;
     }
 
-    if (!attacker.navigateTo(target.position(), true, range, dt)) {
-        return false;
-    }
-
     // In range is not enough for a ranged attacker: with a wall in the way it
     // closes in until it has a clear line of fire. Close up it attacks anyway,
-    // so an attack can never wait forever on the sight test.
-    if (isRangedWieldType(attacker.getWieldType())) {
-        if (area && !area->hasLineOfSight(attacker, target) &&
-            !attacker.navigateTo(target.position(), true, kLineOfFireCloseInDistance, dt)) {
-            return false;
-        }
+    // so an attack can never wait forever on the sight test. The close-in is
+    // its own walk, not a second one after the walk into range: that walk
+    // ended "reached" every frame and cleared the close-in's failed path
+    // requests and its no-progress clock, so an attack on a target behind a
+    // wall with no path to it (tar08_davikguest03, locked in a side room
+    // 23 m from the hall) never gave up.
+    float approach = range;
+    if (isRangedWieldType(attacker.getWieldType()) && area &&
+        attacker.getSquareDistanceTo(target) <= range * range &&
+        !area->hasLineOfSight(attacker, target)) {
+        approach = kLineOfFireCloseInDistance;
+    }
+    if (!attacker.navigateTo(target.position(), true, approach, dt)) {
+        return false;
     }
 
     reachedOnce = true;

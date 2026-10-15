@@ -244,9 +244,47 @@ void Game::openUpgradeScreen(const std::shared_ptr<Item> &item) {
 }
 
 void Game::closeUpgradeScreen() {
+    if (_upgrade && _upgrade->guest()) {
+        // The guest closed its bench: tell the host, then drop the stand-ins.
+        if (_coop && _coop->isClient()) {
+            _coop->clientBenchClose();
+        }
+        _upgrade->leaveGuest();
+    }
     if (_upgrade) {
         _upgrade->bench().cancel();
     }
+    if (_screen == Screen::Upgrade) {
+        openInGame();
+    }
+}
+
+void Game::showGuestBench() {
+    if (!_coop || !_coop->isClient() || !_coop->benchScreen().open()) {
+        return;
+    }
+    if (!_upgrade) {
+        _upgrade = tryLoadGUI<UpgradeGUI>();
+    }
+    if (!_upgrade) {
+        return;
+    }
+    if (_screen == Screen::Upgrade && _upgrade->guest()) {
+        _upgrade->refreshGuest();
+        return;
+    }
+    stopMovement();
+    setRelativeMouseMode(false);
+    setCursorType(resource::CursorType::Default);
+    _upgrade->openGuest();
+    changeScreen(Screen::Upgrade);
+}
+
+void Game::closeGuestBench() {
+    if (!_upgrade || !_upgrade->guest()) {
+        return;
+    }
+    _upgrade->leaveGuest();
     if (_screen == Screen::Upgrade) {
         openInGame();
     }

@@ -26,7 +26,9 @@
 #include <climits>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <string>
+#include <vector>
 
 #include "reone/net/protocol.h"
 
@@ -275,7 +277,10 @@ TEST(NetRoundTrip, snapshot_ack) {
 }
 
 TEST(NetRoundTrip, every_command_type_with_extreme_values) {
-    for (int type = static_cast<int>(CommandType::MoveTo); type <= static_cast<int>(CommandType::BenchClose); ++type) {
+    for (int type = 0; type < 256; ++type) {
+        if (std::string(commandTypeName(static_cast<CommandType>(type))) == "unknown") {
+            continue; // not a type the protocol names
+        }
         Command c;
         c.seq = UINT32_MAX;
         c.type = static_cast<CommandType>(type);
@@ -369,7 +374,10 @@ TEST(NetRoundTrip, non_finite_floats_are_rejected_wherever_they_appear) {
 }
 
 TEST(NetRoundTrip, command_result_for_every_reason) {
-    for (int reason = 0; reason <= static_cast<int>(CommandReject::NotBreakable); ++reason) {
+    for (int reason = 0; reason < 256; ++reason) {
+        if (std::string(commandRejectName(static_cast<CommandReject>(reason))) == "unknown") {
+            continue;
+        }
         CommandResult r;
         r.seq = UINT32_MAX;
         r.accepted = reason == 0;
@@ -662,4 +670,214 @@ TEST(NetRoundTrip, base64_decoding_is_canonical) {
         ASSERT_TRUE(base64Decode(text, out)) << length;
         EXPECT_EQ(bytes, out) << length;
     }
+}
+
+TEST(NetRoundTrip, minigame_control_at_its_limits) {
+    MiniGameControl c;
+    c.seq = UINT32_MAX;
+    c.steer = -1.0f;
+    c.fire = true;
+    c.pitchRate = 1.0f;
+    c.yawRate = -1.0f;
+    c.pitchDelta = kMaxMiniGameDelta;
+    c.yawDelta = -kMaxMiniGameDelta;
+    expectRoundTrip(c, "extreme control");
+    expectRoundTrip(MiniGameControl {}, "neutral control");
+    EXPECT_TRUE(isClientMessage(MessageType::MiniGameControl));
+    EXPECT_FALSE(isHostMessage(MessageType::MiniGameControl));
+    EXPECT_STREQ("minigame_control", messageTypeName(MessageType::MiniGameControl));
+    ASSERT_TRUE(peekType(encode(c)));
+    EXPECT_EQ(MessageType::MiniGameControl, *peekType(encode(c)));
+    EXPECT_LE(encode(c).size(), kMaxClientMessageBytes);
+}
+
+TEST(NetRoundTrip, minigame_control_refuses_values_a_player_could_not_produce) {
+    MiniGameControl out;
+    auto refused = [&](const char *what, auto change) {
+        MiniGameControl c;
+        change(c);
+        EXPECT_FALSE(decode(encode(c), out)) << what;
+    };
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    refused("steer above 1", [](MiniGameControl &c) { c.steer = 1.01f; });
+    refused("steer below -1", [](MiniGameControl &c) { c.steer = -1.5f; });
+    refused("steer NaN", [&](MiniGameControl &c) { c.steer = nan; });
+    refused("steer infinite", [&](MiniGameControl &c) { c.steer = inf; });
+    refused("pitch rate above 1", [](MiniGameControl &c) { c.pitchRate = 2.0f; });
+    refused("yaw rate infinite", [&](MiniGameControl &c) { c.yawRate = -inf; });
+    refused("yaw rate NaN", [&](MiniGameControl &c) { c.yawRate = nan; });
+    refused("pitch delta above the limit", [](MiniGameControl &c) { c.pitchDelta = kMaxMiniGameDelta + 1.0f; });
+    refused("yaw delta below the limit", [](MiniGameControl &c) { c.yawDelta = -kMaxMiniGameDelta - 1.0f; });
+    refused("delta NaN", [&](MiniGameControl &c) { c.pitchDelta = nan; });
+    refused("delta infinite", [&](MiniGameControl &c) { c.yawDelta = inf; });
+}
+
+TEST(NetRoundTrip, minigame_state_at_its_limits_and_final) {
+    MiniGameState s;
+    s.active = true;
+    s.kind = MiniGameKind::Turret;
+    s.module = kResRefMax;
+    s.owner = kPlayerNameMax;
+    s.tick = UINT32_MAX;
+    s.elapsed = 12345.5f;
+    s.speed = 900.0f;
+    s.offset = {100000.0f, -100000.0f, 3.0f};
+    s.hp = INT16_MAX;
+    s.maxHp = INT16_MAX;
+    for (size_t i = 0; i < kMaxMiniGameActors; ++i) {
+        s.actors.push_back({static_cast<MiniGameRole>(i % 3), static_cast<int16_t>(i), i % 2 == 0, {1.0f * i, -2.0f * i, 0.5f},
+                            {0.0f, 0.0f, i % 2 == 0 ? 0.70710678f : -1.0f, i % 2 == 0 ? 0.70710678f : 0.0f}});
+    }
+    s.firing = true;
+    s.controlSeq = UINT32_MAX;
+    for (size_t i = 0; i < kMaxMiniGameAnimations; ++i) {
+        s.animations.push_back({static_cast<uint16_t>(kMaxMiniGameActors - 1 - i), std::string(32, 'a' + i % 26), static_cast<uint8_t>(i % 16)});
+    }
+    for (size_t i = 0; i < kMaxMiniGameSounds; ++i) {
+        s.sounds.push_back(i % 2 == 0 ? std::string(kResRefMax) : "mgs_beep");
+    }
+    expectRoundTrip(s, "full minigame state");
+    s.animations.clear();
+    s.sounds.clear();
+    s.active = false;
+    s.finished = true;
+    s.quit = true;
+    s.prize = INT32_MAX;
+    s.actors.clear();
+    expectRoundTrip(s, "final minigame state");
+    s.kind = MiniGameKind::SwoopRace;
+    s.owner.clear();
+    expectRoundTrip(s, "the host's own minigame");
+    EXPECT_TRUE(isHostMessage(MessageType::MiniGameState));
+    EXPECT_FALSE(isClientMessage(MessageType::MiniGameState));
+    EXPECT_STREQ("minigame_state", messageTypeName(MessageType::MiniGameState));
+    ASSERT_TRUE(peekType(encode(s)));
+    EXPECT_EQ(MessageType::MiniGameState, *peekType(encode(s)));
+}
+
+TEST(NetRoundTrip, minigame_state_refuses_what_the_host_would_never_send) {
+    MiniGameState good;
+    good.module = "tar_m03mg";
+    good.actors.push_back({MiniGameRole::Player, 5, false, {1, 2, 3}});
+    MiniGameState out;
+    ASSERT_TRUE(decode(encode(good), out));
+    auto refused = [&](const char *what, auto change) {
+        auto s = good;
+        change(s);
+        EXPECT_FALSE(decode(encode(s), out)) << what;
+    };
+    refused("module too long", [](MiniGameState &s) { s.module = std::string(17, 'm'); });
+    refused("owner too long", [](MiniGameState &s) { s.owner = std::string(33, 'n'); });
+    refused("negative time", [](MiniGameState &s) { s.elapsed = -1.0f; });
+    refused("NaN time", [](MiniGameState &s) { s.elapsed = std::numeric_limits<float>::quiet_NaN(); });
+    refused("negative prize", [](MiniGameState &s) { s.prize = -1; });
+    refused("negative max hp", [](MiniGameState &s) { s.maxHp = -1; });
+    refused("offset out of the world", [](MiniGameState &s) { s.offset.x = 100001.0f; });
+    refused("too many actors", [](MiniGameState &s) { s.actors.resize(kMaxMiniGameActors + 1, s.actors[0]); });
+    refused("an unknown kind", [](MiniGameState &s) { s.kind = static_cast<MiniGameKind>(7); });
+    refused("an unknown role", [](MiniGameState &s) { s.actors[0].kind = static_cast<MiniGameRole>(3); });
+    refused("an animation on no actor", [](MiniGameState &s) { s.animations.push_back({1, "gear1", 0}); });
+    refused("an animation with no name", [](MiniGameState &s) { s.animations.push_back({0, "", 0}); });
+    refused("an animation name too long", [](MiniGameState &s) { s.animations.push_back({0, std::string(33, 'n'), 0}); });
+    refused("unknown animation flags", [](MiniGameState &s) { s.animations.push_back({0, "gear1", 16}); });
+    refused("too many animations", [](MiniGameState &s) { s.animations.resize(kMaxMiniGameAnimations + 1, {0, "gear1", 0}); });
+    refused("an empty sound", [](MiniGameState &s) { s.sounds.push_back(""); });
+    refused("a sound name too long", [](MiniGameState &s) { s.sounds.push_back(std::string(17, 's')); });
+    refused("too many sounds", [](MiniGameState &s) { s.sounds.resize(kMaxMiniGameSounds + 1, "mgs_beep"); });
+    refused("a zero rotation", [](MiniGameState &s) { s.actors[0].rotation = {0.0f, 0.0f, 0.0f, 0.0f}; });
+    refused("a rotation that is not one", [](MiniGameState &s) { s.actors[0].rotation = {0.5f, 0.0f, 0.0f, 0.5f}; });
+}
+
+// The protocol accepts exactly the enum values it names: a byte the host's code never sends is a
+// malformed message, and every value it does name round-trips. Scanning all 256 bytes means a value
+// added to an enum is covered without anyone touching this test.
+
+TEST(NetCoverage, a_command_type_decodes_exactly_when_the_protocol_names_it) {
+    int named = 0;
+    for (int type = 0; type < 256; ++type) {
+        Command c;
+        c.seq = 1;
+        c.type = static_cast<CommandType>(type);
+        Command out;
+        bool known = std::string(commandTypeName(c.type)) != "unknown";
+        EXPECT_EQ(known, decode(encode(c), out)) << "command type " << type;
+        named += known ? 1 : 0;
+    }
+    EXPECT_GE(named, 28) << "the protocol names more command types than that";
+}
+
+TEST(NetCoverage, a_refusal_decodes_exactly_when_the_protocol_names_it) {
+    int named = 0;
+    for (int reason = 0; reason < 256; ++reason) {
+        CommandResult r;
+        r.seq = 1;
+        r.reason = static_cast<CommandReject>(reason);
+        r.accepted = reason == 0;
+        CommandResult out;
+        bool known = std::string(commandRejectName(r.reason)) != "unknown";
+        EXPECT_EQ(known, decode(encode(r), out)) << "reject " << reason;
+        named += known ? 1 : 0;
+    }
+    EXPECT_GE(named, 38);
+}
+
+TEST(NetCoverage, a_join_refusal_and_a_slot_status_decode_exactly_when_named) {
+    for (int value = 0; value < 256; ++value) {
+        Reject reject;
+        reject.reason = static_cast<RejectReason>(value);
+        Reject rejectOut;
+        EXPECT_EQ(std::string(rejectReasonName(reject.reason)) != "unknown", decode(encode(reject), rejectOut)) << "reject reason " << value;
+        SlotAssign slot;
+        slot.status = static_cast<SlotStatus>(value);
+        slot.creatureId = 5;
+        SlotAssign slotOut;
+        EXPECT_EQ(std::string(slotStatusName(slot.status)) != "unknown", decode(encode(slot), slotOut)) << "slot status " << value;
+    }
+}
+
+TEST(NetCoverage, notice_offer_event_and_ready_values_decode_only_in_their_ranges) {
+    for (int value = 0; value < 256; ++value) {
+        Notice notice {static_cast<NoticeKind>(value), "x"};
+        Notice noticeOut;
+        EXPECT_EQ(value <= 5, decode(encode(notice), noticeOut)) << "notice kind " << value;
+
+        Offer offer {static_cast<OfferKind>(value), 8, "Merchant", 0};
+        Offer offerOut;
+        EXPECT_EQ(value >= 1 && value <= 3, decode(encode(offer), offerOut)) << "offer kind " << value;
+
+        EventBatch batch;
+        batch.tick = 1;
+        NetEvent event;
+        event.kind = static_cast<EventKind>(value);
+        event.handle = 1;
+        batch.events.push_back(event);
+        EventBatch batchOut;
+        EXPECT_EQ(value >= 1 && value <= 3, decode(encode(batch), batchOut)) << "event kind " << value;
+
+        ReadyCheck check;
+        check.id = 1;
+        check.state = static_cast<ReadyState>(value);
+        ReadyCheck checkOut;
+        EXPECT_EQ(value <= 3, decode(encode(check), checkOut)) << "ready state " << value;
+        check.state = ReadyState::Active;
+        check.players.push_back({"Guest", static_cast<ReadyAnswer>(value), false});
+        EXPECT_EQ(value <= 2, decode(encode(check), checkOut)) << "ready answer " << value;
+    }
+}
+
+TEST(NetCoverage, a_message_type_byte_is_a_message_exactly_when_the_protocol_names_it) {
+    // Every named type is a host message, a client message or both, and nothing unnamed is either.
+    int named = 0;
+    for (int value = 0; value < 256; ++value) {
+        std::vector<uint8_t> bytes {static_cast<uint8_t>(value)};
+        auto type = peekType(bytes);
+        if (!type) {
+            continue;
+        }
+        ++named;
+        EXPECT_NE(std::string("unknown"), messageTypeName(*type)) << "type " << value;
+        EXPECT_TRUE(isHostMessage(*type) || isClientMessage(*type)) << messageTypeName(*type) << " goes nowhere";
+    }
+    EXPECT_GE(named, 23);
 }

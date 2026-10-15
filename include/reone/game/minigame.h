@@ -525,8 +525,12 @@ public:
     /** The turret drives its aim itself and reports it as the offset (degrees). */
     void setPlayerAim(const glm::vec3 &offsetDegrees) { _offset = offsetDegrees; }
 
-    /** The turret moves enemies on scene rails and reports their positions. */
-    void setActorPosition(MiniGameActor &actor, const glm::vec3 &position);
+    /**
+     * The turret moves enemies on scene rails and reports their positions (and headings,
+     * which co-op clients draw them with).
+     */
+    void setActorPosition(MiniGameActor &actor, const glm::vec3 &position,
+                          const glm::quat &orientation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f));
 
     // Lookups
 

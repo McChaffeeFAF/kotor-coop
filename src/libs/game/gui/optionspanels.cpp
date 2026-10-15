@@ -562,6 +562,8 @@ void OptionsPanel::onGUILoaded() {
                 if (panelStem(_base) == "optkeymapping") {
                     _game.keymap().resetToDefaults();
                     _game.keymap().storeSettings(settings);
+                    _game.padBindings().resetToDefaults();
+                    _game.padBindings().storeSettings(settings);
                 }
                 _game.applyUserSettings(false);
                 refresh();
@@ -597,7 +599,12 @@ void OptionsPanel::refreshKeyList() {
         }
         ListBox::Item item;
         item.tag = info.name;
-        item.text = label + ": " + keyName(_game.keymap().keyFor(info.action));
+        std::string text = label + ": " + keyName(_game.keymap().keyFor(info.action));
+        if (PadBindings::bindable(info.action)) {
+            auto button = _game.padBindings().buttonFor(info.action);
+            text += "  [" + (button ? gamepadButtonName(*button) : std::string("-")) + "]";
+        }
+        item.text = std::move(text);
         events->addItem(std::move(item));
     }
 }
@@ -714,6 +721,19 @@ bool OptionsPanels::open(const std::string &requested) {
 }
 
 void OptionsPanels::beginKeyEntry(KeyAction action) {
+    // A pad button pressed now binds the pad side of this action; Start cancels, as Escape does.
+    _game.setPadCapture([this](input::GamepadButton button) {
+        if (!_keyEntry) {
+            return false;
+        }
+        if (button != input::GamepadButton::Start && button != input::GamepadButton::Guide) {
+            _game.padBindings().bind(*_keyEntry, button);
+            _game.padBindings().storeSettings(_game.userSettings());
+            _game.applyUserSettings(false);
+        }
+        back();
+        return true;
+    });
     auto current = active();
     std::string keyEntry = current && current->base().size() > 2 && current->base()[current->base().size() - 2] == '_'
                                ? "optkeyentry" + current->base().substr(current->base().size() - 2)
@@ -721,6 +741,7 @@ void OptionsPanels::beginKeyEntry(KeyAction action) {
     _keyEntry = action;
     if (!open(keyEntry)) {
         _keyEntry.reset();
+        _game.setPadCapture(nullptr);
     }
 }
 
@@ -732,6 +753,7 @@ void OptionsPanels::back() {
     _stack.pop_back();
     if (leftKeyEntry) {
         _keyEntry.reset();
+        _game.setPadCapture(nullptr);
     }
     // Leaving a panel keeps what it set.
     _game.userSettings().save();
@@ -746,6 +768,8 @@ void OptionsPanels::back() {
 void OptionsPanels::closeAll() {
     bool wasOpen = !_stack.empty();
     _stack.clear();
+    _keyEntry.reset();
+    _game.setPadCapture(nullptr);
     if (wasOpen && _onClosed) {
         _onClosed();
     }

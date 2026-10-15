@@ -46,4 +46,16 @@ EquipmentOperationOutcome applyEquipmentOperation(
     const std::shared_ptr<Item> &item,
     int requestedSlot);
 
+// The same operation for an item wherever the party keeps it: the inventory
+// that holds it (the item's owner: a companion's own pack or the shared
+// inventory the player character carries) is the source, and the displaced
+// item goes back there. It applies at once, as the equipment screen does,
+// whatever the subject is doing; it does not queue behind the subject's
+// actions as ActionEquipItem does.
+EquipmentOperationOutcome applyEquipmentFromHolder(
+    Game &game,
+    Creature &subject,
+    const std::shared_ptr<Item> &item,
+    int requestedSlot);
+
 } // namespace reone::game

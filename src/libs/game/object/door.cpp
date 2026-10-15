@@ -18,9 +18,12 @@
 #include "reone/game/object/door.h"
 
 #include <algorithm>
+
+#include <boost/algorithm/string.hpp>
 #include <limits>
 
 #include "reone/graphics/di/services.h"
+#include "reone/graphics/model.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/di/services.h"
 #include "reone/resource/provider/2das.h"
@@ -39,6 +42,7 @@
 #include "reone/game/di/services.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/game.h"
+#include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/module.h"
 #include "reone/game/party.h"
@@ -337,7 +341,37 @@ void Door::damage(
     runDeathScript();
 }
 
-void Door::open() {
+std::shared_ptr<Door> Door::linkedDoor() const {
+    // LinkedToFlags 1: LinkedTo is a door. An area exit's LinkedTo names a door in another module.
+    static constexpr uint8_t kLinkedToDoor = 1;
+    if (_linkedToFlags != kLinkedToDoor || _linkedTo.empty() || !_linkedToModule.empty()) {
+        return nullptr;
+    }
+    auto module = _game.module();
+    auto area = module ? module->area() : nullptr;
+    auto linked = area ? std::dynamic_pointer_cast<Door>(area->getObjectByTag(boost::to_lower_copy(_linkedTo))) : nullptr;
+    return linked && linked.get() != this ? linked : nullptr;
+}
+
+void Door::open(const Object *opener, bool linked) {
+    const bool willSwing = !isOpening() && (_state == DoorState::Closed || _transition != DoorTransition::None);
+    if (opener && willSwing) {
+        // The front of a door is the side its local +Y axis points to; it swings away from
+        // whoever opens it.
+        const glm::vec3 front = _orientation * glm::vec3(0.0f, 1.0f, 0.0f);
+        _openSide = glm::dot(opener->position() - _position, front) > 0.0f ? 1 : 2;
+        // A model without the second swing opens the one way it can.
+        auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
+        if (_openSide == 2 && model && !model->model().getAnimation("opening2")) {
+            _openSide = 1;
+        }
+    }
+    if (linked) {
+        if (auto other = linkedDoor()) {
+            other->_openSide = _openSide;
+            other->open(nullptr, false);
+        }
+    }
     if (isOpening()) {
         // Already swinging open. Restarting would rewind the leaf and re-run
         // whatever the caller does around the transition.
@@ -356,7 +390,12 @@ void Door::open() {
     beginTransition(DoorTransition::Opening);
 }
 
-void Door::close() {
+void Door::close(bool linked) {
+    if (linked) {
+        if (auto other = linkedDoor()) {
+            other->close(false);
+        }
+    }
     if (isClosing()) {
         return;
     }
@@ -453,12 +492,18 @@ bool Door::isTransitionComplete() const {
     return model->isAnimationFinished();
 }
 
-const char *Door::transitionAnimation(DoorTransition transition) {
-    return transition == DoorTransition::Opening ? "opening1" : "closing1";
+const char *Door::transitionAnimation(DoorTransition transition) const {
+    if (transition == DoorTransition::Opening) {
+        return _openSide == 2 ? "opening2" : "opening1";
+    }
+    return _state == DoorState::Opened2 ? "closing2" : "closing1";
 }
 
-DoorState Door::transitionTarget(DoorTransition transition) {
-    return transition == DoorTransition::Opening ? DoorState::Opened1 : DoorState::Closed;
+DoorState Door::transitionTarget(DoorTransition transition) const {
+    if (transition == DoorTransition::Opening) {
+        return _openSide == 2 ? DoorState::Opened2 : DoorState::Opened1;
+    }
+    return DoorState::Closed;
 }
 
 void Door::onOpen(uint32_t triggererId) {
@@ -468,6 +513,7 @@ void Door::onOpen(uint32_t triggererId) {
     if (auto *coop = _game.coop()) {
         triggererId = coop->scriptActor(triggererId); // a player's creature counts as the PC
     }
+    setLastEntered(triggererId);
     _game.scriptRunner().run(
         _onOpen,
         {{script::ArgKind::Caller, Variable::ofObject(_id)},
@@ -480,14 +526,15 @@ void Door::onFailToOpen(const Object &triggerer) {
     if (_locked) {
         _game.playSoundCue("door", combatsounds::objectSound(_services.resource.twoDas, *this, "locked"), _position);
     }
-    if (_onFailToOpen.empty()) {
-        return;
-    }
-
     uint32_t clicker = triggerer.id();
     if (auto *coop = _game.coop()) {
         clicker = coop->scriptActor(clicker);
     }
+    setLastEntered(clicker);
+    if (_onFailToOpen.empty()) {
+        return;
+    }
+
     _game.scriptRunner().run(
         _onFailToOpen,
         {{script::ArgKind::Caller, Variable::ofObject(_id)},
@@ -520,6 +567,7 @@ void Door::runClickScript(uint32_t clickerId) {
     if (auto *coop = _game.coop()) {
         clickerId = coop->scriptActor(clickerId); // a player's creature counts as the PC
     }
+    setLastEntered(clickerId);
     _game.scriptRunner().run(
         _onClick,
         {{script::ArgKind::Caller, Variable::ofObject(_id)},

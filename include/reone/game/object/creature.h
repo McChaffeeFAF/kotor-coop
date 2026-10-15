@@ -262,6 +262,7 @@ public:
     // not selectable when dead.
     bool isDestroyable() const { return _destroyable; }
     bool isRaiseable() const { return _raiseable; }
+    void setRaiseable(bool raiseable) { _raiseable = raiseable; }
     bool isSelectableWhenDead() const { return _selectableWhenDead; }
     void setDestroyable(bool destroyable, bool raiseable, bool selectableWhenDead);
 

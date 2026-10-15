@@ -502,6 +502,13 @@ void CoopSession::hostDropClient(ConnectionId connection, const std::string &rea
     if (_ready.active()) {
         _ready.removePlayer(client.clientId);
     }
+    if (_miniGame.running() && _miniGame.client() == client.clientId) {
+        // The player who was steering is gone: the controls go back to the host.
+        _miniGame.handOver(0, std::string());
+    }
+    if (_pendingMiniGame.client == client.clientId) {
+        _pendingMiniGame = PendingMiniGame();
+    }
     if (client.standIn) {
         // The stand-in goes with its player; a rejoin brings a new one.
         hostDespawnStandIn(client, false);
@@ -595,6 +602,15 @@ void CoopSession::hostHandleMessage(HostClient &client, const std::vector<uint8_
             return;
         }
         client.pending.push_back(command);
+        break;
+    }
+    case MessageType::MiniGameControl: {
+        MiniGameControl control;
+        if (!client.welcomed || !decode(data, control)) {
+            hostViolation(client, "a minigame input out of turn or malformed");
+            return;
+        }
+        hostHandleMiniGameControl(client, control);
         break;
     }
     case MessageType::SnapshotAck: {
@@ -1319,6 +1335,9 @@ void CoopSession::beforeTick() {
                     reason = hostBenchCommand(client, command, session);
                 }
                 if (!session) {
+                    reason = hostMiniGameCommand(client, command, session);
+                }
+                if (!session) {
                     reason = hostOfferCommand(client, command, session);
                 }
                 if (!session) {
@@ -1568,6 +1587,9 @@ void CoopSession::afterTick() {
         hostUpdateStandIns();
     }
     hostUpdateServiceLock();
+    if (_miniGame.running() && _game.tickCount() % kMiniGameStateEveryTicks == 0) {
+        hostBroadcastMiniGame();
+    }
     hostCollectVfxEnds();
     hostUpdateContainers();
     hostCheckClientExits();
@@ -1907,6 +1929,9 @@ void CoopSession::clientHandleMessage(const std::vector<uint8_t> &data) {
                 // Free Mode: character generation first; the host's module
                 // loads once this player's character exists.
                 _moduleHeld = true;
+            } else if (_miniGameResultHold > 0.0f) {
+                // A minigame just ended here: its result stays up a moment first (clientTick).
+                _moduleHeldForResult = true;
             } else {
                 clientEnterModule();
             }
@@ -2029,6 +2054,14 @@ void CoopSession::clientHandleMessage(const std::vector<uint8_t> &data) {
         }
         break;
     }
+    case MessageType::MiniGameState: {
+        MiniGameState state;
+        ok = decode(data, state);
+        if (ok) {
+            clientHandleMiniGameState(state);
+        }
+        break;
+    }
     case MessageType::GuestRoster: {
         GuestRoster roster;
         ok = decode(data, roster);
@@ -2074,7 +2107,10 @@ void CoopSession::clientEnterModule() {
     // The host's snapshot history starts over with every ModuleInfo.
     _recon.clear();
     _buffer.clear();
-    _eventQueue.clear();
+    // Events of this visit may have arrived already (the load waited on a minigame's result).
+    _eventQueue.erase(std::remove_if(_eventQueue.begin(), _eventQueue.end(),
+                                     [this](const EventBatch &batch) { return batch.generation != _module.generation; }),
+                      _eventQueue.end());
     if (_moduleLoaded && _loadedGeneration == _module.generation && _game.module() && _game.module()->name() == _module.module) {
         // Back after a drop, in the same module visit: keep the world. The
         // host's first snapshot is full and is applied as a delta against
@@ -2234,6 +2270,13 @@ void CoopSession::clientReceiveSnapshot(const Snapshot &snapshot) {
 }
 
 void CoopSession::clientTick(float dt) {
+    if (_miniGameResultHold > 0.0f) {
+        _miniGameResultHold -= std::max(0.0f, dt);
+        if (_miniGameResultHold <= 0.0f && _moduleHeldForResult) {
+            _moduleHeldForResult = false;
+            clientEnterModule();
+        }
+    }
     clientSteer(dt);
     if (!isClient()) {
         return;
@@ -2981,6 +3024,7 @@ json::object CoopSession::statusJson() const {
                 auto record = _guests.find(client.name);
                 guest["id"] = client.guestId;
                 guest["store"] = client.storeOpen;
+                guest["bench"] = client.benchOpen;
                 if (record != _guests.end()) {
                     guest["name"] = record->second.name;
                     guest["xp"] = record->second.xp;
@@ -2993,6 +3037,21 @@ json::object CoopSession::statusJson() const {
                     guest["level"] = creature->attributes().getAggregateLevel();
                     guest["inParty"] = _game.party().isMember(*creature);
                     guest["puppet"] = creature->isPuppet();
+                    // Items carrying upgrades (template@bits), from the bag and the equipment.
+                    json::array upgraded;
+                    auto addUpgraded = [&upgraded](const std::shared_ptr<Item> &item) {
+                        if (item && item->upgrades()) {
+                            upgraded.push_back(json::value(item->blueprintResRef() + "@" + std::to_string(item->upgrades())));
+                        }
+                    };
+                    for (const auto &item : creature->items()) {
+                        addUpgraded(item);
+                    }
+                    for (const auto &[slot, item] : creature->equipment()) {
+                        addUpgraded(item);
+                    }
+                    guest["upgraded"] = std::move(upgraded);
+                    guest["carried"] = creature->items().size();
                 }
                 entry["guest"] = std::move(guest);
             }

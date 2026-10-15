@@ -133,6 +133,14 @@ void Equipment::onGUILoaded() {
     }
     // _controls.btnCharLeft->setVisible(false);
     // _controls.btnCharRight->setVisible(false);
+    if (!isTSL()) {
+        addK1WeaponSetToggle();
+    } else if (_controls.BTN_SWAPWEAPONS) {
+        // K2's "Swap Weapons" on equip_p was styled but never wired.
+        _controls.BTN_SWAPWEAPONS->setOnClick([this]() {
+            swapWeaponSetsFromScreen();
+        });
+    }
     _controls.LB_DESC->setVisible(false);
     _controls.LB_DESC->setProtoMatchContent(true);
     _controls.LBL_CANTEQUIP->setVisible(false);
@@ -159,7 +167,7 @@ void Equipment::onGUILoaded() {
     for (auto &slotButton : _btnInv) {
         auto slot = slotButton.first;
         slotButton.second->setOnClick([this, slot]() {
-            _view = _backing ? _backing->readEquipment(getInventorySlot(slot)) : EquipmentView {};
+            _view = _backing ? _backing->readEquipment(inventorySlotFor(slot)) : EquipmentView {};
             if (!_view.slotAvailable) {
                 _controls.LBL_CANTEQUIP->setTextMessage(_strings.getText(kStrRefBlockedByTwoHandedMainHand));
                 _controls.LBL_CANTEQUIP->setVisible(true);
@@ -181,6 +189,9 @@ void Equipment::onGUILoaded() {
                 slotDesc = _strings.getText(maybeStrRef->second);
             }
 
+            if (!isTSL() && _k1SecondSet && k1SetSlot(slot, true) != slot) {
+                slotDesc += " (2)";
+            }
             _controls.LBL_SLOTNAME->setTextMessage(slotDesc);
         });
     }
@@ -271,6 +282,75 @@ static int getInventorySlot(Equipment::Slot slot) {
     }
 }
 
+Equipment::Slot Equipment::k1SetSlot(Slot slot, bool secondSet) {
+    if (!secondSet) {
+        return slot;
+    }
+    switch (slot) {
+    case Slot::WeapL:
+        return Slot::WeapL2;
+    case Slot::WeapR:
+        return Slot::WeapR2;
+    default:
+        return slot;
+    }
+}
+
+int Equipment::inventorySlotFor(Slot slot) const {
+    return getInventorySlot(k1SetSlot(slot, !isTSL() && _k1SecondSet));
+}
+
+void Equipment::addK1WeaponSetToggle() {
+    // K1 HUD parity (design note k1hud_parity_2): the K1 layout has no second-set
+    // slots. A K1-style button between the portrait buttons and Equip flips
+    // the weapon slots between set 1 (4/5) and set 2 (18/19); it changes
+    // what the screen edits, never what is in hand. K1 art and K1 text style.
+    auto style = _controls.BTN_EQUIP;
+    if (!style) {
+        return;
+    }
+    Control::Extent extent = k1WeaponSetToggleExtent();
+    auto button = std::static_pointer_cast<Button>(std::shared_ptr<Control>(_gui->newControl(ControlType::Button, "BTN_K1WEAPONSET")));
+    button->setBorder(style->border());
+    button->setHilight(style->hilight());
+    button->setText(style->text());
+    button->setAuthoredExtent(extent);
+    button->setExtent(extent);
+    button->setOnClick([this]() {
+        _k1SecondSet = !_k1SecondSet;
+        refreshK1WeaponSetToggle();
+        updateEquipment();
+    });
+    _gui->addControlToFront(button, IGUI::ControlCoordinates::Authored);
+    _k1WeaponSet = std::move(button);
+
+    Control::Extent iconExtent {extent.left + 2, extent.top + 2, extent.height - 4, extent.height - 4};
+    auto icon = std::static_pointer_cast<Label>(std::shared_ptr<Control>(_gui->newControl(ControlType::Label, "LBL_K1WEAPONSET")));
+    icon->setBorder(Control::Border());
+    icon->setBorderFill(kK1WeaponSetIcon);
+    icon->setSelectable(false);
+    icon->setSharpenBorderFillAlpha(true);
+    icon->setAuthoredExtent(iconExtent);
+    icon->setExtent(iconExtent);
+    _gui->addControlToFront(icon, IGUI::ControlCoordinates::Authored);
+    _k1WeaponSetIcon = std::move(icon);
+    refreshK1WeaponSetToggle();
+}
+
+void Equipment::swapWeaponSetsFromScreen() {
+    // The owner swaps (InGameMenu: the leader's sets); the screen then shows
+    // what is in hand now.
+    if (_onSwapWeapons && _onSwapWeapons()) {
+        updateEquipment();
+    }
+}
+
+void Equipment::refreshK1WeaponSetToggle() {
+    if (_k1WeaponSet) {
+        _k1WeaponSet->setTextMessage(_k1SecondSet ? "  2" : "  1");
+    }
+}
+
 void Equipment::confirmSelectedCandidate() {
     int selectedItemIdx = _controls.LB_ITEMS->selectedItemIndex();
     if (selectedItemIdx < 0 || selectedItemIdx >= _controls.LB_ITEMS->getItemCount())
@@ -285,7 +365,7 @@ void Equipment::confirmCandidateItem(const std::string &item) {
     auto index = _controls.LB_ITEMS->selectedItemIndex();
     if (index < 0 || index >= static_cast<int>(_listedItems.size()) || !_listedItems[index].valid) return;
     _awaitingRevision = _view.revision;
-    _backing->equip(_view.revision, _listedItems[index].handle, getInventorySlot(_selectedSlot));
+    _backing->equip(_view.revision, _listedItems[index].handle, inventorySlotFor(_selectedSlot));
     receiveEquipmentResult();
 }
 
@@ -354,6 +434,10 @@ void Equipment::selectSlot(Slot slot) {
     updateK2LoadoutOverlayVisibility(noneSelected);
 
     if (!isTSL()) {
+        if (_k1WeaponSet) {
+            _k1WeaponSet->setVisible(noneSelected);
+            _k1WeaponSetIcon->setVisible(noneSelected);
+        }
         _controls.LBL_PORT_BORD->setVisible(noneSelected);
         _controls.LBL_PORTRAIT->setVisible(noneSelected);
         _controls.LBL_TXTBAR->setVisible(noneSelected);
@@ -415,9 +499,9 @@ void Equipment::activateSlot(Slot slot) {
 }
 
 void Equipment::updateEquipment() {
-    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : getInventorySlot(_activeSlot)) : EquipmentView {};
+    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : inventorySlotFor(_activeSlot)) : EquipmentView {};
     for (auto &[slot, label] : _lblInv) {
-        auto equipped = _view.equipment.find(getInventorySlot(slot));
+        auto equipped = _view.equipment.find(inventorySlotFor(slot));
         label->setBorderFill(equipped == _view.equipment.end() ? getEmptySlotIcon(slot) : equipped->second);
     }
     _controls.LBL_ATKR->setTextMessage(_view.mainDamage);
@@ -468,7 +552,7 @@ std::shared_ptr<Texture> Equipment::getEmptySlotIcon(Slot slot) const {
 void Equipment::updateItems() {
     _controls.LB_ITEMS->clearItems();
     clearCandidateDescription();
-    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : getInventorySlot(_activeSlot)) : EquipmentView {};
+    _view = _backing ? _backing->readEquipment(_activeSlot == Slot::None ? -1 : inventorySlotFor(_activeSlot)) : EquipmentView {};
     _listedItems.clear();
     if (_activeSlot != Slot::None) {
         MenuItemView none;

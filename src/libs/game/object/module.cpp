@@ -20,6 +20,8 @@
 #include "reone/game/scripteventqueue.h"
 #include "reone/game/object/module.h"
 
+#include "reone/game/d20/forcepowers.h"
+
 #include "reone/game/action/interactobject.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/opencontainer.h"
@@ -229,6 +231,7 @@ void Module::raisePlayerRest(const Object &creature) {
 }
 
 void Module::runOnClientEnterScript(const Object &entering) {
+    setLastEntered(entering.id());
     if (_info.onClientEnter.empty()) {
         return;
     }
@@ -239,6 +242,7 @@ void Module::runOnClientEnterScript(const Object &entering) {
 }
 
 void Module::runOnClientLeaveScript(const Object &exiting) {
+    setLastLeft(exiting.id());
     if (_info.onClientLeave.empty()) {
         return;
     }
@@ -1075,6 +1079,12 @@ std::vector<ContextAction> Module::getContextActions(const std::shared_ptr<Objec
                 [this](FeatType type) { return _services.game.feats.get(type); });
             for (auto feat : attackFeats) {
                 actions.push_back(ContextAction(feat));
+            }
+
+            // The leader's hostile Force powers (spells.2da hostilesetting),
+            // on the target menu's middle slot as retail (design note k1hud_parity_2).
+            for (auto &power : hudForcePowers(leader->attributes().spells(), _services.game.spells, true)) {
+                actions.push_back(ContextAction(nullptr, std::move(power)));
             }
 
             // The leader's own items and, for a companion, the party's.

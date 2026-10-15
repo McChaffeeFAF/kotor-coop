@@ -289,6 +289,7 @@ void Feats::init() {
         feat->maxCR = maxCR;
         feat->exclusion = exclusion;
         feat->useType = feats->getInt(row, "usetype", -1);
+        feat->spellId = feats->getIntOpt(row, "spellid");
         _feats.insert(std::make_pair(static_cast<FeatType>(row), std::move(feat)));
     }
 }

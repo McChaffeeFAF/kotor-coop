@@ -18,6 +18,7 @@
 // Player settings, key bindings and selection cycling (design note p1_ui).
 
 #include "reone/game/game.h"
+#include "reone/game/action/switchweapons.h"
 
 #include "reone/game/coopsession.h"
 #include "reone/graphics/preset.h"
@@ -115,6 +116,9 @@ void Game::applyUserSettings(bool save) {
 
     _keymap.resetToDefaults();
     _keymap.applySettings(s);
+    _padBindings.resetToDefaults();
+    _padBindings.applySettings(s);
+    _padInput.setDeadZone(s.getFloat("pad.deadzone", 0.25f));
 
     if (save) {
         _userSettings.save();
@@ -179,6 +183,21 @@ void Game::cycleSelection(bool previous) {
     area->selectObject(candidates[next].second);
 }
 
+void Game::togglePauseAsKey() {
+    // Co-op: anyone pauses for everyone, shown with who paused.
+    if (_coop && _coop->handlePauseKey()) {
+        return;
+    }
+    setPaused(!isPaused());
+}
+
+void Game::toggleSoloModeAsKey() {
+    if (_coop && _coop->isClient()) {
+        return; // co-op: the party's follow mode is the host's
+    }
+    _party.setSoloMode(!_party.isSoloMode());
+}
+
 bool Game::dispatchKeyAction(KeyAction action) {
     auto leader = _party.getLeader();
     switch (action) {
@@ -192,10 +211,7 @@ bool Game::dispatchKeyAction(KeyAction action) {
         if (_options.game.developer) {
             return false; // developer builds keep V for the camera toggle
         }
-        if (_coop && _coop->isClient()) {
-            return true; // co-op: the party's follow mode is the host's
-        }
-        _party.setSoloMode(!_party.isSoloMode());
+        toggleSoloModeAsKey();
         return true;
     case KeyAction::Freelook:
         toggleInGameCameraType();
@@ -225,11 +241,7 @@ bool Game::dispatchKeyAction(KeyAction action) {
         openInGameMenu(InGameMenuTab::Options);
         return true;
     case KeyAction::PauseKey:
-        // Co-op: anyone pauses for everyone, shown with who paused.
-        if (_coop && _coop->handlePauseKey()) {
-            return true;
-        }
-        setPaused(!isPaused());
+        togglePauseAsKey();
         return true;
     case KeyAction::TargetLeftAct:
     case KeyAction::TargetMiddleAct:
@@ -258,6 +270,12 @@ bool Game::dispatchKeyAction(KeyAction action) {
             _coop->submitRequest(net::CommandType::Cancel, 0, 1);
         } else if (leader) {
             leader->cancelCombat();
+        }
+        return true;
+    case KeyAction::SwitchWeapons:
+        // As the HUD's swap button (both layouts).
+        if (leader) {
+            requestWeaponSwitch(*this, *leader);
         }
         return true;
     case KeyAction::ClearOneAction:

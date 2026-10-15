@@ -436,6 +436,10 @@ Texture &RetroRenderPipeline::render() {
             _context.blitFramebuffer(*_targets.ping, *_targets.output, screenRect, screenRect, 0, 0);
         }
 
+        // Frame effects a power or a minigame names (speed blur, distortion
+        // overlays): in every preset, they are game effects.
+        applyFrameEffects(*_targets.output, *_targets.outputColor, *_targets.ping);
+
         // Post-processing effects
         if (_passCallbacks.count(RenderPassName::PostProcessing) > 0) {
             _passCallbacks.at(RenderPassName::PostProcessing)(pass);

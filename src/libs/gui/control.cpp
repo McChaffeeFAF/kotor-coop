@@ -192,6 +192,13 @@ bool Control::handleClick(int x, int y, int clicks) {
     return true;
 }
 
+bool Control::handlePadAccept() {
+    int x = 0;
+    int y = 0;
+    _extent.getCenter(x, y);
+    return handleClick(x, y, 1);
+}
+
 void Control::update(float dt) {
     if (!_visible) {
         return;

@@ -25,7 +25,9 @@
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/module.h"
+#include "reone/game/object/item.h"
 #include "reone/game/object/placeable.h"
+#include "reone/game/object/store.h"
 #include "reone/game/party.h"
 #include "reone/game/action/opencontainer.h"
 #include "reone/system/logutil.h"
@@ -216,13 +218,71 @@ void CoopSession::clientHandleBench(const BenchView &view) {
     if (!view.open) {
         _benchView.open = false;
     }
+    _benchScreen.setView(_benchView);
+    auto store = std::dynamic_pointer_cast<Store>(_benchHolder);
+    if (store && store->isRuntimeLive()) {
+        // The stand-ins are rebuilt from every view: the host's inventory is the truth.
+        std::vector<std::shared_ptr<Item>> old(store->items().begin(), store->items().end());
+        for (auto &item : old) {
+            store->removeItemStack(item);
+            _game.destroyRuntimeObjectGraph(item);
+        }
+    }
+    _benchScreen.clearStandIns();
+    if (!_benchView.open) {
+        _game.closeGuestBench();
+        return;
+    }
+    if (!store || !store->isRuntimeLive()) {
+        store = _game.newStore();
+        store->setTag("coop_bench");
+        _benchHolder = store;
+    }
+    // Local stand-ins of the host's items, from this install's templates, so the upgrade
+    // screen can draw and stage them as it does its own.
+    for (const auto &entry : _benchScreen.standIns()) {
+        auto item = _game.newItemFromBlueprint(entry.resref);
+        if (!item) {
+            continue;
+        }
+        item->setStackSize(entry.stack);
+        item->setUpgrades(entry.upgrades);
+        if (entry.modelVariation >= 0) {
+            item->setModelVariation(entry.modelVariation);
+        }
+        store->addItem(item);
+        const auto &held = store->items();
+        if (std::find(held.begin(), held.end(), item) != held.end()) {
+            _benchScreen.mapStandIn(item->id(), entry.host);
+        }
+    }
+    _game.showGuestBench();
+}
+
+std::shared_ptr<Object> CoopSession::benchHolder() const {
+    return _benchHolder && _benchHolder->isRuntimeLive() ? _benchHolder : nullptr;
+}
+
+bool CoopSession::clientBenchRequest(const BenchRequest &request) {
+    switch (request.kind) {
+    case BenchRequest::Kind::Upgrade:
+        return clientBenchUpgrade(request.item, request.part);
+    case BenchRequest::Kind::Remove:
+        return clientBenchRemove(request.item, request.slot);
+    case BenchRequest::Kind::Craft:
+        return clientBenchCraft(request.resref, request.material);
+    case BenchRequest::Kind::Break:
+        return clientBenchBreak(request.item);
+    }
+    return false;
 }
 
 bool CoopSession::clientBenchUpgrade(uint32_t itemId, uint32_t partId) {
     if (!clientBenchOpen()) {
         return false;
     }
-    submitRequest(CommandType::BenchUpgrade, _benchView.bench, static_cast<int32_t>(itemId), std::to_string(partId));
+    _benchScreen.clearRejection();
+    _benchScreen.track(submitRequest(CommandType::BenchUpgrade, _benchView.bench, static_cast<int32_t>(itemId), std::to_string(partId)));
     return true;
 }
 
@@ -230,7 +290,8 @@ bool CoopSession::clientBenchRemove(uint32_t itemId, int slotIndex) {
     if (!clientBenchOpen() || slotIndex < 0) {
         return false;
     }
-    submitRequest(CommandType::BenchRemove, _benchView.bench, static_cast<int32_t>(itemId), std::to_string(slotIndex));
+    _benchScreen.clearRejection();
+    _benchScreen.track(submitRequest(CommandType::BenchRemove, _benchView.bench, static_cast<int32_t>(itemId), std::to_string(slotIndex)));
     return true;
 }
 
@@ -238,7 +299,8 @@ bool CoopSession::clientBenchCraft(const std::string &resref, int material) {
     if (!clientBenchOpen()) {
         return false;
     }
-    submitRequest(CommandType::BenchCraft, _benchView.bench, material, resref);
+    _benchScreen.clearRejection();
+    _benchScreen.track(submitRequest(CommandType::BenchCraft, _benchView.bench, material, resref));
     return true;
 }
 
@@ -246,7 +308,8 @@ bool CoopSession::clientBenchBreak(uint32_t itemId) {
     if (!clientBenchOpen()) {
         return false;
     }
-    submitRequest(CommandType::BenchBreak, _benchView.bench, static_cast<int32_t>(itemId));
+    _benchScreen.clearRejection();
+    _benchScreen.track(submitRequest(CommandType::BenchBreak, _benchView.bench, static_cast<int32_t>(itemId)));
     return true;
 }
 
@@ -256,6 +319,7 @@ bool CoopSession::clientBenchClose() {
     }
     _benchView.open = false;
     submitRequest(CommandType::BenchClose, _benchView.bench, 0);
+    _benchScreen.reset();
     return true;
 }
 

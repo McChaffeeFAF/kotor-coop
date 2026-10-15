@@ -64,9 +64,67 @@ static glm::mat4 rotationOf(const glm::mat4 &transform) {
     return result;
 }
 
+// The medal (v_medal_dur) is authored upright in model space (its node turns
+// the flat medal up, ribbon on top) with its one face towards -Y, so it is
+// turned about to face out of the target's chest; it is pinned this far out
+// from the impact node in the target's frame (models face +Y, their left is
+// -X). Our placement (design note v15_vfx_leftovers).
+static const glm::vec3 kMedalOffset(-0.08f, 0.14f, 0.10f);
+
+// A node of the target or of the head model attached at its head hook (K1's
+// creature heads are models of their own).
+static ModelNodeSceneNode *findBodyOrHeadNode(ModelSceneNode &target, const std::string &name) {
+    if (auto node = target.getNodeByName(name)) {
+        return node;
+    }
+    if (auto head = target.getAttachment("headhook"); head && head->type() == SceneNodeType::Model) {
+        return static_cast<ModelSceneNode *>(head)->getNodeByName(name);
+    }
+    return nullptr;
+}
+
+// Revan's masks: the supermodels carry a hook for each, revmask1hook under the
+// right hand (the mask held) and revmask2hook under head_g (the mask worn).
+static glm::mat4 maskTransform(ModelSceneNode &target, const std::string &hook) {
+    if (auto node = findBodyOrHeadNode(target, hook)) {
+        return glm::translate(node->origin()) * rotationOf(node->absoluteTransform());
+    }
+    return VisualEffectPresenter::attachTransform(target, VisualEffectPresenter::AttachPoint::Head, false);
+}
+
 glm::mat4 VisualEffectPresenter::attachTransform(ModelSceneNode &target, AttachPoint point, bool keepWorldOrientation) {
     const glm::mat4 &root = target.absoluteTransform();
     glm::vec3 position(root[3]);
+    if (point == AttachPoint::Head) {
+        // The masks (v_revmask1/2_dur) are authored on the head hook: from the
+        // neck up, facing +Y. They turn with the head.
+        ModelNodeSceneNode *node = target.getNodeByName("headhook");
+        if (!node) {
+            node = target.getNodeByName("head");
+        }
+        if (node) {
+            return glm::translate(node->origin()) * rotationOf(node->absoluteTransform());
+        }
+        point = AttachPoint::Impact;
+    }
+    if (point == AttachPoint::AboveHead) {
+        // The fizzle (v_fizzle_imp): a small burst of flares, a little over
+        // the head hook, where it is not hidden inside the body. Our choice.
+        glm::vec3 above = position + glm::vec3(0.0f, 0.0f, 1.9f);
+        if (auto node = target.getNodeByName("headhook")) {
+            above = node->origin() + glm::vec3(0.0f, 0.0f, 0.3f);
+        }
+        return glm::translate(above) * (keepWorldOrientation ? glm::mat4(1.0f) : rotationOf(root));
+    }
+    if (point == AttachPoint::Chest) {
+        glm::mat4 rotation = rotationOf(root);
+        glm::vec3 chest = position + glm::vec3(0.0f, 0.0f, 1.2f);
+        if (auto node = target.getNodeByName("impact")) {
+            chest = node->origin();
+        }
+        glm::mat4 aboutFace(glm::rotate(glm::mat4(1.0f), glm::pi<float>(), glm::vec3(0.0f, 0.0f, 1.0f)));
+        return glm::translate(chest + glm::vec3(rotation * glm::vec4(kMedalOffset, 0.0f))) * rotation * aboutFace;
+    }
     if (point != AttachPoint::Root) {
         // Head-conjure falls back to impact, impact to the root.
         ModelNodeSceneNode *node = nullptr;
@@ -219,6 +277,7 @@ void VisualEffectPresenter::clear() {
     _active.clear();
     _pending.clear();
     _overlayTargets.clear(); // the models go with the area
+    _motion.clear();
     _shakes.clear();
     _shakeOffset = glm::vec3(0.0f);
 }
@@ -282,6 +341,18 @@ void VisualEffectPresenter::start(const std::shared_ptr<Request> &request, const
     addPart(desc.impHeadConNode, AttachPoint::HeadConjure);
     addPart(desc.impImpactNode, AttachPoint::Impact);
     addPart(desc.rootModel(), AttachPoint::Root);
+    // A programmed effect drawn with its own model (fizzle, medal, masks).
+    if (desc.progfxModel && request->targetId != 0) {
+        AttachPoint point = AttachPoint::Impact;
+        if (desc.progfxPlace == VisualEffectDesc::ProgfxPlace::AboveHead) {
+            point = AttachPoint::AboveHead;
+        } else if (desc.progfxPlace == VisualEffectDesc::ProgfxPlace::Chest) {
+            point = AttachPoint::Chest;
+        } else if (desc.progfxPlace == VisualEffectDesc::ProgfxPlace::Head) {
+            point = AttachPoint::Head;
+        }
+        addPart(desc.progfxModel, point);
+    }
     // A programmed beam: its model leaves from the effector and reaches the
     // target. Without an effector (a plain EffectVisualEffect of a beam row)
     // there is nothing to draw it from.
@@ -379,6 +450,8 @@ void VisualEffectPresenter::place(Presented &presented, const Context &ctx) {
         glm::mat4 transform = root;
         if (target && part.point == AttachPoint::Hand) {
             transform = glm::translate(beamSourcePoint(*target, static_cast<int>(BodyNode::HandRight))) * rotationOf(root);
+        } else if (target && part.point == AttachPoint::Head) {
+            transform = maskTransform(*target, desc.progfxDuration == 1701 ? "revmask1hook" : "revmask2hook");
         } else if (target && part.point != AttachPoint::Root) {
             transform = attachTransform(*target, part.point, desc.orientationOff);
         } else if (!target && part.point != AttachPoint::Root && request.targetId != 0) {
@@ -555,32 +628,114 @@ void VisualEffectPresenter::update(float dt, const Context &ctx) {
             return !duration || presented.endHandled || !presented.loopSound;
         }),
         _active.end());
-    updateOverlays(ctx);
+    updateOverlays(dt, ctx);
     updateShake(dt, ctx);
 }
 
 bool VisualEffectPresenter::overlayLive(const Presented &presented) const {
     const VisualEffectDesc &desc = *presented.request->desc;
-    if (!desc.bodyLook || !desc.bodyTexture || presented.request->targetId == 0 || presented.targetLost) {
+    bool look = desc.bodyLook && desc.bodyTexture;
+    if ((!look && !desc.speedTrail) || presented.request->targetId == 0 || presented.targetLost) {
         return false;
     }
     return !overlayDone(presented.lasting, presented.age, presented.sinceEnd);
 }
 
-void VisualEffectPresenter::updateOverlays(const Context &ctx) {
+// The speed effect (design note v15_vfx_leftovers): afterimages a little
+// behind a moving target, blue-white, fainter further back; a standing one
+// gives off a slow outward pulse instead. Our design: K1's progfx 1500/1601
+// name a motion blur that no shipped data describes.
+static const glm::vec3 kSpeedTint(1.1f, 1.6f, 2.4f); // over 1: the texture brightened, blue-white
+static constexpr int kSpeedGhosts = 3;
+static constexpr float kSpeedGhostSpacing = 0.05f;      // seconds of travel between afterimages
+static constexpr float kSpeedMovingFrom = 0.5f;         // m/s: slower counts as standing
+static constexpr float kSpeedMovingFull = 2.0f;         // m/s: the trail at full strength
+static constexpr float kSpeedPulseRate = 1.6f;          // standing pulses a second
+static constexpr float kSpeedVelocitySmoothing = 0.08f; // seconds
+
+std::vector<BodyOverlay> VisualEffectPresenter::speedGhosts(const glm::vec3 &velocity, float strength, float time) {
+    std::vector<BodyOverlay> ghosts;
+    if (strength <= 0.0f) {
+        return ghosts;
+    }
+    float speed = glm::length(velocity);
+    float moving = glm::clamp((speed - kSpeedMovingFrom) / (kSpeedMovingFull - kSpeedMovingFrom), 0.0f, 1.0f);
+    if (moving > 0.0f) {
+        for (int i = 1; i <= kSpeedGhosts; ++i) {
+            BodyOverlay ghost;
+            ghost.ghost = true;
+            ghost.offset = -velocity * (kSpeedGhostSpacing * static_cast<float>(i));
+            ghost.tint = kSpeedTint;
+            ghost.inflate = 0.005f;
+            ghost.strength = strength * moving * (0.75f - 0.2f * static_cast<float>(i));
+            ghost.time = time;
+            ghosts.push_back(ghost);
+        }
+    }
+    if (moving < 1.0f) {
+        float phase = glm::fract(time * kSpeedPulseRate);
+        BodyOverlay pulse;
+        pulse.ghost = true;
+        pulse.tint = kSpeedTint;
+        pulse.inflate = 0.01f + 0.06f * phase;
+        pulse.strength = strength * (1.0f - moving) * 0.8f * (1.0f - phase);
+        pulse.time = time;
+        ghosts.push_back(pulse);
+    }
+    return ghosts;
+}
+
+void VisualEffectPresenter::updateOverlays(float dt, const Context &ctx) {
     struct Look {
         std::vector<BodyOverlay> overlays;
         float opacity {1.0f};
     };
+    // How fast each speed-effect target moves, smoothed over a few frames
+    // (its model moves by simulation ticks, not every rendered frame).
+    std::map<uint32_t, Motion> motion;
+    for (auto &presented : _active) {
+        if (!presented.request->desc->speedTrail || !overlayLive(presented)) {
+            continue;
+        }
+        uint32_t id = presented.request->targetId;
+        auto model = ctx.modelOf ? ctx.modelOf(id) : nullptr;
+        if (!model || motion.count(id)) {
+            continue;
+        }
+        glm::vec3 position(model->absoluteTransform()[3]);
+        Motion next;
+        next.position = position;
+        auto previous = _motion.find(id);
+        if (previous != _motion.end()) {
+            next.velocity = previous->second.velocity;
+            if (dt > 0.0f) {
+                glm::vec3 raw((position - previous->second.position) / dt);
+                next.velocity = glm::mix(next.velocity, raw, 1.0f - std::exp(-dt / kSpeedVelocitySmoothing));
+            }
+        }
+        motion[id] = next;
+    }
+    _motion = std::move(motion);
+
     std::map<uint32_t, Look> looks;
     for (auto &presented : _active) {
         if (!overlayLive(presented)) {
             continue;
         }
         const VisualEffectDesc &desc = *presented.request->desc;
-        const auto &look = *desc.bodyLook;
         float strength = overlayStrength(presented.lasting, presented.age, presented.sinceEnd);
         auto &target = looks[presented.request->targetId];
+        if (desc.speedTrail) {
+            auto it = _motion.find(presented.request->targetId);
+            glm::vec3 velocity = it != _motion.end() ? it->second.velocity : glm::vec3(0.0f);
+            for (auto &ghost : speedGhosts(velocity, strength, presented.age)) {
+                target.overlays.push_back(ghost);
+            }
+        }
+        if (!desc.bodyLook || !desc.bodyTexture) {
+            continue;
+        }
+        const auto &look = *desc.bodyLook;
         BodyOverlay overlay;
         overlay.texture = desc.bodyTexture.get();
         overlay.strength = strength;

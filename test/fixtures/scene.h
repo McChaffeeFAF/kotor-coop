@@ -36,6 +36,12 @@ public:
     MOCK_METHOD(graphics::Texture &, render, (const glm::ivec2 &dim), (override));
 
     MOCK_METHOD(void, clear, (), (override));
+    MOCK_METHOD(void, setSpeedBlur, (bool), (override));
+    MOCK_METHOD(void, setSpeedBlurRatio, (float), (override));
+    MOCK_METHOD(bool, isSpeedBlurEnabled, (), (const, override));
+    MOCK_METHOD(void, setVideoEffect, (std::optional<VideoEffect>), (override));
+    MOCK_METHOD(bool, isForceSightEnabled, (), (const, override));
+    MOCK_METHOD(float, forceSightPulse, (), (const, override));
 
     MOCK_METHOD(void, addRoot, (std::shared_ptr<ModelSceneNode>), (override));
     MOCK_METHOD(void, addRoot, (std::shared_ptr<WalkmeshSceneNode>), (override));

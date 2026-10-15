@@ -59,8 +59,11 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/coopnet.cpp
     ${TESTS_SOURCE_DIR}/game/cooploot.cpp
     ${TESTS_SOURCE_DIR}/game/coopprompts.cpp
+    ${TESTS_SOURCE_DIR}/game/guestbenchscreen.cpp
+    ${TESTS_SOURCE_DIR}/game/forkports.cpp
     ${TESTS_SOURCE_DIR}/net/protocol.cpp
     ${TESTS_SOURCE_DIR}/net/roundtrip.cpp
+    ${TESTS_SOURCE_DIR}/net/signallink.cpp
     ${TESTS_SOURCE_DIR}/game/actionactor.cpp
     ${TESTS_SOURCE_DIR}/game/area.cpp
     ${TESTS_SOURCE_DIR}/game/c10movement.cpp
@@ -118,7 +121,9 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/journal.cpp
     ${TESTS_SOURCE_DIR}/game/messagebus.cpp
     ${TESTS_SOURCE_DIR}/game/minigame.cpp
+    ${TESTS_SOURCE_DIR}/game/coopminigame.cpp
     ${TESTS_SOURCE_DIR}/game/minigamesession.cpp
+    ${TESTS_SOURCE_DIR}/game/padinput.cpp
     ${TESTS_SOURCE_DIR}/game/modulename.cpp
     ${TESTS_SOURCE_DIR}/game/modulesnapshot.cpp
     ${TESTS_SOURCE_DIR}/game/loadfromsavegame.cpp
@@ -177,6 +182,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/graphics/walkmesh.cpp
     ${TESTS_SOURCE_DIR}/gui/control/progressbar.cpp
     ${TESTS_SOURCE_DIR}/gui/controlrender.cpp
+    ${TESTS_SOURCE_DIR}/gui/navigation.cpp
     ${TESTS_SOURCE_DIR}/json/gff.cpp
     ${TESTS_SOURCE_DIR}/resource/archivevalidation.cpp
     ${TESTS_SOURCE_DIR}/resource/extractresources.cpp

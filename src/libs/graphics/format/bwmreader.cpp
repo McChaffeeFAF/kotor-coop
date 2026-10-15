@@ -37,6 +37,20 @@ void BwmReader::load() {
     std::vector<float> position(_bwm.readFloatArray(3));
     _position = glm::make_vec3(&position[0]);
 
+    // The header, use points included, is kept even for a walkmesh without
+    // faces (upstream #356).
+    _walkmesh = std::make_shared<Walkmesh>();
+    _walkmesh->_area = _type == WalkmeshType::WOK;
+    _walkmesh->relativeUsePositions = {glm::make_vec3(relUsePosition1.data()), glm::make_vec3(relUsePosition2.data())};
+    _walkmesh->absoluteUsePositions = {glm::make_vec3(absUsePosition1.data()), glm::make_vec3(absUsePosition2.data())};
+    _walkmesh->position = _position;
+    for (const auto *use : {&relUsePosition1, &relUsePosition2}) {
+        glm::vec3 point(glm::make_vec3(use->data()));
+        if (point != glm::vec3(0.0f)) {
+            _walkmesh->usePositions.push_back(point);
+        }
+    }
+
     _numVertices = _bwm.readUint32();
     if (_numVertices == 0) {
         return;
@@ -63,15 +77,6 @@ void BwmReader::load() {
         _offPerimeters = _bwm.readUint32();
     }
 
-    _walkmesh = std::make_shared<Walkmesh>();
-    _walkmesh->_area = _type == WalkmeshType::WOK;
-    for (const auto *use : {&relUsePosition1, &relUsePosition2}) {
-        glm::vec3 point(glm::make_vec3(use->data()));
-        if (point != glm::vec3(0.0f)) {
-            _walkmesh->usePositions.push_back(point);
-        }
-    }
-
     loadVertices();
     loadFaces();
     loadMaterials();
@@ -89,10 +94,15 @@ void BwmReader::loadVertices() {
     auto &array = _walkmesh->vertices;
     _bwm.checkCount(_numVertices);
     array.reserve(_numVertices);
+    // A door or placeable walkmesh places its vertices by its position offset
+    // (upstream #356): K1's open-door walkmeshes are authored at the hinge
+    // origin and offset to the jamb (dor_lhr011: -2.79 m). An area
+    // walkmesh's vertices are already where they lie.
+    const glm::vec3 offset = _type == WalkmeshType::PWK_DWK ? _position : glm::vec3(0.0f);
     for (uint32_t i = 0; i < _numVertices; ++i) {
-        float x = _bwm.readFloat();
-        float y = _bwm.readFloat();
-        float z = _bwm.readFloat();
+        float x = _bwm.readFloat() + offset.x;
+        float y = _bwm.readFloat() + offset.y;
+        float z = _bwm.readFloat() + offset.z;
         array.emplace_back(x, y, z);
     }
 }

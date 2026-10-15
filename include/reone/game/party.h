@@ -225,7 +225,8 @@ public:
     /** As a save load does: persisted fields replace all bindings. */
     void loadPersistedState(PersistedState state);
 
-    void setPartyLeader(int npc);
+    /** Hand the lead to a member. False when no member has that slot. */
+    bool setPartyLeader(int npc);
     void setPartyLeaderByIndex(int index);
     void setPlayer(const std::shared_ptr<Creature> &player);
     void setActualPlayer(const std::shared_ptr<Creature> &player) { _actualPlayer = player; }
@@ -292,6 +293,16 @@ public:
     bool addAvailableRosterRecord(
         const RosterIdentity &identity,
         const std::string &blueprint);
+
+    /**
+     * A new persistent record replaced the slot's character: drop the runtime
+     * creature still bound to the slot (unless it is in the party or is the
+     * player), so the next spawn materializes the new record. The dropped
+     * creature is destroyed unless it stands in the current area.
+     */
+    void retireStaleRosterBinding(
+        const RosterIdentity &identity,
+        const Creature *keep = nullptr);
 
     bool addAvailableMember(int npc, const std::string &blueprint);
     /**

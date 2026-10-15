@@ -24,6 +24,7 @@
 
 #include "reone/game/coopsession.h"
 #include "reone/graphics/format/tgawriter.h"
+#include "reone/graphics/gamepadevents.h"
 #include "reone/graphics/gputimer.h"
 #include "reone/graphics/preset.h"
 #include "reone/graphics/window.h"
@@ -104,6 +105,10 @@ static void imguiShutdown() {
 void Engine::init() {
     if (!SDL_Init(SDL_INIT_VIDEO)) {
         throw std::runtime_error("SDL_Init failed: " + std::string(SDL_GetError()));
+    }
+    // Gamepads are optional: a machine without them (or without the means to look) plays on.
+    if (!SDL_InitSubSystem(SDL_INIT_GAMEPAD)) {
+        warn("Gamepad support is unavailable: " + std::string(SDL_GetError()));
     }
 
     if (_options.graphics.headless) {
@@ -690,6 +695,20 @@ void Engine::processEvents(bool &quit) {
         if (sdlEvent.type == SDL_EVENT_QUIT) {
             quit = true;
             break;
+        }
+        if (auto pad = graphics::gamepadEventFromSDL(sdlEvent)) {
+            // Hot-plug: open a pad that arrives, let go of one that leaves.
+            if (sdlEvent.type == SDL_EVENT_GAMEPAD_ADDED) {
+                SDL_OpenGamepad(sdlEvent.gdevice.which);
+            } else if (sdlEvent.type == SDL_EVENT_GAMEPAD_REMOVED) {
+                if (auto *gamepad = SDL_GetGamepadFromID(sdlEvent.gdevice.which)) {
+                    SDL_CloseGamepad(gamepad);
+                }
+            }
+            if (!_options.graphics.headless) {
+                unhandled.push(*pad);
+            }
+            continue;
         }
         if (_options.graphics.headless) {
             if (_window->isAssociatedWith(sdlEvent) && _window->handle(sdlEvent) && _window->isCloseRequested()) {

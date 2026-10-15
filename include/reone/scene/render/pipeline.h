@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "reone/graphics/framebuffer.h"
 #include "reone/graphics/renderbuffer.h"
 #include "reone/graphics/texture.h"
@@ -57,9 +59,38 @@ enum class RendererType {
     PBR
 };
 
+/**
+ * Treatments of the whole finished frame that a power or a shot names
+ * (upstream #356). Force Sight also changes how the scene itself is drawn.
+ * The clairvoyance and Fury overlays each lay their texture over a distorted
+ * low-resolution copy of the frame. (The dialogue / script video effects of
+ * videoeffects.2da - tint, desaturation, scan noise - are drawn by the game
+ * over the frame, see Game::VideoEffect.)
+ */
+struct VideoEffect {
+    bool forceSight {false};
+    std::shared_ptr<graphics::Texture> distortion;
+    std::shared_ptr<graphics::Texture> clairvoyance;
+    std::shared_ptr<graphics::Texture> fury;
+};
+
+/** The treatments laid over the whole finished frame. */
+struct FrameEffects {
+    /**
+     * The speed blur: each frame is blended with a 128x128 history of the
+     * earlier output, weighted by speedBlurRatio.
+     */
+    bool speedBlur {false};
+    float speedBlurRatio {0.75f};
+    std::optional<VideoEffect> videoEffect;
+};
+
 class IRenderPipeline {
 public:
     virtual ~IRenderPipeline() = default;
+
+    /** The frame effects the next render() lays over its output. */
+    virtual void setFrameEffects(const FrameEffects &effects) {}
 
     virtual void init() = 0;
 
@@ -200,6 +231,30 @@ protected:
     void applyMedianFilter(graphics::Texture &tex, graphics::Framebuffer &dst, const glm::ivec2 &size, bool strong = false);
     void applyFXAA(graphics::Texture &tex, graphics::Framebuffer &dst, const glm::ivec2 &size);
     void applySharpen(graphics::Texture &tex, graphics::Framebuffer &dst, const glm::ivec2 &size, float amount);
+
+    // Frame effects (upstream #356)
+
+    FrameEffects _frameEffects;
+    bool _previousFrameWasSpeed {false};
+    std::shared_ptr<graphics::Texture> _speedBlurHistoryColor;
+    std::unique_ptr<graphics::Framebuffer> _speedBlurHistory;
+
+public:
+    void setFrameEffects(const FrameEffects &effects) override { _frameEffects = effects; }
+
+protected:
+    /** Lays the speed blur and the distortion overlays over \p output, through \p scratch. */
+    void applyFrameEffects(graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
+    /**
+     * When the frame effects have the speed blur, blends \p output with the
+     * history if the previous frame was blurred too, then shrinks \p output
+     * into the history.
+     */
+    void applySpeedBlur(graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
+    /** The 128x128 copy of earlier output the speed blur and the overlays read. */
+    void initSpeedBlurHistory();
+    /** Lays \p overlay over \p output, showing the history distorted by \p distortion through it. */
+    void drawDistortionOverlay(graphics::Texture &distortion, graphics::Texture &overlay, graphics::Framebuffer &output, graphics::Texture &outputColor, graphics::Framebuffer &scratch);
 
     // Enhanced preset post-processing, shared by both pipelines. Each init
     // makes targets only for the features on (renderPipelineKey).
