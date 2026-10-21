@@ -2,16 +2,17 @@ KotOR co-op test build
 ======================
 
 This folder holds the game engine only. It contains no game files: it
-plays from YOUR copies of Star Wars: Knights of the Old Republic and
-Knights of the Old Republic II (intended for the Steam versions; other
-versions such as GOG or retail discs may work but are untested), and never
-changes them.
+plays from YOUR copy of Star Wars: Knights of the Old Republic (intended
+for the Steam version; other versions such as GOG or retail discs may work
+but are untested), and never changes it. Star Wars: Knights of the Old
+Republic II is OPTIONAL: with it you get the KotOR II look and its feats,
+powers and classes; without it the game plays KotOR 1 with the KotOR look.
 
 1. Double-click "Play KotOR Co-op.cmd". The first time, it finds your
-   KotOR and KotOR II installs by itself (Steam, including libraries on
-   other drives, and GOG). If it can't find one, click Change... and pick
-   the folder that has swkotor.exe or swkotor2.exe. Your name defaults to
-   your Windows user name; change it in the box.
+   KotOR install by itself (Steam, including libraries on other drives,
+   and GOG). If it can't find it, click Change... and pick the folder that
+   has swkotor.exe. KotOR II is detected too and used if present. Your
+   name defaults to your Windows user name; change it in the box.
    Display: "Fullscreen windowed" (the default: a borderless window at
    your desktop resolution, easy to Alt+Tab), "Fullscreen" (switches the
    screen to the Size you pick) or "Windowed" (a window of that Size).

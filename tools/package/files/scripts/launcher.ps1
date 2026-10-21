@@ -61,7 +61,11 @@ foreach ($pair in @(@("k1", "game"), @("k2", "k2game"))) {
 }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = Get-CleanName $env:USERNAME }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = "Player" }
-if ($cfg["hud"] -notin @("k1", "k2")) { $cfg["hud"] = "k1" }
+# The HUD default follows what is installed: the KotOR II look needs a KotOR II
+# install for its GUI resources, so without one the KotOR look is the only choice.
+$k2installed = [bool]($cfg["k2game"] -and (Test-Install $cfg["k2game"] $Games["k2"].Exe))
+if ($cfg["hud"] -notin @("k1", "k2")) { $cfg["hud"] = $(if ($k2installed) { "k2" } else { "k1" }) }
+if (-not $k2installed -and $cfg["hud"] -eq "k2") { $cfg["hud"] = "k1" }
 # First run: fullscreen windowed at the desktop resolution.
 if (-not $cfg.Contains("fullscreen") -and -not $cfg.Contains("borderless")) {
     $cfg["borderless"] = "1"; $cfg["fullscreen"] = "0"
@@ -101,6 +105,7 @@ foreach ($pair in @(@("k1", "game"), @("k2", "k2game"))) {
     $label = Add-Control (New-Object System.Windows.Forms.Label) 14 $y 440 18
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $label.Text = $Games[$which].Title
+    if ($which -eq "k2") { $label.Text += "  (optional)" }
     $path = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 19) 440 18
     $change = Add-Control (New-Object System.Windows.Forms.Button) 462 ($y + 6) 84 26
     $change.Text = "Change..."
@@ -130,7 +135,9 @@ $hudLabel.Text = "HUD:"
 $hudBox = Add-Control (New-Object System.Windows.Forms.ComboBox) 404 $y 142 22
 $hudBox.DropDownStyle = "DropDownList"
 [void]$hudBox.Items.AddRange(@("KotOR II look", "KotOR look"))
-$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k2") { 0 } else { 1 })
+$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k1") { 1 } else { 0 })
+# The KotOR II look needs a KotOR II install; without one only the KotOR look works.
+if (-not $k2installed) { $hudBox.SelectedIndex = 1; $hudBox.Enabled = $false; $hudLabel.Text = "HUD:" }
 $y += 36
 
 $displayLabel = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 4) 150 18
@@ -213,24 +220,32 @@ function Start-Texgen {
 }
 
 function Update-Rows {
-    $ready = $true
-    foreach ($which in @("k1", "k2")) {
-        $row = $rows[$which]
-        $p = $cfg[$row.Key]
-        if ($p -and (Test-Install $p $Games[$which].Exe)) {
-            $row.Path.Text = "$p  ($($sources[$which]))"
-            $row.Path.ForeColor = [System.Drawing.Color]::DarkGreen
-        } else {
-            $row.Path.Text = "Not found. Click Change... and pick the install folder."
-            $row.Path.ForeColor = [System.Drawing.Color]::Firebrick
-            $ready = $false
-        }
+    # KotOR is required; KotOR II is optional. Without it the engine plays K1
+    # with the K1 HUD (--hud k1, no --k2game) — fully supported.
+    $k1 = $rows["k1"]; $k2 = $rows["k2"]
+    $ready = $false
+    $p = $cfg[$k1.Key]
+    if ($p -and (Test-Install $p $Games["k1"].Exe)) {
+        $k1.Path.Text = "$p  ($($sources['k1']))"
+        $k1.Path.ForeColor = [System.Drawing.Color]::DarkGreen
+        $ready = $true
+    } else {
+        $k1.Path.Text = "Not found. Click Change... and pick the install folder."
+        $k1.Path.ForeColor = [System.Drawing.Color]::Firebrick
+    }
+    $p2 = $cfg[$k2.Key]
+    if ($p2 -and (Test-Install $p2 $Games["k2"].Exe)) {
+        $k2.Path.Text = "$p2  ($($sources['k2']))"
+        $k2.Path.ForeColor = [System.Drawing.Color]::DarkGreen
+    } else {
+        $k2.Path.Text = "None found. Optional: adds the KotOR II look and its feats, powers and classes."
+        $k2.Path.ForeColor = [System.Drawing.Color]::DimGray
     }
     foreach ($b in @($hostButton, $joinButton, $soloButton)) { $b.Enabled = $ready }
     # Surface Detail needs only KotOR 1's textures; texgen.exe ships beside engine.exe.
     $texgenButton.Enabled = ($null -eq $script:texgenProcess) -and (Test-Path $TexgenExe) -and
         [bool]($cfg["game"] -and (Test-Install $cfg["game"] $Games["k1"].Exe))
-    if (-not $ready) { $status.Text = "Both games are needed: this build plays from your own KotOR and KotOR II installs." }
+    if (-not $ready) { $status.Text = "KotOR (the first game) is needed: point at the folder with swkotor.exe." }
     elseif (-not $useCodes) { $status.Text = (Get-PortForwardHint $hostPort) + " The first time, allow engine.exe through Windows Firewall." }
     else { $status.Text = "Ready. The first time, allow engine.exe through Windows Firewall or co-op can't connect." }
 }

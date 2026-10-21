@@ -197,6 +197,15 @@ cfg_set() {
     mv "$tmp" "$file"
 }
 
+# cfg_remove FILE KEY: drop a key (used when KotOR II is not installed).
+cfg_remove() {
+    local file=$1 key=$2 tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp)
+    grep -vE "^[[:space:]]*$key[[:space:]]*=" "$file" >"$tmp" || true
+    mv "$tmp" "$file"
+}
+
 # The co-op service address the packager baked into this build.
 default_server() {
     cfg_get "$1/coop-defaults.cfg" coop-server
