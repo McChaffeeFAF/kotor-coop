@@ -48,19 +48,53 @@ Copy-Item $texgenExe $stage
 
 # The Visual C++ runtime, app-local (Microsoft allows redistributing the
 # Redist folder's DLLs), so the tester needs no installer.
+#
+# It must match the toolset the engine was built with. A mismatched app-local
+# msvcp140.dll/vcruntime140*.dll shadows the newer system runtime and the
+# engine dies on startup (0xC0000005). VS's own folder search is alphabetical,
+# not by version: it picked VS2019's VC142 runtime for a VC145 build once.
+#
+# The engine's imports name the toolset: boost_program_options-vc145-mt-x64...
+# says vc145, so ask for that CRT first and fall back to the newest.
+$engine = Join-Path $Bin "engine.exe"
+$toolset = $null
+if (Test-Path $engine) {
+    $bytes = [System.IO.File]::ReadAllBytes($engine)
+    $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+    $m = [regex]::Match($text, 'boost_program_options-vc(\d{3})-')
+    if ($m.Success) { $toolset = "VC$($m.Groups[1].Value)" }
+}
 $vsRoots = @("$env:ProgramFiles\Microsoft Visual Studio", "${env:ProgramFiles(x86)}\Microsoft Visual Studio")
-$crt = $null
-foreach ($root in $vsRoots) {
+$candidates = foreach ($root in $vsRoots) {
     if (-not (Test-Path $root)) { continue }
-    $crt = Get-ChildItem $root -Recurse -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
-        Where-Object { $_.FullName -match '\\Redist\\MSVC\\[^\\]+\\x64\\' } | Sort-Object FullName -Descending | Select-Object -First 1
-    if ($crt) { break }
+    Get-ChildItem $root -Recurse -Directory -Filter "Microsoft.VC*.CRT" -ErrorAction SilentlyContinue |
+        Where-Object { $_.FullName -match '\\Redist\\MSVC\\[^\\]+\\x64\\' } |
+        Select-Object -ExpandProperty FullName
+}
+$crt = $null
+if ($toolset) {
+    $crt = $candidates | Where-Object { $_ -match "Microsoft\.$toolset\.CRT$" } | Sort-Object -Descending | Select-Object -First 1
+}
+if (-not $crt) {
+    # No match (or no engine yet): the newest runtime works for older builds,
+    # never the other way round.
+    $crt = $candidates | Sort-Object -Descending | Select-Object -First 1
+    if ($toolset -and $crt) {
+        Write-Warning "No $toolset runtime found: using $crt, which may not match the engine's toolset."
+    }
 }
 if ($crt) {
-    Get-ChildItem $crt.FullName -Filter "*.dll" | Copy-Item -Destination $stage
-    Write-Host "C++ runtime from $($crt.FullName)"
+    Get-ChildItem $crt -Filter "*.dll" | Copy-Item -Destination $stage
+    Write-Host "C++ runtime from $crt"
 } else {
     Write-Warning "No Visual C++ Redist folder found: the tester needs the VC++ 2015-2026 x64 runtime installed."
+}
+# A CRT DLL copied from Bin (a developer's build folder) would win over the one
+# chosen above and can be the wrong version; the redist folder is the source.
+$binCrt = Get-ChildItem $Bin -Filter "*.dll" | Where-Object { $_.Name -match '^(msvcp140|vcruntime140|concrt140|vccorlib140)' }
+if ($binCrt -and $crt) {
+    Write-Host "note: Bin also has CRT DLLs; the redist copies stay authoritative"
+    Get-ChildItem $crt -Filter "*.dll" | ForEach-Object { Copy-Item $_.FullName (Join-Path $stage $_.Name) -Force }
 }
 
 Copy-Item (Join-Path $files "*") $stage -Recurse
