@@ -2,19 +2,21 @@ KotOR co-op test build (Linux / Steam Deck)
 ===========================================
 
 This folder holds the game engine only. It contains no game files: it
-plays from YOUR copies of Star Wars: Knights of the Old Republic and
-Knights of the Old Republic II (the Steam versions, which Steam installs
-for Proton; they are Windows installs and that is fine, only the data
-files are read), and never changes them.
+plays from YOUR copy of Star Wars: Knights of the Old Republic (the Steam
+version, which Steam installs for Proton; it is a Windows install and that
+is fine, only the data files are read), and never changes it. Star Wars:
+Knights of the Old Republic II is OPTIONAL: with it you get the KotOR II
+look and its feats, powers and classes; without it the game plays KotOR 1
+with the KotOR look.
 
 1. Run ./play.sh (double-click it, or run it in a terminal). The first time
-   it finds your KotOR and KotOR II installs by itself: Steam in
+   it finds your KotOR install by itself: Steam in
    ~/.local/share/Steam, ~/.steam/steam, the Flatpak Steam, other Steam
    libraries listed in libraryfolders.vdf, and the Steam Deck SD card; GOG
    copies in ~/GOG Games, ~/Games and the default Heroic and Lutris Wine
    prefixes (also their Flatpaks). Folder names may be in any capitalisation
-   (Override or override). If it
-   can't find one it asks for the folder with swkotor.exe / swkotor2.exe.
+   (Override or override). KotOR II is detected too and used if present. If it
+   can't find KotOR 1 it asks for the folder with swkotor.exe.
    Run ./setup.sh to choose again.
 
 2. To host: choose "Host a co-op game" (or ./host.sh), then New Game or Load
