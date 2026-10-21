@@ -38,6 +38,7 @@ namespace reone {
 namespace scene {
 
 static constexpr float kFadeSpeed = 2.0f;
+static constexpr float kPresenceFadeSeconds = 0.08f;
 
 glm::vec3 lensFlarePosition(const glm::vec3 &lightPosition,
                             const glm::vec3 &cameraPosition,
@@ -57,6 +58,8 @@ void LightSceneNode::init() {
 
 void LightSceneNode::update(float dt) {
     SceneNode::update(dt);
+
+    _presence = glm::min(1.0f, _presence + dt / kPresenceFadeSeconds);
 
     // Fading
     bool fading = _modelNode.light()->fading;

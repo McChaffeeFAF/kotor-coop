@@ -68,6 +68,7 @@
 #include "gui/upgrade.h"
 #include "hudpresentation.h"
 #include "journal.h"
+#include "coopchatui.h"
 #include "keymap.h"
 #include "padinput.h"
 #include "location.h"
@@ -272,6 +273,8 @@ public:
      */
     void setCoopSession(std::shared_ptr<CoopSession> session);
     CoopSession *coop() const { return _coop.get(); }
+    /** The co-op chat line the player types into, for the HUD to draw. */
+    const CoopChatInput &chatInput() const { return _chatInput; }
 
     /**
      * Co-op from the menus (design note coop_online): what every session
@@ -838,6 +841,8 @@ public:
         return _lastSaveResult;
     }
     SaveEligibilityReason saveEligibility(bool requireStablePoint = false) const;
+    /** A save is waiting for its frame boundary or running (the dedicated host waits on this). */
+    bool isSaveBusy() const { return _pendingSave.has_value() || _saveInProgress; }
 
     // Clear state of the current game before loading a new game.
     void resetGame();
@@ -1488,6 +1493,13 @@ private:
     void loadUserSettings();
     /** Keys the in-game keymap dispatches itself (design note p1_ui, "Key bindings"). */
     bool dispatchKeyAction(KeyAction action);
+    // Co-op chat line and pings (coopchatui.h); the HUD draws them.
+    CoopChatInput _chatInput;
+    glm::ivec2 _cursorPosition {0};
+    /** Co-op: the event went to the chat line (open, typing, sent or cancelled). */
+    bool handleChatInput(const input::Event &event);
+    /** Co-op: ping the object under the cursor, else the ground point under it. */
+    bool pingAtCursor();
     /** Escape: close the screen, or open the game menu. */
     bool handleEscape();
 
@@ -1966,6 +1978,7 @@ private:
     void consoleOptions(const ConsoleArgs &tokens);
     void consoleShowLoadScreen(const ConsoleArgs &tokens);
     void consoleKey(const ConsoleArgs &tokens);
+    void consolePointer(const ConsoleArgs &tokens);
     void consoleGuiClick(const ConsoleArgs &tokens);
     void consoleGuiDump(const ConsoleArgs &tokens);
     void consoleGuiShow(const ConsoleArgs &tokens);

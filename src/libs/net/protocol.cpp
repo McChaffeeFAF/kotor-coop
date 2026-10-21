@@ -65,7 +65,7 @@ Fingerprint readFingerprint(ByteReader &r) {
 
 bool validRejectReason(uint8_t value) {
     return value >= static_cast<uint8_t>(RejectReason::ProtocolMismatch) &&
-           value <= static_cast<uint8_t>(RejectReason::Kicked);
+           value <= static_cast<uint8_t>(RejectReason::BadPassword);
 }
 
 bool validSlotStatus(uint8_t value) {
@@ -348,6 +348,8 @@ bool isClientMessage(MessageType type) {
     case MessageType::SnapshotAck:
     case MessageType::GuestCharacter:
     case MessageType::MiniGameControl:
+    case MessageType::ChatSend:
+    case MessageType::PingSend:
         return true;
     default:
         return false;
@@ -376,6 +378,8 @@ bool isHostMessage(MessageType type) {
     case MessageType::Offer:
     case MessageType::BenchView:
     case MessageType::MiniGameState:
+    case MessageType::ChatMessage:
+    case MessageType::PingMarker:
         return true;
     default:
         return false;
@@ -389,7 +393,8 @@ std::optional<MessageType> peekType(const std::vector<uint8_t> &bytes) {
     uint8_t value = bytes.front();
     bool completeness = value >= static_cast<uint8_t>(MessageType::SharedInventory) &&
                         value <= static_cast<uint8_t>(MessageType::MiniGameState);
-    if (!completeness && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
+    bool chat = value >= static_cast<uint8_t>(MessageType::ChatSend) && value <= static_cast<uint8_t>(MessageType::PingMarker);
+    if (!completeness && !chat && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
         return std::nullopt;
     }
     return static_cast<MessageType>(value);
@@ -447,6 +452,14 @@ const char *messageTypeName(MessageType type) {
         return "minigame_control";
     case MessageType::MiniGameState:
         return "minigame_state";
+    case MessageType::ChatSend:
+        return "chat_send";
+    case MessageType::ChatMessage:
+        return "chat_message";
+    case MessageType::PingSend:
+        return "ping_send";
+    case MessageType::PingMarker:
+        return "ping_marker";
     }
     return "unknown";
 }
@@ -471,6 +484,8 @@ const char *rejectReasonName(RejectReason reason) {
         return "malformed";
     case RejectReason::Kicked:
         return "kicked";
+    case RejectReason::BadPassword:
+        return "bad_password";
     }
     return "unknown";
 }
@@ -660,6 +675,9 @@ std::vector<uint8_t> encode(const Hello &m) {
     writeFingerprint(w, m.k1);
     writeFingerprint(w, m.k2);
     w.u64(m.rejoinToken);
+    if (!m.password.empty()) {
+        w.str(m.password);
+    }
     return w.take();
 }
 
@@ -678,6 +696,10 @@ bool decode(const std::vector<uint8_t> &bytes, Hello &out) {
     out.k1 = readFingerprint(r);
     out.k2 = readFingerprint(r);
     out.rejoinToken = r.u64();
+    out.password.clear();
+    if (r.ok() && r.remaining() > 0) {
+        out.password = r.str();
+    }
     return finish(r);
 }
 
@@ -2088,6 +2110,172 @@ bool decode(const std::vector<uint8_t> &bytes, GuestRoster &out) {
             return false;
         }
         out.entries.push_back(std::move(entry));
+    }
+    return finish(r);
+}
+
+} // namespace net
+
+} // namespace reone
+
+namespace reone {
+
+namespace net {
+
+bool validUtf8(const std::string &text) {
+    size_t i = 0;
+    const size_t n = text.size();
+    while (i < n) {
+        auto c = static_cast<unsigned char>(text[i]);
+        size_t extra;
+        uint32_t cp;
+        if (c < 0x80) {
+            ++i;
+            continue;
+        } else if (c >= 0xC2 && c <= 0xDF) {
+            extra = 1;
+            cp = c & 0x1F;
+        } else if (c >= 0xE0 && c <= 0xEF) {
+            extra = 2;
+            cp = c & 0x0F;
+        } else if (c >= 0xF0 && c <= 0xF4) {
+            extra = 3;
+            cp = c & 0x07;
+        } else {
+            return false;
+        }
+        if (i + extra >= n) {
+            return false;
+        }
+        for (size_t k = 1; k <= extra; ++k) {
+            auto cc = static_cast<unsigned char>(text[i + k]);
+            if ((cc & 0xC0) != 0x80) {
+                return false;
+            }
+            cp = (cp << 6) | (cc & 0x3F);
+        }
+        if ((extra == 2 && cp < 0x800) || (extra == 3 && cp < 0x10000) || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)) {
+            return false;
+        }
+        i += extra + 1;
+    }
+    return true;
+}
+
+namespace {
+
+bool validCoordinate(const Vec3 &v) {
+    return std::fabs(v.x) <= kMaxPingCoordinate && std::fabs(v.y) <= kMaxPingCoordinate && std::fabs(v.z) <= kMaxPingCoordinate;
+}
+
+} // namespace
+
+std::vector<uint8_t> encode(const ChatSend &m) {
+    auto w = begin(MessageType::ChatSend);
+    w.u8(static_cast<uint8_t>(m.channel));
+    w.str(m.text);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, ChatSend &out) {
+    if (bytes.size() > kMaxClientMessageBytes) {
+        return false;
+    }
+    ByteReader r(bytes, kMaxChatWireBytes);
+    if (!expect(r, MessageType::ChatSend)) {
+        return false;
+    }
+    out = ChatSend();
+    uint8_t channel = r.u8();
+    out.text = r.str();
+    if (!r.ok() || channel > static_cast<uint8_t>(ChatChannel::Team)) {
+        return false;
+    }
+    out.channel = static_cast<ChatChannel>(channel);
+    // The text is left raw on purpose: the host answers a bad line with a notice.
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const ChatMessage &m) {
+    auto w = begin(MessageType::ChatMessage);
+    w.u32(m.sender);
+    w.str(m.name);
+    w.u8(m.colour);
+    w.u8(static_cast<uint8_t>(m.channel));
+    w.str(m.text);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, ChatMessage &out) {
+    ByteReader r(bytes, kMaxChatBytes);
+    if (!expect(r, MessageType::ChatMessage)) {
+        return false;
+    }
+    out = ChatMessage();
+    out.sender = r.u32();
+    out.name = r.str();
+    out.colour = r.u8();
+    uint8_t channel = r.u8();
+    out.text = r.str();
+    if (!r.ok() || channel > static_cast<uint8_t>(ChatChannel::Team) || out.colour >= kChatColours || out.name.empty() ||
+        out.name.size() > 32 || !validText(out.name) || !validUtf8(out.name) || out.text.empty() || !validText(out.text) ||
+        !validUtf8(out.text)) {
+        return false;
+    }
+    out.channel = static_cast<ChatChannel>(channel);
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const PingSend &m) {
+    auto w = begin(MessageType::PingSend);
+    writeVec3(w, m.position);
+    w.u32(m.target);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, PingSend &out) {
+    if (bytes.size() > kMaxClientMessageBytes) {
+        return false;
+    }
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::PingSend)) {
+        return false;
+    }
+    out = PingSend();
+    out.position = readVec3(r);
+    out.target = r.u32();
+    return finish(r) && validCoordinate(out.position);
+}
+
+std::vector<uint8_t> encode(const PingMarker &m) {
+    auto w = begin(MessageType::PingMarker);
+    w.u32(m.sender);
+    w.str(m.name);
+    w.u8(m.colour);
+    writeVec3(w, m.position);
+    w.u32(m.target);
+    w.str(m.targetName);
+    w.f32(m.seconds);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, PingMarker &out) {
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::PingMarker)) {
+        return false;
+    }
+    out = PingMarker();
+    out.sender = r.u32();
+    out.name = r.str();
+    out.colour = r.u8();
+    out.position = readVec3(r);
+    out.target = r.u32();
+    out.targetName = r.str();
+    out.seconds = r.f32();
+    if (!r.ok() || out.colour >= kChatColours || out.name.empty() || out.name.size() > 32 || !validText(out.name) ||
+        !validUtf8(out.name) || !validText(out.targetName) || !validUtf8(out.targetName) || !validCoordinate(out.position) ||
+        !(out.seconds > 0.0f) || out.seconds > kMaxPingSeconds) {
+        return false;
     }
     return finish(r);
 }

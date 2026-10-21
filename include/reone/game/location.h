@@ -22,6 +22,7 @@
 #include <glm/gtc/constants.hpp>
 
 #include "reone/script/enginetype.h"
+#include "reone/system/portablemath.h"
 
 namespace reone {
 
@@ -48,7 +49,7 @@ public:
 
     Location(glm::vec3 position, glm::vec3 serializedOrientation) :
         _position(std::move(position)),
-        _facing(std::atan2(serializedOrientation.y, serializedOrientation.x)),
+        _facing(portable::atan2f(serializedOrientation.y, serializedOrientation.x)),
         _preservedOrientation(std::move(serializedOrientation)) {
     }
 
@@ -59,7 +60,7 @@ public:
     }
     glm::vec3 saveOrientation() const {
         return _preservedOrientation.value_or(
-            glm::vec3(std::cos(_facing), std::sin(_facing), 0.0f));
+            glm::vec3(portable::cosf(_facing), portable::sinf(_facing), 0.0f));
     }
 
     void setPosition(glm::vec3 position) { _position = std::move(position); }

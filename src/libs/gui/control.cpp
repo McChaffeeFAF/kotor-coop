@@ -15,6 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <algorithm>
 #include "reone/gui/control.h"
 
 #include "reone/graphics/context.h"
@@ -141,6 +142,16 @@ void Control::loadText(const resource::generated::GUI_TEXT &gui) {
 }
 
 void Control::updateTextLines() {
+    if (_fitWidthFraction > 0.0f) {
+        _scale = _layoutScale;
+        if (_text.font && !_text.text.empty()) {
+            float width = _text.font->measure(_text.text, _scale);
+            float limit = _fitWidthFraction * static_cast<float>(_extent.width);
+            if (width > limit && width > 0.0f) {
+                _scale = std::max(_layoutScale * 0.55f, _scale * limit / width);
+            }
+        }
+    }
     _textLines.clear();
     if (_text.font && !_text.text.empty()) {
         _textLines = breakText(_text.text, *_text.font, _extent.width, _scale);
@@ -562,7 +573,7 @@ void Control::setPresentationScale(float frameLayoutScale, float textLayoutScale
     // Text and frame slices do not follow the extent on their own. Keeping
     // this separate lets compound controls give their contents an independent
     // density while retaining the parent's layout rectangle.
-    _scale = textLayoutScale * _gui.textScale();
+    _layoutScale = _scale = textLayoutScale * _gui.textScale();
     if (_border) {
         _border->dimension = static_cast<int>(_authoredBorderDimension * frameLayoutScale * _gui.borderScale());
     }

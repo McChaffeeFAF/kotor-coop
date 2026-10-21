@@ -237,6 +237,8 @@ const char *argKindToString(ArgKind kind) {
         return "ItemActivated";
     case ArgKind::ItemActivator:
         return "ItemActivator";
+    case ArgKind::SpellCastItem:
+        return "SpellCastItem";
     }
 
     throw std::logic_error("Unsupported arg kind: " +
@@ -386,6 +388,9 @@ Argument Argument::fromString(std::string str) {
     if (kind == "ItemActivated") {
         return {ArgKind::ItemActivated, Variable::ofObject(std::stoul(value))};
     }
+    if (kind == "SpellCastItem") {
+        return {ArgKind::SpellCastItem, Variable::ofObject(std::stoul(value))};
+    }
     if (kind == "ItemActivator") {
         return {ArgKind::ItemActivator, Variable::ofObject(std::stoul(value))};
     }
@@ -413,6 +418,7 @@ void Argument::verify() {
     case ArgKind::LastSpellCaster:
     case ArgKind::LastDisarmed:
     case ArgKind::ItemActivated:
+    case ArgKind::SpellCastItem:
     case ArgKind::ItemActivator: {
         if (var.type != VariableType::Object || var.objectId == kObjectSelf) {
             throw std::invalid_argument(toString() + ": expected an object != self");

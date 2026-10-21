@@ -63,6 +63,13 @@ int closeCombatAttackBonus(const HasFeat &hasFeat) {
     return (has(hasFeat, kCloseCombat) ? 1 : 0) + (has(hasFeat, kCloseCombat + 1) ? 1 : 0);
 }
 
+int meleeOnRangedAttackBonus(const HasFeat &hasFeat) {
+    if (has(hasFeat, kCloseCombat + 1)) {
+        return 2;
+    }
+    return has(hasFeat, kCloseCombat) ? 4 : 6;
+}
+
 int superiorLightsaberFocusBonus(const HasFeat &hasFeat) {
     return highestTier(hasFeat, kSuperiorLightsaber1, 3);
 }

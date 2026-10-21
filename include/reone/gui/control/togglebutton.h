@@ -51,8 +51,16 @@ public:
     }
 
     bool isOn() const { return _on; }
+    /** Whether the control carries checked art to show (SELECTED fill). */
+    bool hasCheckedFill() const { return _onFill != nullptr; }
 
     void setOnColor(const glm::vec3 &color);
+    /**
+     * Label colour while on and not under the cursor, for art whose checked
+     * fill would swallow the usual label colour. The colour the label has now
+     * is the off colour.
+     */
+    void setOnTextColor(const glm::vec3 &color);
 
     /**
      * Show the authored check-box art: the SELECTED and HILIGHTSELECTED
@@ -67,6 +75,9 @@ private:
     bool _on {false};
     glm::vec3 _onColor {1.0f};
     bool _showCheckedFill {false};
+    bool _hasOnTextColor {false};
+    glm::vec3 _onTextColor {1.0f};
+    glm::vec3 _offTextColor {1.0f};
     std::shared_ptr<graphics::Texture> _offFill;
     std::shared_ptr<graphics::Texture> _offHilightFill;
     std::shared_ptr<graphics::Texture> _onFill;

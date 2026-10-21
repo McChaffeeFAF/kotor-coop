@@ -74,12 +74,23 @@ void ConfirmPopup::onGUILoaded() {
     int topInset = std::max(0, std::min(messageAuthored.top, okAuthored.top));
     rootAuthored.height = std::min(rootAuthored.height, okAuthored.top + okAuthored.height + topInset);
     _choicesRootExtent = rootAuthored;
+    _twoChoicesRootExtent = rootAuthored;
+    {
+        const auto &cancelAuthored = _controls.BTN_CANCEL->authoredExtent();
+        _twoChoicesRootExtent.height = std::max(rootAuthored.height,
+            confirmPanelHeight(cancelAuthored.top, cancelAuthored.height, topInset));
+    }
     root.setAuthoredExtent(std::move(rootAuthored));
     centerRootInCanvas(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
     _trimmedRootExtent = root.authoredExtent();
     _okLabel = _controls.BTN_OK->text().text;
     _cancelLabel = _controls.BTN_CANCEL->text().text;
     createThirdButton(topInset);
+    _baseOk = _controls.BTN_OK->authoredExtent();
+    _baseCancel = _controls.BTN_CANCEL->authoredExtent();
+    _baseMessageList = _controls.LB_MESSAGE->authoredExtent();
+    if (_thirdButton) _baseThird = _thirdButton->authoredExtent();
+    if (_fourthButton) _baseFourth = _fourthButton->authoredExtent();
 
     _messageExtent = _controls.LB_MESSAGE->protoItem().extent();
     _iconSize = std::max(1, static_cast<int>(std::lround(kIconSize * _gui->scale())));
@@ -158,13 +169,27 @@ void ConfirmPopup::showChoices(const std::string &message, std::vector<Choice> c
             *actions[i] = std::move(choices[i].action);
         }
     }
-    if (choices.size() > 3 && _fourthButton) {
-        _gui->rootControl().setAuthoredExtent(_fourChoicesRootExtent);
+    if (choices.size() == 2) {
+        fitPanelForTwoButtons();
+    } else if (choices.size() > 3 && _fourthButton) {
+        auto root = _fourChoicesRootExtent;
+        root.height += _growth;
+        _gui->rootControl().setAuthoredExtent(std::move(root));
         centerRootInCanvas(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
     } else if (choices.size() > 2 && _thirdButton) {
-        _gui->rootControl().setAuthoredExtent(_choicesRootExtent);
+        auto root = _choicesRootExtent;
+        root.height += _growth;
+        _gui->rootControl().setAuthoredExtent(std::move(root));
         centerRootInCanvas(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
     }
+}
+
+void ConfirmPopup::fitPanelForTwoButtons() {
+    // OK and Cancel stacked: the trimmed panel only holds OK.
+    auto root = _twoChoicesRootExtent;
+    root.height += _growth;
+    _gui->rootControl().setAuthoredExtent(std::move(root));
+    centerRootInCanvas(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
 }
 
 void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Texture> icon) {
@@ -181,10 +206,11 @@ void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Te
     }
     if (_thirdButton) {
         _thirdButton->setVisible(false);
-        if (_gui->rootControl().authoredExtent().height != _trimmedRootExtent.height) {
-            _gui->rootControl().setAuthoredExtent(_trimmedRootExtent);
-            _gui->refreshLayout();
-        }
+    }
+    applyGrowth(0);
+    if (_gui->rootControl().authoredExtent().height != _trimmedRootExtent.height) {
+        _gui->rootControl().setAuthoredExtent(_trimmedRootExtent);
+        _gui->refreshLayout();
     }
     // Reserve a gutter for the icon, if any, before the message is broken
     // into lines.
@@ -204,7 +230,53 @@ void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Te
     item.text = message;
     _controls.LB_MESSAGE->addItem(std::move(item));
 
+    // A message of more lines than the panel was authored for (a four-line
+    // tutorial popup) would run under the OK button: make the panel taller.
+    if (_controls.LB_MESSAGE->getItemCount() > 0) {
+        int growth = growthForMessageLines(_controls.LB_MESSAGE->getItemAt(0)._textLines.size());
+        if (growth > 0) {
+            applyGrowth(growth);
+            auto root = _trimmedRootExtent;
+            root.height += growth;
+            _gui->rootControl().setAuthoredExtent(std::move(root));
+            centerRootInCanvas(kAuthoredCanvasWidth, kAuthoredCanvasHeight);
+        }
+    }
+
     _visible = true;
+}
+
+int ConfirmPopup::growthForMessageLines(size_t lines) const {
+    auto &proto = _controls.LB_MESSAGE->protoItem();
+    if (!proto.text().font || lines == 0) {
+        return 0;
+    }
+    // The room the panel gives the text: from the message's top to the OK
+    // button's, in authored units.
+    float scale = std::max(0.01f, _gui->scale());
+    float lineAuthored = proto.text().font->height() * proto.scale() / scale;
+    // A line's worth of margin keeps the last line clear of the button.
+    float needed = (static_cast<float>(lines) + 1.0f) * lineAuthored;
+    float room = static_cast<float>(_baseOk.top - _baseMessageList.top);
+    int growth = static_cast<int>(std::ceil(needed - room));
+    return std::max(0, growth);
+}
+
+void ConfirmPopup::applyGrowth(int growth) {
+    _growth = growth;
+    auto moved = [growth](const Control::Extent &base) {
+        auto e = base;
+        e.top += growth;
+        return e;
+    };
+    _controls.BTN_OK->setAuthoredExtent(moved(_baseOk));
+    _controls.BTN_CANCEL->setAuthoredExtent(moved(_baseCancel));
+    if (_thirdButton) _thirdButton->setAuthoredExtent(moved(_baseThird));
+    if (_fourthButton) _fourthButton->setAuthoredExtent(moved(_baseFourth));
+    auto list = _baseMessageList;
+    list.height += growth;
+    _controls.LB_MESSAGE->setAuthoredExtent(std::move(list));
+    _gui->refreshLayout();
 }
 
 void ConfirmPopup::showConfirm(
@@ -215,6 +287,7 @@ void ConfirmPopup::showConfirm(
     _onConfirm = std::move(onConfirm);
     _onCancel = std::move(onCancel);
     _controls.BTN_CANCEL->setVisible(true);
+    fitPanelForTwoButtons();
 }
 
 void ConfirmPopup::hide() {

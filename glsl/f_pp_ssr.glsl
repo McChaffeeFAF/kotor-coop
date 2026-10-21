@@ -133,6 +133,10 @@ void main() {
         reflection = mix(sampleProbe(worldR), hitColor, hitWeight);
         hitWeight = 1.0;
     }
+    // The scene colour and the probe are HDR: a lamp panel or a self-lit
+    // surface carries values far above 1. Reflected, that blew a door out to
+    // white; a reflection is no brighter than a surface can be.
+    reflection = min(reflection, vec3(1.0));
     float cosTheta = clamp(dot(-V, N), 0.0, 1.0);
     float fresnel = 0.45 + 0.55 * pow(1.0 - cosTheta, 5.0);
     // The env-map strength of KotOR's shiny floors sits around 0.3-0.6;

@@ -232,7 +232,7 @@ public:
      *
      * @return true if a layer was found
      */
-    bool fadeOutLayer(const std::string &name);
+    bool fadeOutLayer(const std::string &name, bool propagate = false);
 
     /**
      * Stop every layer of this model, leaving the animations underneath and

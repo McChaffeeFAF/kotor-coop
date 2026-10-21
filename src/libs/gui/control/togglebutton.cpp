@@ -71,7 +71,17 @@ void ToggleButton::copyCheckedFill(const ToggleButton &other) {
     setShowCheckedFill(other._showCheckedFill);
 }
 
+void ToggleButton::setOnTextColor(const glm::vec3 &color) {
+    _offTextColor = _text.color;
+    _onTextColor = color;
+    _hasOnTextColor = true;
+    setTextColor(_on ? _onTextColor : _offTextColor);
+}
+
 void ToggleButton::applyCheckedFill() {
+    if (_hasOnTextColor) {
+        setTextColor(_on ? _onTextColor : _offTextColor);
+    }
     if (!_showCheckedFill || !_onFill) {
         return;
     }

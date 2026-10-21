@@ -17,8 +17,12 @@ set(GAME_INCLUDE_DIR ${REONE_INCLUDE_DIR}/reone/game)
 set(GAME_SOURCE_DIR ${CMAKE_SOURCE_DIR}/src/libs/game)
 
 set(GAME_HEADERS
+    ${GAME_INCLUDE_DIR}/coopchat.h
+    ${GAME_INCLUDE_DIR}/coopchatui.h
     ${GAME_INCLUDE_DIR}/coopcommand.h
     ${GAME_INCLUDE_DIR}/coopflow.h
+    ${GAME_INCLUDE_DIR}/dedicated.h
+    ${GAME_INCLUDE_DIR}/dedicatedgame.h
     ${GAME_INCLUDE_DIR}/cooploot.h
     ${GAME_INCLUDE_DIR}/coopidmap.h
     ${GAME_INCLUDE_DIR}/coopprompts.h
@@ -608,6 +612,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/gui/dialog.cpp
     ${GAME_SOURCE_DIR}/gui/galaxymap.cpp
     ${GAME_SOURCE_DIR}/gui/hud.cpp
+    ${GAME_SOURCE_DIR}/gui/hudchat.cpp
     ${GAME_SOURCE_DIR}/gui/k1hudcontrols.cpp
     ${GAME_SOURCE_DIR}/stringtokens.cpp
     ${GAME_SOURCE_DIR}/gui/ingame/abilities.cpp
@@ -700,12 +705,18 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/visualeffectpresenter.cpp
     ${GAME_SOURCE_DIR}/visualeffects.cpp
     ${GAME_SOURCE_DIR}/combattables.cpp
+    ${GAME_SOURCE_DIR}/coopchat.cpp
+    ${GAME_SOURCE_DIR}/coopchatsession.cpp
+    ${GAME_SOURCE_DIR}/coopchatui.cpp
     ${GAME_SOURCE_DIR}/coopcommand.cpp
+    ${GAME_SOURCE_DIR}/coopdedicated.cpp
     ${GAME_SOURCE_DIR}/coopflow.cpp
     ${GAME_SOURCE_DIR}/coopflows.cpp
     ${GAME_SOURCE_DIR}/coopgame.cpp
     ${GAME_SOURCE_DIR}/coopprompts.cpp
     ${GAME_SOURCE_DIR}/cooploot.cpp
+    ${GAME_SOURCE_DIR}/dedicated.cpp
+    ${GAME_SOURCE_DIR}/dedicatedgame.cpp
     ${GAME_SOURCE_DIR}/coopidmap.cpp
     ${GAME_SOURCE_DIR}/coopreplication.cpp
     ${GAME_SOURCE_DIR}/coopsession.cpp

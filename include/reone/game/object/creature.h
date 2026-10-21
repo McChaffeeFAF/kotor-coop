@@ -418,6 +418,7 @@ public:
     void playOverlayAnimation(AnimationType type);
 
     void updateModelAnimation();
+    void syncTalkLayer(scene::ModelSceneNode &model);
     void updateDecay(float dt);
     void spawnBodyBag();
 
@@ -1104,6 +1105,8 @@ private:
 
     bool _animDirty {true};
     bool _animFireForget {false};
+    bool _talkLayerOn {false};
+    std::shared_ptr<graphics::LipAnimation> _talkLayerLip;
     std::shared_ptr<graphics::LipAnimation> _lipAnimation;
 
     struct KnockdownState {

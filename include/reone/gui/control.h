@@ -148,7 +148,17 @@ public:
     /** The combined layout and text factor used to render this control's text. */
     float scale() const { return _scale; }
     void setScale(float scale) {
+        _layoutScale = scale;
         _scale = scale;
+        updateTextLines();
+    }
+    /**
+     * Shrinks the text, never below 55% of its layout scale, so its line is at
+     * most this fraction of the control's width (0 = off). It holds across
+     * layout changes and text changes.
+     */
+    void setTextFitWidth(float fraction) {
+        _fitWidthFraction = fraction;
         updateTextLines();
     }
     /** Applies text and frame scale without changing the control's rectangle. */
@@ -194,6 +204,8 @@ public:
     void setTextFont(std::shared_ptr<graphics::Font> font);
     void setTextPaddingLeft(int padding) { _textPaddingLeft = padding; }
     int textPaddingLeft() const;
+    /** Left text padding set explicitly with setTextPaddingLeft(), else 0. */
+    int explicitTextPaddingLeft() const { return _textPaddingLeft; }
     void setTintBorderFill(bool tint) { _tintBorderFill = tint; }
     void setSharpenBorderFillAlpha(bool sharpen) { _sharpenBorderFillAlpha = sharpen; }
     void setUseBorderColorOverride(bool use);
@@ -256,6 +268,8 @@ protected:
     int _authoredBorderDimension {0};
     int _authoredHilightDimension {0};
     float _scale {1.0f};
+    float _layoutScale {1.0f};
+    float _fitWidthFraction {0.0f};
     Extent _extent;
     std::shared_ptr<Border> _border;
     std::shared_ptr<Border> _hilight;

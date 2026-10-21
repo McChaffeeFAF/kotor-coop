@@ -39,6 +39,7 @@
 #include "reone/scene/node/camera.h"
 #include "reone/scene/node/model.h"
 #include "reone/system/logutil.h"
+#include "reone/system/portablemath.h"
 
 using namespace reone::audio;
 using namespace reone::graphics;
@@ -299,8 +300,12 @@ void TurretAim::set(float pitchRadians, float yawRadians) {
 }
 
 glm::quat TurretAim::orientation() const {
-    return glm::angleAxis(_yaw, glm::vec3(0.0f, 0.0f, 1.0f)) *
-           glm::angleAxis(_pitch, glm::vec3(1.0f, 0.0f, 0.0f));
+    // Built from the portable sine and cosine: the aim sets the bolts' heading.
+    float halfPitch = 0.5f * _pitch;
+    glm::quat pitch(portable::cosf(halfPitch), portable::sinf(halfPitch), 0.0f, 0.0f);
+    float halfYaw = 0.5f * _yaw;
+    glm::quat yaw(portable::cosf(halfYaw), 0.0f, 0.0f, portable::sinf(halfYaw));
+    return yaw * pitch;
 }
 
 glm::vec3 TurretAim::forward() const {

@@ -100,6 +100,9 @@ static constexpr std::array<glm::vec3, 2> kPartyFormationOffsets {{
 static constexpr float kPartyPositionSearchRadius = 10.0f;
 static constexpr float kPartyPositionSearchStep = 1.0f;
 static constexpr int kPartyPositionSearchDirections = 16;
+static constexpr float kCreaturePlacementRadius = 10.0f;
+static constexpr float kCreaturePlacementStep = 0.5f;
+static constexpr int kCreaturePlacementDirections = 16;
 static constexpr float kPartyMemberSpacing = 1.5f;
 static constexpr float kPartyMemberSpacing2 = kPartyMemberSpacing * kPartyMemberSpacing;
 
@@ -1255,6 +1258,51 @@ glm::vec3 Area::findPartyPosition(const Creature &member, const glm::vec3 &posit
     return position;
 }
 
+glm::vec3 Area::findFreeCreaturePosition(const Creature &creature, const glm::vec3 &position) const {
+    auto &sceneGraph = _services.scene.graphs.get(_sceneName);
+    const auto &creatures = _objectsByType.at(ObjectType::Creature);
+
+    // The spot is free when walkable ground lies under it and no living
+    // creature's personal space overlaps the new one's.
+    auto isFree = [&](const glm::vec3 &candidate, glm::vec3 &ground) {
+        Collision collision;
+        if (!sceneGraph.testElevation(candidate, collision)) {
+            return false;
+        }
+        for (const auto &object : creatures) {
+            if (object.get() == &creature || object->isDead()) {
+                continue;
+            }
+            float space = creature.creaturePersonalSpace() + static_cast<const Creature &>(*object).creaturePersonalSpace();
+            if (glm::distance2(glm::vec2(collision.intersection), glm::vec2(object->position())) < space * space) {
+                return false;
+            }
+        }
+        ground = collision.intersection;
+        return true;
+    };
+
+    glm::vec3 ground;
+    if (isFree(position, ground)) {
+        return position;
+    }
+
+    // Rings of candidates around the asked spot, nearest ring first, in a
+    // fixed order of directions so the same spawn always lands on the same
+    // spot.
+    for (float radius = kCreaturePlacementStep; radius <= kCreaturePlacementRadius; radius += kCreaturePlacementStep) {
+        for (int i = 0; i < kCreaturePlacementDirections; ++i) {
+            float angle = i * glm::two_pi<float>() / kCreaturePlacementDirections;
+            glm::vec3 candidate(position.x + radius * portable::sinf(angle), position.y + radius * portable::cosf(angle), position.z);
+            if (isFree(candidate, ground)) {
+                return ground;
+            }
+        }
+    }
+
+    return position;
+}
+
 void Area::loadPartyMember(const std::shared_ptr<Creature> &member, int index, bool preserveSavedPlacement) {
     bool loaded = std::find(_objects.begin(), _objects.end(), member) != _objects.end();
 
@@ -1271,7 +1319,7 @@ void Area::loadPartyMember(const std::shared_ptr<Creature> &member, int index, b
         glm::vec3 position(leader->position());
 
         if (index <= static_cast<int>(kPartyFormationOffsets.size())) {
-            glm::quat rotation(glm::angleAxis(leader->getFacing(), glm::vec3(0.0f, 0.0f, 1.0f)));
+            glm::quat rotation(yawQuat(leader->getFacing()));
             position += rotation * kPartyFormationOffsets[index - 1];
         }
 
@@ -1366,8 +1414,7 @@ void Area::repositionPartyMember(
         glm::vec3 position(leader->position());
 
         if (index <= static_cast<int>(kPartyFormationOffsets.size())) {
-            glm::quat rotation(glm::angleAxis(
-                leader->getFacing(), glm::vec3(0.0f, 0.0f, 1.0f)));
+            glm::quat rotation(yawQuat(leader->getFacing()));
             position += rotation * kPartyFormationOffsets[index - 1];
         }
 
@@ -2159,7 +2206,9 @@ std::shared_ptr<Object> Area::createObject(ObjectType type, const std::string &b
     case ObjectType::Creature: {
         std::shared_ptr<Creature> creature =
             _game.newCreatureFromBlueprint(blueprintResRef);
-        creature->setPosition(location->position());
+        // Created on the nearest free walkable spot, not inside geometry or
+        // another creature.
+        creature->setPosition(findFreeCreaturePosition(*creature, location->position()));
         creature->setFacing(location->facing());
         object = std::move(creature);
         break;
@@ -2192,7 +2241,7 @@ std::shared_ptr<Object> Area::createObject(ObjectType type, const std::string &b
         return nullptr;
     }
 
-    if (location) {
+    if (location && type != ObjectType::Creature) {
         object->setPosition(location->position());
         object->setFacing(location->facing());
     }

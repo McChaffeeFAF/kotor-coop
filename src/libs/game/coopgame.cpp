@@ -3,6 +3,7 @@
 // Game's co-op seams (design note coop_net): the client tick, the harness
 // commands, and starting a session from the command line.
 
+#include <algorithm>
 #include "reone/game/game.h"
 
 #include <cctype>
@@ -464,7 +465,70 @@ void Game::initCoopConsole() {
         }
         _console.printLine(std::string("coop ready=") + (ready ? "1" : "0"));
     });
-    _console.registerCommand("coopforce", "co-op host: move the party now, whoever is ready", [=](const ConsoleArgs &) {
+    // Text chat and pings (coopchatsession.cpp)
+    auto sayLine = [=](const ConsoleArgs &args, net::ChatChannel channel, const char *usage) {
+        std::string text;
+        for (size_t i = 1; i < args.size(); ++i) {
+            text += (i > 1 ? " " : "") + std::string(*args[i]);
+        }
+        if (text.empty()) {
+            throw std::runtime_error(usage);
+        }
+        if (!anySession().chatSay(text, channel)) {
+            throw std::runtime_error("the line was not sent");
+        }
+        _console.printLine("coop said");
+    };
+    _console.registerCommand("coopsay", "co-op: say a line to everyone: coopsay <text>", [=](const ConsoleArgs &args) {
+        sayLine(args, net::ChatChannel::All, "Usage: coopsay <text>");
+    });
+    _console.registerCommand("coopteam", "co-op: say a line to your team (Free Mode): coopteam <text>", [=](const ConsoleArgs &args) {
+        sayLine(args, net::ChatChannel::Team, "Usage: coopteam <text>");
+    });
+    _console.registerCommand("cooppingat", "co-op: ping for everyone: cooppingat [<object tag>|<x> <y> <z>] (default: where you stand)", [=](const ConsoleArgs &args) {
+        auto &session = anySession();
+        glm::vec3 point(0.0f);
+        uint32_t objectId = 0;
+        if (auto player = _party.player()) {
+            point = player->position();
+        }
+        if (args.size() == 4) {
+            point = glm::vec3(parseFloat(args, 1, "x"), parseFloat(args, 2, "y"), parseFloat(args, 3, "z"));
+        } else if (args.size() == 2) {
+            std::shared_ptr<Object> object = _module && _module->area() ? _module->area()->getObjectByTag(std::string(*args[1])) : nullptr;
+            if (!object) {
+                throw std::runtime_error("no object with that tag");
+            }
+            objectId = object->id();
+            point = object->position();
+        } else if (args.size() != 1) {
+            throw std::runtime_error("Usage: cooppingat [<object tag>|<x> <y> <z>]");
+        }
+        if (!session.pingAt(point, objectId)) {
+            throw std::runtime_error("the ping was not sent");
+        }
+        _console.printLine("coop pinged");
+    });
+    _console.registerCommand("coopmute", "co-op host: stop a player chatting and pinging: coopmute <player name>", [=](const ConsoleArgs &args) {
+        if (args.size() < 2 || !anySession().chatMute(std::string(*args[1]), true)) {
+            throw std::runtime_error("Usage (host only): coopmute <player name>");
+        }
+        _console.printLine("coop muted " + std::string(*args[1]));
+    });
+    _console.registerCommand("coopunmute", "co-op host: let a muted player chat again: coopunmute <player name>", [=](const ConsoleArgs &args) {
+        if (args.size() < 2 || !anySession().chatMute(std::string(*args[1]), false)) {
+            throw std::runtime_error("that player is not muted (host only): coopunmute <player name>");
+        }
+        _console.printLine("coop unmuted " + std::string(*args[1]));
+    });
+    _console.registerCommand("coopchat", "co-op: print the last chat lines: coopchat [<lines>]", [=](const ConsoleArgs &args) {
+        const auto &lines = anySession().chatLog().lines();
+        size_t count = std::min<size_t>(lines.size(), args.size() > 1 ? args.get<int>(1).value_or(10) : 10);
+        for (size_t i = lines.size() - count; i < lines.size(); ++i) {
+            _console.printLine(lines[i].name + ": " + lines[i].text);
+        }
+    });
+    _console.registerCommand("coopforce","co-op host: move the party now, whoever is ready", [=](const ConsoleArgs &) {
         if (!anySession().forceTransition()) {
             throw std::runtime_error("no ready check is running");
         }
@@ -864,6 +928,13 @@ std::shared_ptr<CoopSession> startCoopSession(Game &game, const CoopLaunch &laun
     config.mode = launch.mode;
     // Story Mode: the host plus two companions. Free Mode: up to 8 players.
     config.maxClients = launch.mode == "free" ? 7 : 2;
+    if (launch.dedicated && launch.role == CoopRole::Host) {
+        // No host player takes a seat: up to eight guests. A join-code service
+        // caps a game at seven (its own limit, see the transport).
+        config.dedicated = true;
+        config.maxClients = std::clamp(launch.maxPlayers, 1, launch.service.empty() ? 8 : 7);
+    }
+    config.password = launch.password;
     config.playerName = launch.playerName.empty() ? std::string(launch.role == CoopRole::Host ? "Host" : "Player") : launch.playerName;
     config.preferredTag = launch.preferredTag;
     config.hostOnlyTransitions = launch.hostOnlyTransitions;
@@ -885,6 +956,9 @@ std::shared_ptr<CoopSession> startCoopSession(Game &game, const CoopLaunch &laun
         config.sessionKey = !launch.code.empty() ? "code:" + launch.code : "addr:" + launch.address;
     }
     config.askToJoin = launch.askToJoin < 0 ? !game.options().graphics.headless : launch.askToJoin == 1;
+    if (config.dedicated) {
+        config.askToJoin = false; // nobody at the host to press Accept
+    }
 
     net::OnlineConfig online;
     online.service = launch.service;

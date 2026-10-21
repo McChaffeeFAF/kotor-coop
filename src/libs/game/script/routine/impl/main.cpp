@@ -700,7 +700,13 @@ static Variable GetMaxHitPoints(const std::vector<Variable> &args, const Routine
 
 static Variable GetLastItemEquipped(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    // intentionally stubbed: the engine raises no equip event, so no script ever runs with a last-equipped item; answers invalid
+    // The item most recently put on by any creature; invalid once it has gone from the world.
+    if (auto module = ctx.game.module()) {
+        uint32_t id = module->lastItemEquipped();
+        if (id != script::kObjectInvalid && ctx.game.getObjectById(id)) {
+            return Variable::ofObject(id);
+        }
+    }
     return Variable::ofObject(script::kObjectInvalid);
 }
 
@@ -881,7 +887,7 @@ static Variable cos(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(std::cos(fValue));
+    return Variable::ofFloat(portable::cosf(fValue));
 }
 
 static Variable sin(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -891,7 +897,7 @@ static Variable sin(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(std::sin(fValue));
+    return Variable::ofFloat(portable::sinf(fValue));
 }
 
 static Variable tan(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -901,7 +907,7 @@ static Variable tan(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(std::tan(fValue));
+    return Variable::ofFloat(portable::sinf(fValue) / portable::cosf(fValue));
 }
 
 static Variable acos(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -912,7 +918,7 @@ static Variable acos(const std::vector<Variable> &args, const RoutineContext &ct
 
     // Execute
     // Zero outside [-1, 1], as documented, rather than NaN.
-    return Variable::ofFloat(fValue > 1.0f || fValue < -1.0f ? 0.0f : std::acos(fValue));
+    return Variable::ofFloat(fValue > 1.0f || fValue < -1.0f ? 0.0f : portable::atan2f(std::sqrt(1.0f - fValue * fValue), fValue));
 }
 
 static Variable asin(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -923,7 +929,7 @@ static Variable asin(const std::vector<Variable> &args, const RoutineContext &ct
 
     // Execute
     // Zero outside [-1, 1], as documented, rather than NaN.
-    return Variable::ofFloat(fValue > 1.0f || fValue < -1.0f ? 0.0f : std::asin(fValue));
+    return Variable::ofFloat(fValue > 1.0f || fValue < -1.0f ? 0.0f : portable::atan2f(fValue, std::sqrt(1.0f - fValue * fValue)));
 }
 
 static Variable atan(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -933,7 +939,7 @@ static Variable atan(const std::vector<Variable> &args, const RoutineContext &ct
     // Transform
 
     // Execute
-    return Variable::ofFloat(std::atan(fValue));
+    return Variable::ofFloat(portable::atan2f(fValue, 1.0f));
 }
 
 static Variable log(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -1883,7 +1889,7 @@ static Variable VectorToAngle(const std::vector<Variable> &args, const RoutineCo
     // Execute
     // Degrees in [0, 360), counter-clockwise from the +X axis (east), the
     // inverse of the facing GetFacing reports.
-    float angle = glm::degrees(std::atan2(vVector.y, vVector.x));
+    float angle = glm::degrees(portable::atan2f(vVector.y, vVector.x));
     if (angle < 0.0f) {
         angle += 360.0f;
     }
@@ -5248,7 +5254,10 @@ static Variable GetLastKiller(const std::vector<Variable> &args, const RoutineCo
 
 static Variable GetSpellCastItem(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Execute
-    // intentionally stubbed: spells cast from an item do not record the item for scripts; answers invalid
+    // Set by CastSpellAtObjectAction for the impact script of a spell cast from an item.
+    if (const Variable *item = ctx.execution.findArg(ArgKind::SpellCastItem)) {
+        return *item;
+    }
     return Variable::ofObject(script::kObjectInvalid);
 }
 
@@ -8096,7 +8105,7 @@ static Variable GetRandomDestination(const std::vector<Variable> &args, const Ro
         for (int attempt = 0; attempt < 8; ++attempt) {
             float angle = randomFloat(0.0f, 6.28318531f);
             float distance = randomFloat(0.0f, static_cast<float>(rangeLimit));
-            glm::vec3 candidate(creature->position() + glm::vec3(std::cos(angle) * distance, std::sin(angle) * distance, 0.0f));
+            glm::vec3 candidate(creature->position() + glm::vec3(portable::cosf(angle) * distance, portable::sinf(angle) * distance, 0.0f));
             if (auto landed = area->walkablePointAt(candidate)) {
                 return Variable::ofVector(*landed);
             }

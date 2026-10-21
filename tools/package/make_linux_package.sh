@@ -94,6 +94,17 @@ for lib in "$stage"/lib/*.so*; do
     [ -e "$lib" ] && patchelf --set-rpath '$ORIGIN' "$lib"
 done
 
+# The NSS compiler is a developer tool, never part of the player package (as in the Windows package).
+find "$stage" -type f -iname '*nsscomp*' -delete
+
+# Every library the engine needs must now be found next to it or be a system library.
+missing=$(LD_LIBRARY_PATH="$stage/lib" ldd "$stage/bin/engine" 2>/dev/null | grep 'not found' || true)
+if [ -n "$missing" ]; then
+    echo "package refused: the engine needs libraries that are neither bundled nor in the system:" >&2
+    echo "$missing" >&2
+    exit 1
+fi
+
 # Launch scripts, README, defaults and version.
 cp -r "$FILES"/. "$stage/"
 chmod +x "$stage"/*.sh
@@ -115,6 +126,10 @@ glibc=$(objdump -T "$stage/bin/engine" "$stage"/lib/*.so* 2>/dev/null | grep -o 
 # shader archive, built from glsl/ in this repo.
 bad=$(find "$stage" -type f \( -iregex '.*\.\(bif\|key\|tlk\|rim\|mod\|erf\|sav\|tpc\|tga\|dds\|txi\|2da\|mdl\|mdx\|wok\|pwk\|dwk\|lyt\|vis\|git\|are\|ifo\|dlg\|ncs\|nss\|utc\|utd\|utp\|uti\|utm\|ute\|uts\|utt\|utw\|jrl\|fac\|gui\|ssf\|wav\|mp3\|bik\|lip\)' \
     -o -iname chitin.key -o -iname dialog.tlk -o -iname swkotor.exe -o -iname swkotor2.exe \) ! -name shaderpack.erf)
+if [ -n "$(find "$stage" -iname '*nsscomp*' | head -n 1)" ]; then
+    echo "package refused: nsscomp is in the package" >&2
+    exit 1
+fi
 if [ "$WITH_TEXGEN" != 1 ] && [ -n "$(find "$stage" -iname 'texgen*' -o -name '*_n.tga' -o -name '*_m.tga' -o -name '*_n.dds' -o -name '*_m.dds' -o -name 'texgen_manifest.json' | head -n 1)" ]; then
     echo "package refused: texgen or its output is in the package but --with-texgen was not given" >&2
     exit 1

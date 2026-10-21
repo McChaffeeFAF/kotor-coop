@@ -33,6 +33,7 @@
 #include "reone/resource/strings.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 using namespace reone::gui;
 
@@ -71,11 +72,30 @@ bool isPopup(const std::string &base) {
     return base.rfind("optresolution", 0) == 0 || base.rfind("optkeyentry", 0) == 0;
 }
 
+// Check-box label legibility (K1): the checked art is a bright blob, so an on
+// box is tinted blue with a white label, and labels shrink to sit inside the
+// ring rather than run across it.
+constexpr float kToggleTextFit = 0.52f;
+void styleToggleLabel(ToggleButton &toggle, bool tsl, const glm::vec3 &baseColor) {
+    toggle.setTextFitWidth(kToggleTextFit);
+    if (!tsl) {
+        toggle.setTintBorderFill(true); // the ring and blob take the on tint
+        toggle.setOnColor(glm::vec3(0.25f, 0.6f, 1.0f));
+        toggle.setOnTextColor(glm::vec3(1.0f));
+    } else {
+        // K2's checked art is bright strokes in the screen palette; dimmed,
+        // it lets a white label read over it.
+        toggle.setOnColor(baseColor * 0.5f);
+        toggle.setOnTextColor(glm::vec3(1.0f));
+    }
+}
+
 // "Smarter companions" (C13): a check box of our own at the foot of the
 // gameplay panel's column, styled as its neighbours. Both layouts are full,
 // so the column makes room: K1 moves its two buttons into the space below
 // them; K2, which has none, closes the gaps between its check boxes.
-void addSmartCompanionsToggle(IGUI &gui, bool disabled) {
+OptionsScroll addSmartCompanionsToggle(IGUI &gui, bool disabled, bool scrolls) {
+    OptionsScroll result;
     std::vector<std::shared_ptr<Control>> column;
     for (const char *tag : {"CB_LEVELUP", "CB_INVERTCAM", "CB_AUTOSAVE", "CB_REVERSE_INGAME", "CB_REVERSE", "CB_DISABLEMOVE"}) {
         if (auto control = gui.findControl(tag)) {
@@ -83,7 +103,7 @@ void addSmartCompanionsToggle(IGUI &gui, bool disabled) {
         }
     }
     if (column.empty() || gui.findControl(kSmartCompanionsTag)) {
-        return;
+        return result;
     }
     std::stable_sort(column.begin(), column.end(), [](const auto &a, const auto &b) {
         return a->authoredExtent().top < b->authoredExtent().top;
@@ -97,7 +117,40 @@ void addSmartCompanionsToggle(IGUI &gui, bool disabled) {
 
     auto mouse = gui.findControl("BTN_MOUSE");
     auto keymap = gui.findControl("BTN_KEYMAP");
-    if (mouse && extent.top + extent.height > mouse->authoredExtent().top) {
+    if (scrolls && mouse && extent.top + extent.height > mouse->authoredExtent().top) {
+        // K1: the buttons move below the new row and the whole column scrolls
+        // above the panel's bottom bar rather than being squeezed.
+        int need = extent.top + extent.height - mouse->authoredExtent().top;
+        int mouseTop = mouse->authoredExtent().top;
+        int floor = std::numeric_limits<int>::max();
+        for (const char *tag : {"BTN_BACK", "BTN_DEFAULT", "LBL_BAR3"}) {
+            if (auto control = gui.findControl(tag); control && control->authoredExtent().top >= mouseTop) {
+                floor = std::min(floor, control->authoredExtent().top);
+            }
+        }
+        for (const auto &button : {mouse, keymap}) {
+            if (button) {
+                auto moved = button->authoredExtent();
+                moved.top += need;
+                button->setAuthoredExtent(moved);
+            }
+        }
+        if (floor != std::numeric_limits<int>::max()) {
+            result.controls = column;
+            result.controls.push_back(mouse);
+            if (keymap) {
+                result.controls.push_back(keymap);
+            }
+            result.view.viewTop = column.front()->authoredExtent().top;
+            if (auto difficulty = gui.findControl("BTN_DIFFICULTY")) {
+                // Rows may come up as far as the difficulty selector's foot.
+                result.view.viewTop = std::min(result.view.viewTop,
+                                               difficulty->authoredExtent().top + difficulty->authoredExtent().height);
+            }
+            result.view.viewBottom = floor - 6;
+            result.view.step = std::max(1, pitch);
+        }
+    } else if (mouse && extent.top + extent.height > mouse->authoredExtent().top) {
         int need = extent.top + extent.height - mouse->authoredExtent().top;
         int bottom = mouse->authoredExtent().top + mouse->authoredExtent().height;
         if (keymap) {
@@ -139,8 +192,40 @@ void addSmartCompanionsToggle(IGUI &gui, bool disabled) {
     toggle->setAuthoredExtent(extent);
     toggle->setExtent(extent);
     toggle->setDisabled(disabled);
+    // Without the neighbours' checked art the box never drew its on state.
+    if (auto added = std::dynamic_pointer_cast<ToggleButton>(toggle)) {
+        // The column's last row may carry no checked art of its own.
+        for (auto it = column.rbegin(); it != column.rend(); ++it) {
+            auto source = std::dynamic_pointer_cast<ToggleButton>(*it);
+            if (source && source->hasCheckedFill()) {
+                added->copyCheckedFill(*source);
+                break;
+            }
+        }
+    }
     gui.addControlToBack(toggle, IGUI::ControlCoordinates::Authored);
+    if (!result.controls.empty()) {
+        result.controls.insert(result.controls.begin() + column.size(), toggle);
+        for (const auto &control : result.controls) {
+            const auto &e = control->authoredExtent();
+            result.view.contentBottom = std::max(result.view.contentBottom, e.top + e.height);
+        }
+        // A column that fits once it starts as high as the window allows just
+        // moves up; only one that still does not fit scrolls.
+        int shift = std::max(0, result.view.contentBottom - result.view.viewBottom);
+        if (column.front()->authoredExtent().top - shift >= result.view.viewTop) {
+            for (const auto &control : result.controls) {
+                auto moved = control->authoredExtent();
+                moved.top -= shift;
+                control->setAuthoredExtent(moved);
+            }
+            result.controls.clear();
+        } else if (!result.view.scrollable()) {
+            result.controls.clear();
+        }
+    }
     gui.refreshLayout();
+    return result;
 }
 
 // Enhanced preset controls (design note graphics_scope, Tier 1).
@@ -263,12 +348,13 @@ void addColumnToggles(IGUI &gui, const std::vector<AddedToggle> &additions) {
 // The Tier 2 check boxes go in a second column where the panel's (unused)
 // description box is, styled as the first column's last check box and at its
 // pitch. The box is hidden.
-void addSideColumnToggles(IGUI &gui, const std::vector<AddedToggle> &additions) {
+OptionsScroll addSideColumnToggles(IGUI &gui, const std::vector<AddedToggle> &additions) {
+    OptionsScroll result;
     auto box = gui.findControl("LB_DESC");
     auto upper = gui.findControl("CB_BLOOM");
     auto lower = gui.findControl("CB_AMBIENTOCC");
     if (additions.empty() || !box || !upper || !lower || gui.findControl(additions.front().tag)) {
-        return;
+        return result;
     }
     auto style = std::dynamic_pointer_cast<ToggleButton>(lower);
     const auto boxExtent = box->authoredExtent();
@@ -278,25 +364,10 @@ void addSideColumnToggles(IGUI &gui, const std::vector<AddedToggle> &additions) 
     if (auto first = gui.findControl("BTN_TEXQUAL")) {
         top = std::max(top, first->authoredExtent().top); // level with the first column
     }
-    // The column may run past the box down to the panel's bottom buttons.
-    int limit = std::numeric_limits<int>::max();
-    for (const char *tag : {"BTN_DEFAULT", "BTN_BACK", "BTN_CANCEL", "BTN_OK", "LBL_BAR3"}) {
-        if (auto control = gui.findControl(tag)) {
-            const auto &e = control->authoredExtent();
-            if (e.top > top) {
-                limit = std::min(limit, e.top);
-            }
-        }
-    }
-    if (limit == std::numeric_limits<int>::max()) {
-        limit = boxExtent.top + boxExtent.height;
-    }
+    // The rows keep the panel's own pitch; what does not fit in the box
+    // scrolls inside it.
+    int limit = boxExtent.top + boxExtent.height;
     int rowHeight = rowExtent.height;
-    int count = static_cast<int>(additions.size());
-    if (count > 0 && top + count * pitch > limit) {
-        pitch = std::max(1, (limit - top) / count);
-        rowHeight = std::min(rowHeight, pitch + pitch / 2);
-    }
     for (const auto &addition : additions) {
         Control::Extent extent = rowExtent;
         extent.height = rowHeight;
@@ -315,10 +386,20 @@ void addSideColumnToggles(IGUI &gui, const std::vector<AddedToggle> &additions) 
             std::static_pointer_cast<ToggleButton>(toggle)->copyCheckedFill(*style);
         }
         gui.addControlToBack(toggle, IGUI::ControlCoordinates::Authored);
+        result.controls.push_back(toggle);
         top += pitch;
     }
     box->setVisible(false);
+    result.view.viewTop = result.controls.front()->authoredExtent().top;
+    result.view.viewBottom = limit;
+    result.view.contentBottom = result.controls.back()->authoredExtent().top + rowHeight;
+    result.view.step = pitch;
+    result.barLeft = boxExtent.left + boxExtent.width - 12;
+    if (!result.view.scrollable()) {
+        result.controls.clear();
+    }
     gui.refreshLayout();
+    return result;
 }
 
 } // namespace
@@ -396,7 +477,7 @@ void OptionsPanel::onGUILoaded() {
     if (panelStem(_base) == "optgameplay") {
         // A host setting in co-op: a client sees it but cannot change it.
         auto *coop = _game.coop();
-        addSmartCompanionsToggle(*_gui, coop && coop->isClient());
+        installScroll(addSmartCompanionsToggle(*_gui, coop && coop->isClient(), !isTSL()));
     }
 
     if (panelStem(_base) == "optgraphics") {
@@ -408,6 +489,7 @@ void OptionsPanel::onGUILoaded() {
                 toggle->setOnColor(_baseColor);
             }
             toggle->setShowCheckedFill(true);
+            styleToggleLabel(*toggle, isTSL(), _baseColor);
             _toggles.push_back(toggle);
             // The preset writes the feature settings it covers; the box shows
             // whether they all match it (it is not a setting of its own).
@@ -436,7 +518,7 @@ void OptionsPanel::onGUILoaded() {
         for (const auto &feature : graphics::graphicsFeatureToggles()) {
             tier2.push_back({feature.settingTag, feature.label});
         }
-        addSideColumnToggles(*_gui, tier2);
+        installScroll(addSideColumnToggles(*_gui, tier2));
         auto stepper = [this](const char *key, int count, int current, int delta) {
             int value = std::clamp(_game.userSettings().getInt(key, current) + delta, 0, count - 1);
             _game.userSettings().setInt(key, value);
@@ -491,6 +573,7 @@ void OptionsPanel::onGUILoaded() {
             toggle->setOnColor(_baseColor); // the checked art too
         }
         toggle->setShowCheckedFill(true);
+        styleToggleLabel(*toggle, isTSL(), _baseColor);
         _toggles.push_back(toggle);
         ToggleButton *raw = toggle.get();
         toggle->setOnClick([this, raw]() {
@@ -672,7 +755,116 @@ bool OptionsPanel::toggleDefault(const std::string &tag) const {
     return false;
 }
 
+void OptionsPanel::installScroll(OptionsScroll scroll) {
+    if (scroll.controls.empty() || !scroll.view.scrollable()) {
+        return;
+    }
+    _scroll = scroll.view;
+    _scrollBarLeft = scroll.barLeft;
+    _scrollItems.clear();
+    int right = 0;
+    for (const auto &control : scroll.controls) {
+        _scrollItems.push_back({control, control->authoredExtent()});
+        const auto &e = control->authoredExtent();
+        right = std::max(right, e.left + e.width);
+    }
+    // A bar of K1 button frames beside the column: the track is two buttons
+    // (the upper half scrolls up, the lower half down), the thumb a frame
+    // between them showing where the window is.
+    auto style = findControl<Button>("BTN_BACK");
+    if (!style) {
+        style = findControl<Button>("BTN_DEFAULT");
+    }
+    if (style) {
+        const int width = 7;
+        Control::Extent track {_scrollBarLeft >= 0 ? _scrollBarLeft : right + 5, _scroll.viewTop, width, _scroll.viewBottom - _scroll.viewTop};
+        auto make = [&](const char *tag, Control::Extent extent) {
+            auto control = std::shared_ptr<Control>(_gui->newControl(ControlType::Button, tag));
+            control->setBorder(style->border());
+            control->setHilight(style->hilight());
+            control->setPadding(0);
+            control->setTintBorderFill(true);
+            control->setAuthoredExtent(extent);
+            control->setExtent(extent);
+            _gui->addControlToBack(control, IGUI::ControlCoordinates::Authored);
+            return control;
+        };
+        int half = track.height / 2;
+        auto upper = make("SCROLL_UP", {track.left, track.top, width, half});
+        auto lower = make("SCROLL_DOWN", {track.left, track.top + half, width, track.height - half});
+        auto up = std::dynamic_pointer_cast<Button>(upper);
+        auto down = std::dynamic_pointer_cast<Button>(lower);
+        if (up) up->setOnClick([this]() { scrollBy(-1); });
+        if (down) down->setOnClick([this]() { scrollBy(1); });
+        _scrollTrack = upper;
+        _scrollThumb = make("SCROLL_THUMB", track);
+        _scrollThumb->setSelectable(false);
+        _scrollThumb->setBorderColor(glm::vec3(0.25f, 0.85f, 1.0f));
+    }
+    applyScroll();
+}
+
+void OptionsPanel::applyScroll() {
+    for (const auto &item : _scrollItems) {
+        auto extent = item.authored;
+        extent.top = _scroll.shiftedTop(item.authored.top);
+        item.control->setAuthoredExtent(extent);
+        item.control->setVisible(_scroll.isVisible(item.authored.top, item.authored.height));
+    }
+    if (_scrollThumb) {
+        int track = _scroll.viewBottom - _scroll.viewTop;
+        auto extent = _scrollThumb->authoredExtent();
+        extent.top = _scroll.viewTop + static_cast<int>(_scroll.thumbStart() * static_cast<float>(track));
+        extent.height = std::max(8, static_cast<int>(_scroll.thumbSize() * static_cast<float>(track)));
+        _scrollThumb->setAuthoredExtent(extent);
+    }
+    _gui->refreshLayout();
+}
+
+void OptionsPanel::scrollBy(int rows) {
+    if (!scrollActive()) {
+        return;
+    }
+    int before = _scroll.offset;
+    _scroll.scrollBy(rows);
+    if (_scroll.offset != before) {
+        applyScroll();
+    }
+}
+
 bool OptionsPanel::handle(const input::Event &event) {
+    if (scrollActive()) {
+        if (event.type == input::EventType::MouseWheel && event.wheel.y != 0) {
+            scrollBy(event.wheel.y > 0 ? -1 : 1);
+            return true;
+        }
+        if (event.type == input::EventType::Navigate &&
+            (event.navigate.action == input::NavigateAction::Up || event.navigate.action == input::NavigateAction::Down)) {
+            // Focus moving past the last shown row brings the next hidden one in.
+            bool down = event.navigate.action == input::NavigateAction::Down;
+            const ScrollItem *focused = nullptr;
+            for (const auto &item : _scrollItems) {
+                if (item.control->isSelected() && item.control->isVisible()) {
+                    focused = &item;
+                }
+            }
+            if (focused) {
+                const ScrollItem *next = nullptr;
+                for (const auto &item : _scrollItems) {
+                    int delta = item.authored.top - focused->authored.top;
+                    if (down ? delta > 0 : delta < 0) {
+                        if (!next || std::abs(delta) < std::abs(next->authored.top - focused->authored.top)) {
+                            next = &item;
+                        }
+                    }
+                }
+                if (next && !next->control->isVisible() &&
+                    _scroll.scrollIntoView(next->authored.top, next->authored.height)) {
+                    applyScroll();
+                }
+            }
+        }
+    }
     // The key-entry popup takes the next key as the new binding.
     if (_stack.keyEntryAction() && event.type == input::EventType::KeyDown && !event.key.repeat &&
         panelStem(_base) == "optkeyentry") {

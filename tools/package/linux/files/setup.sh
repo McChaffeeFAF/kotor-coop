@@ -42,12 +42,16 @@ while [ -z "$name" ]; do
 done
 cfg_set "$CONFIG" coop-name "$name"
 
-hud=$(ask "HUD style: k2 (KotOR II look) or k1" "k2")
-[ "$hud" = k1 ] && cfg_set "$CONFIG" hud k1 || cfg_set "$CONFIG" hud k2
+hud=$(ask "HUD style: k1 (KotOR look) or k2 (KotOR II look)" "k1")
+[ "$hud" = k2 ] && cfg_set "$CONFIG" hud k2 || cfg_set "$CONFIG" hud k1
 
 server=$(default_server "$ROOT")
 [ -n "$server" ] && cfg_set "$CONFIG" coop-server "$server"
-if [ -z "$(cfg_get "$CONFIG" borderless)$(cfg_get "$CONFIG" fullscreen)" ]; then
+if is_steam_deck; then
+    # The engine defaults to 1280x800 fullscreen and a larger GUI on a Deck; write nothing that
+    # would override that. To change the size of the interface: guiscale=1.5 in reone.cfg.
+    say "Steam Deck detected: 1280x800 fullscreen with a larger interface (set guiscale= in reone.cfg to change)."
+elif [ -z "$(cfg_get "$CONFIG" borderless)$(cfg_get "$CONFIG" fullscreen)" ]; then
     cfg_set "$CONFIG" borderless 1
     cfg_set "$CONFIG" fullscreen 0
 fi

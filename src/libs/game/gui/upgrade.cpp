@@ -20,11 +20,13 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/format.hpp>
 
+#include "reone/audio/mixer.h"
 #include "reone/graphics/texture.h"
 #include "reone/gui/guis.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/gff.h"
 #include "reone/resource/provider/2das.h"
+#include "reone/resource/provider/audioclips.h"
 #include "reone/resource/provider/gffs.h"
 #include "reone/resource/provider/textures.h"
 #include "reone/resource/strings.h"
@@ -63,6 +65,10 @@ static void configureItemList(ListBox &list, const glm::vec3 &base, const glm::v
         text.align = Control::TextAlign::LeftCenter;
         proto->setText(text);
         proto->setHilightColor(hilight);
+        // Names start inside the row frame, not on its edge.
+        if (const auto *border = proto->borderOrNull(); border && (border->corner || border->edge)) {
+            proto->setTextPaddingLeft(border->dimension + 4);
+        }
     }
 }
 
@@ -205,9 +211,11 @@ void UpgradeItemsPanel::describeSelection() {
         _description->addTextLinesAsItems(note);
     }
     if (int crafting = selectedCraftingRow(); crafting >= 0) {
-        _description->addTextLinesAsItems(crafting == 0
-                                              ? "Make items from components and chemicals."
-                                              : "Break items down into components and chemicals.");
+        auto &bench = _host.craftingPanel().crafting();
+        _description->addTextLinesAsItems(str(boost::format("%s\n\nComponents: %d\nChemicals: %d") %
+                                              (crafting == 0 ? "Make items from components and chemicals."
+                                                             : "Break items down into components and chemicals.") %
+                                              bench.components() % bench.chemicals()));
         return;
     }
     if (auto item = selectedItem()) {
@@ -398,6 +406,10 @@ void CraftingPanel::refresh() {
             row.text = str(boost::format("%s%s (%d %s)") %
                            (entry.skilled && entry.affordable ? "" : "- ") % entry.name % entry.cost %
                            materialName(entry.recipe.material));
+            row.iconTexture = _host.templateLook(_crafting.resolveTemplate(entry.recipe.templateResRef)).first;
+            if (row.iconTexture) {
+                row.iconFrame = itemFrameTexture(1);
+            }
             _list->addItem(std::move(row));
             ++rows;
         }
@@ -435,11 +447,19 @@ bool CraftingPanel::activate(int row) {
         if (_mode == Mode::Create && index < _recipes.size()) {
             const auto *recipe = guest->recipe(_recipes[index].recipe.templateResRef,
                                                _recipes[index].recipe.material == crafting::Material::Chemicals ? 1 : 0);
-            return recipe && coop->clientBenchRequest(guest->craft(*recipe));
+            bool sent = recipe && coop->clientBenchRequest(guest->craft(*recipe));
+            if (sent) {
+                _host.playUpgradeSound();
+            }
+            return sent;
         }
         if (_mode == Mode::BreakDown && index < _breakable.size()) {
             uint32_t host = guest->hostId(_breakable[index]->id());
-            return host && coop->clientBenchRequest(guest->breakDown(host));
+            bool sent = host && coop->clientBenchRequest(guest->breakDown(host));
+            if (sent) {
+                _host.playUpgradeSound();
+            }
+            return sent;
         }
         return false;
     }
@@ -453,6 +473,9 @@ bool CraftingPanel::activate(int row) {
     } else if (_mode == Mode::BreakDown && index < _breakable.size()) {
         done = _crafting.breakDown(_breakable[index], *leader);
     }
+    if (done) {
+        _host.playUpgradeSound();
+    }
     int rows = 1 + static_cast<int>(_mode == Mode::Create ? _recipes.size() : _breakable.size());
     refresh();
     rows = 1 + static_cast<int>(_mode == Mode::Create ? _recipes.size() : _breakable.size());
@@ -461,6 +484,19 @@ bool CraftingPanel::activate(int row) {
         describeSelection();
     }
     return done;
+}
+
+// The item description a template carries (a recipe's product), or empty.
+static std::string templateDescription(ServicesView &services, const std::string &resolved) {
+    auto uti = services.resource.gffs.get(resolved, ResType::Uti);
+    if (!uti) {
+        return "";
+    }
+    LocString text;
+    if (uti->readLocString(text, "DescIdentified", services.resource.strings)) {
+        return text.str();
+    }
+    return "";
 }
 
 void CraftingPanel::describeSelection() {
@@ -485,7 +521,9 @@ void CraftingPanel::describeSelection() {
         // A guest: the host judged skill and material; the local character is a copy.
         if (_mode == Mode::Create && index < _recipes.size()) {
             const auto &entry = _recipes[index];
-            text = str(boost::format("%s\n\nCost: %d %s%s%s") % entry.name % entry.cost % materialName(entry.recipe.material) %
+            auto description = templateDescription(_services, _crafting.resolveTemplate(entry.recipe.templateResRef));
+            text = str(boost::format("%s\n\n%sCost: %d %s%s%s") % entry.name % (description.empty() ? "" : description + "\n\n") %
+                       entry.cost % materialName(entry.recipe.material) %
                        (entry.skilled ? "" : "\nYour skill is too low.") % (entry.affordable ? "" : "\nNot enough material."));
         } else if (_mode == Mode::BreakDown && index < _breakable.size()) {
             const auto &item = *_breakable[index];
@@ -497,14 +535,18 @@ void CraftingPanel::describeSelection() {
     }
     if (_mode == Mode::Create && index < _recipes.size()) {
         const auto &entry = _recipes[index];
-        text = str(boost::format("%s\n\nCost: %d %s\nRequires %s %d (yours: %d)%s") % entry.name % entry.cost %
-                   materialName(entry.recipe.material) % skillName(_services, entry.recipe.skill) %
-                   entry.recipe.skillRank % leader->getSkillValue(entry.recipe.skill) %
+        auto description = templateDescription(_services, _crafting.resolveTemplate(entry.recipe.templateResRef));
+        text = str(boost::format("%s\n\n%sRequires: %d %s (yours: %d)%s\nCost: %d %s (you have %d)%s") % entry.name %
+                   (description.empty() ? "" : description + "\n\n") % entry.recipe.skillRank %
+                   skillName(_services, entry.recipe.skill) % leader->getSkillValue(entry.recipe.skill) %
+                   (entry.skilled ? "" : " - skill too low") % entry.cost % materialName(entry.recipe.material) %
+                   (entry.recipe.material == crafting::Material::Chemicals ? _crafting.chemicals() : _crafting.components()) %
                    (entry.affordable ? "" : "\nNot enough material."));
     } else if (_mode == Mode::BreakDown && index < _breakable.size()) {
         const auto &item = *_breakable[index];
         auto material = crafting::materialOfBaseItem(item.baseItemType());
-        text = str(boost::format("%s\n\nBreaks down into %d %s (%s %d)") % item.localizedName() %
+        text = str(boost::format("%s\n\n%sBreaks down into %d %s (%s %d)") % item.localizedName() %
+                   (item.description().empty() ? "" : item.description() + "\n\n") %
                    _crafting.breakdownYieldFor(item, *leader) % materialName(material) %
                    skillName(_services, crafting::breakdownSkill(material)) %
                    leader->getSkillValue(crafting::breakdownSkill(material)));
@@ -1091,8 +1133,22 @@ void UpgradeGUI::back() {
     }
 }
 
+void UpgradeGUI::playUpgradeSound() {
+    auto table = _services.resource.twoDas.get("guisounds");
+    int row = table ? table->indexByCellValue("label", "Upgrade") : -1;
+    if (row == -1) {
+        return;
+    }
+    if (auto clip = _services.resource.audioClips.get(table->getString(row, "soundresref"))) {
+        _audioSource = _services.audio.mixer.play(std::move(clip), audio::AudioType::Sound);
+    }
+}
+
 bool UpgradeGUI::assemble() {
     bool applied = _guest ? assembleGuest() : _game.assembleUpgrades();
+    if (applied) {
+        playUpgradeSound();
+    }
     if (_directItem) {
         close();
         return applied;

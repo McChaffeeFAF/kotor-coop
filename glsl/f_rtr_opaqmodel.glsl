@@ -126,7 +126,14 @@ void main() {
     float shadow = isFeatureEnabled(FEATURE_SHADOWS)
                        ? getShadow(viewPos, fragPosWorld.xyz, surfaceDetail ? geomNormal : normal, sShadowMap, sShadowMapCube)
                        : 0.0;
-    vec3 color = min(vec3(uLightClamp), (ambient + (1.0 - shadow) * max(vec3(0.0), diffuse))) * mainTexSample.rgb;
+    // Lighting is exact up to 1 (retail saturation); the headroom above it, up to
+    // uLightClamp with tone mapping, is approached smoothly. A hard clamp let
+    // several overlapping lights drive a surface to the ceiling, which the
+    // curve then showed as a blown-out white patch (doors under a bolt's light).
+    vec3 litSum = ambient + (1.0 - shadow) * max(vec3(0.0), diffuse);
+    float headroom = max(uLightClamp - 1.0, 1e-4);
+    vec3 lit = min(litSum, vec3(1.0)) + headroom * (1.0 - exp(-max(litSum - 1.0, vec3(0.0)) / headroom));
+    vec3 color = lit * mainTexSample.rgb;
     float envScale = 1.0;
     if (surfaceDetail && isFeatureEnabled(FEATURE_MATERIALMAP)) {
         // A soft highlight from the key light, as sharp as the material is smooth.

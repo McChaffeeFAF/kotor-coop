@@ -418,6 +418,9 @@ private:
 
     std::vector<LightSceneNode *> _activeLights;
 
+    /** Removed models whose lights are still fading out (about 80 ms). */
+    std::vector<std::shared_ptr<ModelSceneNode>> _fadingModels;
+
     // END Lighting
 
     // Shadows

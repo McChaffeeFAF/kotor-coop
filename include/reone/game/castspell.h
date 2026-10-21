@@ -113,10 +113,10 @@ private:
     float _time {0.0f};
     float _swingTime {0.0f};
     float _throwTime {0.0f};
-    glm::vec3 _throwOrigin;
-    glm::vec3 _throwTarget;
-    glm::vec3 _throwVelocity;
-    glm::vec3 _throwAccel;
+    glm::vec3 _throwOrigin {0.0f};
+    glm::vec3 _throwTarget {0.0f};
+    glm::vec3 _throwVelocity {0.0f};
+    glm::vec3 _throwAccel {0.0f};
 };
 
 } // namespace game

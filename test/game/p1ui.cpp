@@ -130,3 +130,27 @@ TEST(P1UiSettings, selection_radius_default_is_well_past_upstream) {
     EXPECT_GE(kDefaultSelectionRadius, 2.0f * kSelectionDistance);
     EXPECT_LE(kDefaultSelectionRadius, kMaxSelectionRadius);
 }
+
+TEST(P1UiSettings, fresh_install_gets_the_built_in_defaults) {
+    UserSettings settings; // no file, no values
+    EXPECT_EQ(62, settings.getInt("audio.movie", 100));
+    EXPECT_EQ(39, settings.getInt("audio.music", 100));
+    EXPECT_EQ(60, settings.getInt("audio.sound", 100));
+    EXPECT_EQ(89, settings.getInt("audio.voice", 100));
+    EXPECT_EQ(2, settings.getInt("graphics.antialiasing", 0));
+    EXPECT_TRUE(settings.getBool("optgameplay.CB_DISABLEMOVE", false));
+    EXPECT_FALSE(settings.getBool("optgameplay.CB_LEVELUP", true));
+    EXPECT_TRUE(settings.getBool("optgameplay.CB_SMARTCOMPANIONS", false));
+    EXPECT_TRUE(settings.getBool("optgraphicsadv.CB_SSGI", true) == false);
+    EXPECT_TRUE(settings.getBool("optgraphicsadv.CB_VOLUMETRICS", false));
+    EXPECT_FALSE(settings.has("audio.music")); // defaults are never written out
+    EXPECT_EQ(7, settings.getInt("not.a.setting", 7));
+}
+
+TEST(P1UiSettings, own_values_beat_defaults_and_erase_restores_them) {
+    UserSettings settings;
+    settings.setInt("audio.music", 10);
+    EXPECT_EQ(10, settings.getInt("audio.music", 100));
+    settings.erase("audio.music"); // the Default button
+    EXPECT_EQ(39, settings.getInt("audio.music", 100));
+}

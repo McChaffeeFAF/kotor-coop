@@ -197,3 +197,13 @@ TEST_F(GraphicsOptionsParse, join_without_a_port_defaults_to_27015) {
     EXPECT_EQ("host.example:27015", parseArgs({"--join", "host.example"})->coop.joinAddress);
     EXPECT_EQ("1.2.3.4:5000", parseArgs({"--join", "1.2.3.4:5000"})->coop.joinAddress);
 }
+
+TEST_F(GraphicsOptionsParse, k1_hud_and_borderless_are_the_defaults) {
+    auto options = parseArgs({"--game", "."});
+    EXPECT_EQ(game::HudProfile::K1, options->game.hud);
+    EXPECT_TRUE(options->graphics.borderless);
+    EXPECT_FALSE(options->game.autoCombat);
+    auto explicitK2 = parseArgs({"--game", ".", "--hud", "k2", "--borderless", "0"});
+    EXPECT_EQ(game::HudProfile::K2, explicitK2->game.hud);
+    EXPECT_FALSE(explicitK2->graphics.borderless);
+}

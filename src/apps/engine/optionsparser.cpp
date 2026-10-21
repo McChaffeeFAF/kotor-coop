@@ -18,9 +18,11 @@
 #include "optionsparser.h"
 
 #include <cmath>
+#include <cstdlib>
 
 #include "reone/graphics/preset.h"
 #include "reone/net/joincode.h"
+#include "reone/system/gamedetect.h"
 #include "reone/system/types.h"
 
 using namespace boost::program_options;
@@ -61,8 +63,42 @@ static float parseFrameTime(const std::string &text) {
     return value;
 }
 
+/**
+ * Steam Deck: the 1280x800 panel, fullscreen, and a larger GUI so text is readable at handheld
+ * distance. These are defaults only; --width, --height, --fullscreen, --guiscale and reone.cfg
+ * override them.
+ */
+static void applySteamDeckDefaults(Options &options) {
+    const char *user = std::getenv("USER");
+    if (!isSteamDeck(std::getenv("SteamDeck"), user ? user : "")) {
+        return;
+    }
+    options.graphics.width = 1280;
+    options.graphics.height = 800;
+    options.graphics.fullscreen = true;
+    options.graphics.guiScale = 1.25f;
+    options.graphics.guiTextScale *= 1.25f;
+}
+
+/** The first KotOR install found in the usual Linux places, or empty. */
+static std::filesystem::path detectLinuxInstall() {
+#ifdef __linux__
+    const char *home = std::getenv("HOME");
+    if (!home || !*home) {
+        return {};
+    }
+    const char *user = std::getenv("USER");
+    auto installs = findGameInstalls(home, KotorGame::K1, defaultMounts(user ? user : ""));
+    if (!installs.empty()) {
+        return installs.front().path;
+    }
+#endif
+    return {};
+}
+
 std::unique_ptr<Options> OptionsParser::parse() {
     auto options = std::make_unique<Options>();
+    applySteamDeckDefaults(*options);
 
     int defaultLogChannels = 0;
     for (auto &channel : options->logging.channels) {
@@ -76,7 +112,7 @@ std::unique_ptr<Options> OptionsParser::parse() {
         ("game", value<std::string>(), "path to game directory")                                                                //
         ("k2game", value<std::string>()->default_value(""), "path to a K2 install: its GUI resources (--hud k2) and the K2 systems merge") //
         ("k2merge", value<bool>()->default_value(true), "with --k2game, merge K2's feats, powers, classes, forms, crafting and the level-50 table into K1's data; 0 keeps K1 data only") //
-        ("hud", value<std::string>()->default_value(""), "HUD presentation: k1 or k2; default follows the game")                //
+        ("hud", value<std::string>()->default_value("k1"), "HUD presentation: k1 (default) or k2; empty follows the game")                //
         ("commands-file", value<std::string>()->default_value(""), "execute console commands from a file at startup")           //
         ("control-port", value<int>()->default_value(0), "accept console commands on 127.0.0.1 at this port; 0 disables")       //
         ("tickrate", value<int>()->default_value(options->game.tickRate), "fixed simulation rate, ticks per second")             //
@@ -96,6 +132,13 @@ std::unique_ptr<Options> OptionsParser::parse() {
         ("coop-sim-loss", value<float>()->default_value(0.0f), "co-op test: percent of packets this engine drops when sending") //
         ("coop-sim-jitter", value<int>()->default_value(0), "co-op test: milliseconds of random extra delay on sends") //
         ("coop-record", value<std::string>()->default_value(""), "write the game and co-op state once a second to this JSON-lines file (bug reports)") //
+        ("coop-password", value<std::string>()->default_value(""), "co-op: a host requires this password of every guest, a guest sends it (empty: none)") //
+        ("coop-max-players", value<int>()->default_value(game::kDedicatedMaxPlayers), "dedicated host: how many guests it takes, 1 to 8") //
+        ("dedicated", value<bool>()->default_value(false)->implicit_value(true), "run a dedicated co-op host: Free Mode with no local player, no window or audio; the port is --host's (default 27015)") //
+        ("dedicated-save-slot", value<int>()->default_value(static_cast<int>(game::kDedicatedDefaultSaveSlot)), "dedicated host: the save slot it resumes from and autosaves to") //
+        ("dedicated-autosave", value<float>()->default_value(static_cast<float>(game::kDedicatedDefaultAutosaveSeconds)), "dedicated host: seconds between autosaves, 0 for none (it still saves on shutdown)") //
+        ("dedicated-start-module", value<std::string>()->default_value(""), "dedicated host: with no save, the module a new game starts in (default: the game's first)") //
+        ("dedicated-stdin", value<bool>()->default_value(true), "dedicated host: read admin commands (players, kick, save, shutdown) from standard input") //
         ("coop-mode", value<std::string>()->default_value("story"), "co-op session mode: story")                              //
         ("coop-name", value<std::string>()->default_value(""), "co-op player name")                                            //
         ("coop-slot", value<std::string>()->default_value(""), "co-op client: the companion tag to ask for; empty for any")    //
@@ -111,7 +154,7 @@ std::unique_ptr<Options> OptionsParser::parse() {
         ("height", value<int>()->default_value(options->graphics.height), "render height")                                      //
         ("winscale", value<int>()->default_value(options->graphics.winScale), "window scale")                                   //
         ("fullscreen", value<bool>()->default_value(options->graphics.fullscreen), "enable fullscreen")                         //
-        ("borderless", value<bool>()->default_value(options->graphics.borderless), "fullscreen windowed: a borderless window over the desktop (overrides fullscreen; set width and height to the desktop resolution)") //
+        ("borderless", value<bool>()->default_value(true), "fullscreen windowed: a borderless window over the desktop (overrides fullscreen; set width and height to the desktop resolution)") //
         ("headless", value<bool>()->default_value(false), "never show the window; for scripted batch runs")                     //
         ("run-unfocused", value<bool>()->default_value(false), "keep running while the window is not focused")                  //
         ("vsync", value<bool>()->default_value(options->graphics.vsync), "enable v-sync")                                       //
@@ -178,7 +221,17 @@ std::unique_ptr<Options> OptionsParser::parse() {
 
     // Convert Boost options to game options
 
-    options->game.path = vars.count("game") > 0 ? std::filesystem::path(vars["game"].as<std::string>()) : std::filesystem::current_path();
+    if (vars.count("game") > 0) {
+        options->game.path = std::filesystem::path(vars["game"].as<std::string>());
+    } else {
+        // No --game: the current folder if it is an install, else the Steam/GOG install on Linux.
+        options->game.path = std::filesystem::current_path();
+        if (!isGameInstall(options->game.path, KotorGame::K1) && !isGameInstall(options->game.path, KotorGame::K2)) {
+            if (auto detected = detectLinuxInstall(); !detected.empty()) {
+                options->game.path = detected;
+            }
+        }
+    }
     options->game.developer = vars["dev"].as<bool>();
     options->game.autoCombat = vars["autocombat"].as<bool>();
     options->game.smartCompanions = vars["smart-companions"].as<bool>();
@@ -396,6 +449,32 @@ std::unique_ptr<Options> OptionsParser::parse() {
     }
     if (options->coop.mode != "story" && options->coop.mode != "free") {
         throw std::invalid_argument("coop-mode must be story or free");
+    }
+    options->coop.password = vars["coop-password"].as<std::string>();
+
+    if (vars["dedicated"].as<bool>()) {
+        auto &dedicated = options->dedicated;
+        dedicated.enabled = true;
+        if (!options->coop.joinAddress.empty() || !options->coop.joinCode.empty()) {
+            throw std::invalid_argument("--dedicated and --join are exclusive");
+        }
+        dedicated.port = options->coop.hostPort > 0 ? static_cast<uint16_t>(options->coop.hostPort) : game::kDedicatedDefaultPort;
+        dedicated.maxPlayers = vars["coop-max-players"].as<int>();
+        dedicated.password = options->coop.password;
+        dedicated.server = options->coop.server;
+        int slot = vars["dedicated-save-slot"].as<int>();
+        dedicated.saveSlot = slot < 0 ? 0xFFFFFFFFu : static_cast<uint32_t>(slot);
+        dedicated.autosaveSeconds = vars["dedicated-autosave"].as<float>();
+        dedicated.startModule = vars["dedicated-start-module"].as<std::string>();
+        dedicated.adminStdin = vars["dedicated-stdin"].as<bool>();
+        if (auto problem = game::validateDedicatedSettings(dedicated); !problem.empty()) {
+            throw std::invalid_argument(problem);
+        }
+        // No window, no sound, and a Free Mode session (the host starts it itself).
+        options->graphics.headless = true;
+        options->audio.muted = true;
+        options->coop.mode = "free";
+        options->coop.hostPort = 0;
     }
 
     return options;

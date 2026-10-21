@@ -214,7 +214,7 @@ void Spells::init() {
         SpellType type = static_cast<SpellType>(row);
         std::string name(_strings.getText(spells->getInt(row, "name", -1)));
         std::string description(_strings.getText(spells->getInt(row, "spelldesc", -1)));
-        std::shared_ptr<Texture> icon(_textures.get(spells->getString(row, "iconresref"), TextureUsage::GUI));
+        std::shared_ptr<Texture> icon(_textures.getIcon(spells->getString(row, "iconresref"), TextureUsage::GUI));
         uint32_t pips = spells->getHexInt(row, "pips");
         std::vector<SpellType> prerequisites(parsePrerequisites(spells->getString(row, "prerequisites")));
         std::optional<SpellType> masterSpell(parseSpellType(spells->getString(row, "masterspell")));

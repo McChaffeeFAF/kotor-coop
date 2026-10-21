@@ -64,6 +64,14 @@ TEST(K2Feats, close_combat_adds_one_per_feat) {
     EXPECT_EQ(2, k2feats::closeCombatAttackBonus(owning({139, 140})));
 }
 
+TEST(K2Feats, melee_on_ranged_bonus_shrinks_with_close_combat) {
+    EXPECT_EQ(6, k2feats::meleeOnRangedAttackBonus(owning({})));
+    EXPECT_EQ(6, k2feats::meleeOnRangedAttackBonus(nullptr));
+    EXPECT_EQ(4, k2feats::meleeOnRangedAttackBonus(owning({139})));
+    EXPECT_EQ(2, k2feats::meleeOnRangedAttackBonus(owning({139, 140})));
+    EXPECT_EQ(2, k2feats::meleeOnRangedAttackBonus(owning({140})));
+}
+
 TEST(K2Feats, superior_two_weapon_fighting_main_and_off_hand) {
     EXPECT_EQ(1, k2feats::superiorTwoWeaponBonus(owning({159}), false));
     EXPECT_EQ(2, k2feats::superiorTwoWeaponBonus(owning({159, 160}), false));

@@ -20,6 +20,9 @@
 #include "../gui.h"
 #include "../keymap.h"
 
+#include "reone/gui/control.h"
+#include "reone/gui/scrollview.h"
+
 #include <optional>
 
 namespace reone {
@@ -32,6 +35,13 @@ class ToggleButton;
 namespace game {
 
 class OptionsPanels;
+
+/** A column of rows that does not fit its panel and so scrolls inside a window. */
+struct OptionsScroll {
+    std::vector<std::shared_ptr<gui::Control>> controls;
+    gui::ScrollView view;
+    int barLeft {-1}; /**< where the scroll bar goes; right of the rows when unset */
+};
 
 /**
  * One options panel (optionsmain, optgameplay, optsound, ...): its Close /
@@ -58,6 +68,23 @@ private:
     };
     std::vector<SliderBinding> _sliders;
     std::map<std::string, std::string> _stepperLabels; // authored text of the arrow selectors
+
+    // A column too tall for its panel scrolls (mouse wheel, the bar's arrows,
+    // pad navigation reaching past the last shown row); rows not wholly in
+    // the window are hidden.
+    struct ScrollItem {
+        std::shared_ptr<gui::Control> control;
+        gui::Control::Extent authored;
+    };
+    gui::ScrollView _scroll;
+    int _scrollBarLeft {-1};
+    std::vector<ScrollItem> _scrollItems;
+    std::shared_ptr<gui::Control> _scrollThumb;
+    std::shared_ptr<gui::Control> _scrollTrack;
+    void installScroll(OptionsScroll scroll);
+    void applyScroll();
+    void scrollBy(int rows);
+    bool scrollActive() const { return !_scrollItems.empty() && _scroll.scrollable(); }
 
     void onGUILoaded() override;
     std::string settingKey(const gui::Control &control) const;

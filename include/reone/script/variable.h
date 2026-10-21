@@ -128,6 +128,7 @@ enum class ArgKind {
     SpellMetaMagic,      /**< upstream #356 */
     SpellForcePointCost, /**< upstream #356 */
     LastDisarmed,        /**< upstream #356 */
+    SpellCastItem,       /**< GetSpellCastItem: the item whose spell is cast */
 };
 
 struct Argument {

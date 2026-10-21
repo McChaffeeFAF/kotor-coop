@@ -645,6 +645,7 @@ int ListBox::getItemTextWidth() const {
 
     int width = _protoItem->extent().width -
                 2 * _protoItem->border().dimension;
+    width -= 2 * _protoItem->explicitTextPaddingLeft(); // the same margin on the right
     if (shouldRenderItemIconsForButtonProto()) {
         // Button-proto item icons render in a square gutter sized from the row height.
         int itemIconWidth = _protoItem->extent().height;

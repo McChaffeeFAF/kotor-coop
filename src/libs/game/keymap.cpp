@@ -68,6 +68,8 @@ const std::vector<KeyActionInfo> &keyActionInfos() {
         // K2 keymap.2da "SwitchWeaps" (H); K1 has no row (design note k1hud_parity_2).
         {KeyAction::SwitchWeapons, "SwitchWeaps", KeyCode::H, KeyCode::Unknown, true},
         {KeyAction::GameMenu, "GUI", KeyCode::Escape, KeyCode::Unknown, false},
+        {KeyAction::CoopChat, "CoopChat", KeyCode::Return, KeyCode::Unknown, true},
+        {KeyAction::CoopPing, "CoopPing", KeyCode::N, KeyCode::Unknown, true},
     };
     return infos;
 }

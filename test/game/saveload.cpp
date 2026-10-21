@@ -114,6 +114,19 @@ TEST(SaveBrowserOrdering, k1_save_omits_reserved_slots_and_keeps_manuals_oldest_
     EXPECT_EQ(browserSlots(saves), (std::vector<uint32_t> {3, 7, 19}));
 }
 
+TEST(SaveBrowserOrdering, save_omits_the_area_checkpoint_but_load_lists_it) {
+    // The checkpoint is rewritten by the engine; offering it as an overwrite
+    // target (as "Game 999998") let players save over it.
+    auto saves = detail::prepareSaveBrowserEntries(
+        {browserSave(5), browserSave(kAreaCheckpointSlot), browserSave(1)},
+        false, SaveLoadMode::Save);
+    EXPECT_EQ(browserSlots(saves), (std::vector<uint32_t> {5}));
+    auto load = detail::prepareSaveBrowserEntries(
+        {browserSave(5), browserSave(kAreaCheckpointSlot)},
+        false, SaveLoadMode::LoadFromInGame);
+    EXPECT_EQ(browserSlots(load), (std::vector<uint32_t> {5, kAreaCheckpointSlot}));
+}
+
 TEST(SaveBrowserOrdering, k2_load_orders_all_rows_by_persisted_timestamp_newest_first) {
     auto saves = detail::prepareSaveBrowserEntries(
         {browserSave(19, 0, 500), browserSave(1, 0, 450), browserSave(7, 0, 300),

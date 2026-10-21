@@ -61,7 +61,7 @@ foreach ($pair in @(@("k1", "game"), @("k2", "k2game"))) {
 }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = Get-CleanName $env:USERNAME }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = "Player" }
-if ($cfg["hud"] -notin @("k1", "k2")) { $cfg["hud"] = "k2" }
+if ($cfg["hud"] -notin @("k1", "k2")) { $cfg["hud"] = "k1" }
 # First run: fullscreen windowed at the desktop resolution.
 if (-not $cfg.Contains("fullscreen") -and -not $cfg.Contains("borderless")) {
     $cfg["borderless"] = "1"; $cfg["fullscreen"] = "0"
@@ -130,7 +130,7 @@ $hudLabel.Text = "HUD:"
 $hudBox = Add-Control (New-Object System.Windows.Forms.ComboBox) 404 $y 142 22
 $hudBox.DropDownStyle = "DropDownList"
 [void]$hudBox.Items.AddRange(@("KotOR II look", "KotOR look"))
-$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k1") { 1 } else { 0 })
+$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k2") { 0 } else { 1 })
 $y += 36
 
 $displayLabel = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 4) 150 18

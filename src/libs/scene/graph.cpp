@@ -85,9 +85,23 @@ void SceneGraph::clear() {
     _soundRoots.clear();
     _grassRoots.clear();
     _activeLights.clear();
+    _fadingModels.clear();
+}
+
+static void startLightPresence(SceneNode &node) {
+    if (node.type() == SceneNodeType::Light) {
+        static_cast<LightSceneNode &>(node).setPresence(0.0f);
+    }
+    for (auto &child : node.children()) {
+        startLightPresence(*child);
+    }
 }
 
 void SceneGraph::addRoot(std::shared_ptr<ModelSceneNode> node) {
+    // Lights of a model that joins a running scene fade in.
+    if (_updateRoots) {
+        startLightPresence(*node);
+    }
     _modelRoots.push_back(std::move(node));
 }
 
@@ -108,12 +122,29 @@ void SceneGraph::addRoot(std::shared_ptr<SoundSceneNode> node) {
 }
 
 void SceneGraph::removeRoot(ModelSceneNode &node) {
+    // A model with lit lights lingers (not drawn) until they fade out.
+    std::shared_ptr<ModelSceneNode> owner;
+    for (auto &root : _modelRoots) {
+        if (root.get() == &node) {
+            owner = root;
+            break;
+        }
+    }
+    bool fadeOut = false;
     for (auto it = _activeLights.begin(); it != _activeLights.end();) {
         if (&(*it)->model() == &node) {
-            it = _activeLights.erase(it);
+            if (owner && node.isEnabled() && (*it)->presence() > 0.0f && (*it)->strength() > 0.0f) {
+                fadeOut = true;
+                ++it;
+            } else {
+                it = _activeLights.erase(it);
+            }
         } else {
             ++it;
         }
+    }
+    if (fadeOut) {
+        _fadingModels.push_back(owner);
     }
     auto it = std::remove_if(
         _modelRoots.begin(),
@@ -181,6 +212,28 @@ void SceneGraph::updateModelRoots(float dt) {
 static constexpr float kToneMappedLightClamp = 2.0f;
 
 void SceneGraph::updatePresentation(float dt) {
+    // Lights of removed models fade out, then go.
+    for (auto it = _fadingModels.begin(); it != _fadingModels.end();) {
+        bool lit = false;
+        for (auto &light : _activeLights) {
+            if (&light->model() == it->get()) {
+                light->setPresence(std::max(0.0f, light->presence() - dt / 0.08f));
+                lit = lit || light->presence() > 0.0f;
+            }
+        }
+        if (lit) {
+            ++it;
+            continue;
+        }
+        for (auto lit2 = _activeLights.begin(); lit2 != _activeLights.end();) {
+            if (&(*lit2)->model() == it->get()) {
+                lit2 = _activeLights.erase(lit2);
+            } else {
+                ++lit2;
+            }
+        }
+        it = _fadingModels.erase(it);
+    }
     _presentationTime = dt;
     _trailFrameTime = dt;
     if (_updateRoots) {
@@ -290,7 +343,7 @@ static void collectObjectLightSources(SceneNode &node,
             ObjectLightSource source;
             source.position = lightNode.origin();
             source.color = lightNode.color();
-            source.multiplier = lightNode.multiplier();
+            source.multiplier = lightNode.multiplier() * lightNode.presence();
             source.radius = lightNode.radius();
             source.priority = lightNode.modelNode().light()->priority;
             source.dynamicType = lightNode.modelNode().light()->dynamicType;
@@ -311,6 +364,9 @@ void SceneGraph::updateObjectLighting(float dt) {
     std::vector<LightSceneNode *> lightNodes;
     std::vector<ObjectLightSource> sources;
     for (auto &root : _modelRoots) {
+        collectObjectLightSources(*root, lightNodes, sources);
+    }
+    for (auto &root : _fadingModels) {
         collectObjectLightSources(*root, lightNodes, sources);
     }
     for (auto &root : _modelRoots) {
@@ -712,7 +768,7 @@ Texture &SceneGraph::render(const glm::ivec2 &dim) {
                 auto &light = globals.lights[i];
                 light.position = glm::vec4(_activeLights[i]->origin(), _activeLights[i]->isDirectional() ? 0.0f : 1.0f);
                 light.color = glm::vec4(_activeLights[i]->color(), 1.0f);
-                light.multiplier = _activeLights[i]->multiplier() * _activeLights[i]->strength();
+                light.multiplier = _activeLights[i]->multiplier() * _activeLights[i]->strength() * _activeLights[i]->presence();
                 light.radius = _activeLights[i]->radius();
                 light.ambientOnly = static_cast<int>(_activeLights[i]->modelNode().light()->ambientOnly);
                 light.dynamicType = _activeLights[i]->modelNode().light()->dynamicType;

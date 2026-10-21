@@ -19,9 +19,23 @@
 
 #include "reone/system/threadutil.h"
 
+#include <AL/alext.h>
+
+#include <cstdlib>
+#include <string>
+
 namespace reone {
 
 namespace audio {
+
+std::vector<int> contextAttributes(bool hrtf) {
+    return {ALC_HRTF_SOFT, hrtf ? ALC_TRUE : ALC_FALSE, 0};
+}
+
+bool hrtfRequested() {
+    const char *value = std::getenv("REONE_HRTF");
+    return value && std::string(value) == "1";
+}
 
 void Context::init() {
     checkMainThread();
@@ -29,7 +43,7 @@ void Context::init() {
     if (!_device) {
         throw std::runtime_error("alcOpenDevice failed");
     }
-    _context = alcCreateContext(_device, nullptr);
+    _context = alcCreateContext(_device, contextAttributes(hrtfRequested()).data());
     if (!_context) {
         throw std::runtime_error("alcCreateContext failed");
     }

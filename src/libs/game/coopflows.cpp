@@ -576,7 +576,10 @@ std::vector<CoopReadyCheck::Player> CoopSession::hostReadyPlayers() const {
     host.key = 0;
     host.name = _config.playerName;
     host.busy = _game.currentScreen() != Game::Screen::InGame;
-    players.push_back(host);
+    if (!_config.dedicated) {
+        // A dedicated host has no player to ask: the guests alone decide.
+        players.push_back(host);
+    }
     for (const auto &[connection, client] : _clients) {
         if (client.welcomed) {
             CoopReadyCheck::Player player;

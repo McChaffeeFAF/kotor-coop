@@ -527,8 +527,10 @@ void Conversation::loadVoiceOver() {
     if (_currentVoice) {
         _currentVoice->stop();
         _currentVoice.reset();
-        _lipAnimation.reset();
     }
+    // A line with no mouth data of its own must not move the mouth with the
+    // previous line's.
+    _lipAnimation.reset();
 
     // Play current voice over either from Sound or from VO_ResRef
     std::string voiceResRef;

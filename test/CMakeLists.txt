@@ -40,9 +40,12 @@ set(TESTS_HEADERS
 
 set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/audio/mixer.cpp
+    ${TESTS_SOURCE_DIR}/audio/context.cpp
     ${TESTS_SOURCE_DIR}/audio/format/wavreader.cpp
     ${TESTS_SOURCE_DIR}/engine/controlprotocol.cpp
+    ${TESTS_SOURCE_DIR}/engine/dedicatedoptions.cpp
     ${TESTS_SOURCE_DIR}/engine/graphicsoptions.cpp
+    ${TESTS_SOURCE_DIR}/engine/steamdeck.cpp
     ${TESTS_SOURCE_DIR}/extract/capsule.cpp
     ${TESTS_SOURCE_DIR}/extract/chitin.cpp
     ${TESTS_SOURCE_DIR}/extract/fileresource.cpp
@@ -59,10 +62,12 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/coopnet.cpp
     ${TESTS_SOURCE_DIR}/game/cooploot.cpp
     ${TESTS_SOURCE_DIR}/game/coopprompts.cpp
+    ${TESTS_SOURCE_DIR}/game/dedicated.cpp
     ${TESTS_SOURCE_DIR}/game/guestbenchscreen.cpp
     ${TESTS_SOURCE_DIR}/game/forkports.cpp
     ${TESTS_SOURCE_DIR}/net/protocol.cpp
     ${TESTS_SOURCE_DIR}/net/roundtrip.cpp
+    ${TESTS_SOURCE_DIR}/net/chatmessages.cpp
     ${TESTS_SOURCE_DIR}/net/signallink.cpp
     ${TESTS_SOURCE_DIR}/game/actionactor.cpp
     ${TESTS_SOURCE_DIR}/game/area.cpp
@@ -122,6 +127,8 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/messagebus.cpp
     ${TESTS_SOURCE_DIR}/game/minigame.cpp
     ${TESTS_SOURCE_DIR}/game/coopminigame.cpp
+    ${TESTS_SOURCE_DIR}/game/coopchat.cpp
+    ${TESTS_SOURCE_DIR}/game/coopchatui.cpp
     ${TESTS_SOURCE_DIR}/game/minigamesession.cpp
     ${TESTS_SOURCE_DIR}/game/padinput.cpp
     ${TESTS_SOURCE_DIR}/game/modulename.cpp
@@ -181,6 +188,8 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/graphics/grading.cpp
     ${TESTS_SOURCE_DIR}/graphics/walkmesh.cpp
     ${TESTS_SOURCE_DIR}/gui/control/progressbar.cpp
+    ${TESTS_SOURCE_DIR}/gui/control/togglebutton.cpp
+    ${TESTS_SOURCE_DIR}/gui/scrollview.cpp
     ${TESTS_SOURCE_DIR}/gui/controlrender.cpp
     ${TESTS_SOURCE_DIR}/gui/navigation.cpp
     ${TESTS_SOURCE_DIR}/json/gff.cpp
@@ -244,6 +253,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/system/cache.cpp
     ${TESTS_SOURCE_DIR}/system/cast.cpp
     ${TESTS_SOURCE_DIR}/system/fileutil.cpp
+    ${TESTS_SOURCE_DIR}/system/gamedetect.cpp
     ${TESTS_SOURCE_DIR}/system/fixedstep.cpp
     ${TESTS_SOURCE_DIR}/system/hexutil.cpp
     ${TESTS_SOURCE_DIR}/system/portablemath.cpp

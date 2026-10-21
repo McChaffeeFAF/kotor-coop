@@ -72,6 +72,9 @@ enum class KeyAction {
     Stealth,
     SwitchWeapons,
     GameMenu,
+    // Co-op only, not keymap.2da rows: the chat line and a ping at the cursor.
+    CoopChat,
+    CoopPing,
     Count
 };
 

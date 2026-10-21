@@ -18,6 +18,7 @@
 #pragma once
 
 #include "reone/audio/options.h"
+#include "reone/game/dedicated.h"
 #include "reone/game/options.h"
 #include "reone/graphics/options.h"
 #include "reone/system/types.h"
@@ -70,8 +71,15 @@ struct Options {
         float simLossPercent {0.0f}; // --coop-sim-loss <percent>
         int simJitterMs {0};    // --coop-sim-jitter <ms>
         std::string recordPath; // --coop-record <file>: the tester's once-a-second state log
+        std::string password;   // --coop-password: a host requires it, a guest presents it
     };
     Coop coop;
+
+    /**
+     * The dedicated host (--dedicated, docs/dedicated_host.md): Free Mode with
+     * no local player. Implies headless; the port is --host's, else 27015.
+     */
+    game::DedicatedSettings dedicated;
 
     /** The running engine executable; its hash is the co-op build identity. */
     std::filesystem::path executablePath;

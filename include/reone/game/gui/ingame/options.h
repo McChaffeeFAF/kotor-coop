@@ -46,7 +46,7 @@ public:
     bool handle(const input::Event &event) override;
     void update(float dt) override;
     void render() override;
-    bool coversMenuHost() const override { return isTSL() && (_panels.isOpen() || (_coop && _coop->isOpen())); }
+    bool coversMenuHost() const override { return (_panels.isOpen() || (_coop && _coop->isOpen())); }
 
     /** The sub-panels (Gameplay, Feedback, ...) opened over this page. */
     OptionsPanels &panels() { return _panels; }

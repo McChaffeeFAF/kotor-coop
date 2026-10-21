@@ -36,6 +36,13 @@ class UserSettings {
 public:
     static constexpr const char *kFilename = "reone_settings.ini";
 
+    /**
+     * Built-in defaults for a fresh install: what get/getBool/getInt/getFloat
+     * answer when the file has no value for a key, ahead of the caller's
+     * fallback. Erasing a key (the options pages' Default button) restores it.
+     */
+    static const std::map<std::string, std::string> &builtinDefaults();
+
     bool has(const std::string &key) const { return _values.count(key) > 0; }
     std::optional<std::string> get(const std::string &key) const;
     bool getBool(const std::string &key, bool defValue) const;

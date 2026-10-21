@@ -88,6 +88,10 @@ void CoopMenu::onGUILoaded() {
     }
     if (_controls.LB_DESC) {
         _controls.LB_DESC->setProtoMatchContent(true);
+        // The text starts inside the frame, not on its edge.
+        if (auto proto = _controls.LB_DESC->protoItemOrNull()) {
+            proto->setTextPaddingLeft(8);
+        }
     }
 
     // The code box: the game's own name-entry popup, a private copy too.

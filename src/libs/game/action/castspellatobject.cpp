@@ -56,7 +56,7 @@ CastSpellAtObjectAction::~CastSpellAtObjectAction() {
 
 // The impact script runs as the caster: OBJECT_SELF is the caster and
 // GetSpellTargetObject() is the target (k_inc_force, k_sup_grenade).
-static void runScript(Game &game, const Spell &spell, const Object &caster, const Object &target) {
+static void runScript(Game &game, const Spell &spell, const Object &caster, const Object &target, uint32_t castItem = script::kObjectInvalid) {
     if (spell.impactScript.empty()) {
         return;
     }
@@ -68,6 +68,10 @@ static void runScript(Game &game, const Spell &spell, const Object &caster, cons
         {script::ArgKind::SpellId, script::Variable::ofInt(static_cast<int>(spell.type))},
         {script::ArgKind::SpellLocation, script::Variable::ofLocation(std::move(location))},
     };
+    // GetSpellCastItem: the item whose Activate Item property cast the spell.
+    if (castItem != script::kObjectInvalid) {
+        args.push_back({script::ArgKind::SpellCastItem, script::Variable::ofObject(castItem)});
+    }
     game.scriptRunner().run(spell.impactScript, args);
 }
 
@@ -76,7 +80,7 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
     // distance: it neither approaches, conjures nor waits for a cast time.
     if (actor.type() != ObjectType::Creature) {
         if (!_target->isDead()) {
-            runScript(_game, *_spell, actor, *_target);
+            runScript(_game, *_spell, actor, *_target, _item ? _item.value()->id() : script::kObjectInvalid);
         }
         releaseConsumedItem();
         complete();
@@ -225,7 +229,8 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
                 module->area()->exciteCombat(*target, 1);
             }
         }
-        runScript(_game, *_spell, _impactCaller ? *_impactCaller : static_cast<const Object &>(caster), *_target);
+        runScript(_game, *_spell, _impactCaller ? *_impactCaller : static_cast<const Object &>(caster), *_target,
+                  _item ? _item.value()->id() : script::kObjectInvalid);
         // Using an item's Activate Item property is an item activation: the
         // module hears of it once the spell has taken effect.
         if (_item) {

@@ -10,6 +10,8 @@
 #include "reone/game/scripteventqueue.h"
 #include "reone/game/modulesnapshot.h"
 
+#include "reone/system/portablemath.h"
+
 #include <cmath>
 #include <limits>
 #include <map>
@@ -1170,7 +1172,7 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     }
     putTransform(*result, creature);
     const auto direction = glm::vec3(
-        -std::sin(creature.getFacing()), std::cos(creature.getFacing()), 0.0f);
+        -portable::sinf(creature.getFacing()), portable::cosf(creature.getFacing()), 0.0f);
     put(*result, Gff::Field::newFloat("XOrientation", direction.x));
     put(*result, Gff::Field::newFloat("YOrientation", direction.y));
     put(*result, Gff::Field::newFloat("ZOrientation", direction.z));
@@ -1544,7 +1546,7 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeStore(
     auto result = objectBase(store, ResType::Utm, 11);
     writeObjectState(*result, store, ids);
     putTransform(*result, store);
-    const auto direction = glm::vec3(-std::sin(store.getFacing()), std::cos(store.getFacing()), 0.0f);
+    const auto direction = glm::vec3(-portable::sinf(store.getFacing()), portable::cosf(store.getFacing()), 0.0f);
     put(*result, Gff::Field::newFloat("XOrientation", direction.x));
     put(*result, Gff::Field::newFloat("YOrientation", direction.y));
     put(*result, Gff::Field::newInt("MarkDown", store._markDown));
@@ -1563,7 +1565,7 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeWaypoint(
     auto result = objectBase(waypoint, ResType::Utw, 5);
     writeObjectState(*result, waypoint, ids);
     putTransform(*result, waypoint);
-    auto direction = glm::vec3(-std::sin(waypoint.getFacing()), std::cos(waypoint.getFacing()), 0.0f);
+    auto direction = glm::vec3(-portable::sinf(waypoint.getFacing()), portable::cosf(waypoint.getFacing()), 0.0f);
     put(*result, Gff::Field::newFloat("XOrientation", direction.x));
     put(*result, Gff::Field::newFloat("YOrientation", direction.y));
     put(*result, Gff::Field::newByte("HasMapNote", waypoint._hasMapNote));
@@ -1788,8 +1790,8 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildIfo(
     put(*result, Gff::Field::newFloat("Mod_Entry_X", module._info.entryPosition.x));
     put(*result, Gff::Field::newFloat("Mod_Entry_Y", module._info.entryPosition.y));
     put(*result, Gff::Field::newFloat("Mod_Entry_Z", module._info.entryPosition.z));
-    put(*result, Gff::Field::newFloat("Mod_Entry_Dir_X", -std::sin(module._info.entryFacing)));
-    put(*result, Gff::Field::newFloat("Mod_Entry_Dir_Y", std::cos(module._info.entryFacing)));
+    put(*result, Gff::Field::newFloat("Mod_Entry_Dir_X", -portable::sinf(module._info.entryFacing)));
+    put(*result, Gff::Field::newFloat("Mod_Entry_Dir_Y", portable::cosf(module._info.entryFacing)));
     // Split the canonical clock into the retail pair. Records written here are
     // therefore always normalized: Mod_PauseTime is below one day length.
     // Remove fields emitted by the short-lived Reone naming mistake so a

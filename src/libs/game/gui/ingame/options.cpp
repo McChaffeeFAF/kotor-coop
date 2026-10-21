@@ -32,6 +32,8 @@ namespace reone {
 
 namespace game {
 
+static constexpr int kAuthoredPanelWidth = 640;
+
 void OptionsMenu::onGUILoaded() {
     loadBackground(BackgroundType::Menu);
     bindControls();
@@ -109,6 +111,14 @@ void OptionsMenu::addCoopButton() {
         auto copy = *last;
         copy.TAG = "BTN_COOP";
         copy.EXTENT.TOP = last->EXTENT.TOP + (last->EXTENT.TOP - above->EXTENT.TOP);
+        auto close = byTag("BTN_EXIT");
+        if (!isTSL() && close != parsed.CONTROLS.end()) {
+            // K1's bottom bar holds one slot per side of the curve: mirror
+            // Close across the panel's centre line, same size and row.
+            copy = *close;
+            copy.TAG = "BTN_COOP";
+            copy.EXTENT.LEFT = kAuthoredPanelWidth - (close->EXTENT.LEFT + close->EXTENT.WIDTH);
+        }
         auto control = _gui->newControl(gui::ControlType::Button, copy.TAG);
         if (!control) {
             return;
@@ -118,6 +128,19 @@ void OptionsMenu::addCoopButton() {
         _gui->addControlToFront(_coopButton, gui::IGUI::ControlCoordinates::Authored);
         if (isTSL()) {
             enableK2ButtonBodyFill(_coopButton);
+        }
+        if (!isTSL() && _controls.BTN_EXIT) {
+            // Same frame, fill and hover art as the Close button beside it.
+            // Close's dark slot is painted into the panel art; the slot at
+            // Co-op's place has none, so give the button its own fill in
+            // near-black.
+            _coopButton->setTintBorderFill(false);
+            auto border = _controls.BTN_EXIT->borderOrNull() ? _controls.BTN_EXIT->border() : Control::Border();
+            _coopButton->setBorder(std::move(border));
+            _coopButton->setBorderFill("blackfill");
+            if (_controls.BTN_EXIT->hilightOrNull()) {
+                _coopButton->setHilight(_controls.BTN_EXIT->hilight());
+            }
         }
     }
     _coopButton->setTextMessage("Co-op");

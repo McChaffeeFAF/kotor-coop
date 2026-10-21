@@ -80,6 +80,14 @@ public:
 
     float strength() const { return _strength; }
 
+    /**
+     * Presence: a quick fade (about 80 ms) in when the light appears and out
+     * when its model is removed, so short-lived lights (bolts, flashes) do
+     * not pop. It scales the light's multiplier; the simulation never reads it.
+     */
+    float presence() const { return _presence; }
+    void setPresence(float presence) { _presence = presence; }
+
     // END Fading
 
 private:
@@ -93,6 +101,7 @@ private:
 
     bool _active {false};
     float _strength {0.0f};
+    float _presence {1.0f};
 
     // END Fading
 };

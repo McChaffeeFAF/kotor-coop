@@ -676,13 +676,14 @@ void EmitterSceneNode::renderLeafs(IRenderPass &pass, const std::vector<SceneNod
         }
         return p.position();
     };
+    const float alphaScale = _alphaScale;
     auto particles = std::vector<ParticleInstance>(leafs.size());
     for (size_t i = 0; i < leafs.size(); ++i) {
         const auto particle = static_cast<ParticleSceneNode *>(leafs[i]);
         particles[i].frame = particle->frame();
         particles[i].position = presented(*particle);
         particles[i].size = glm::vec2(particle->size());
-        particles[i].color = glm::vec4(particle->color(), particle->alpha());
+        particles[i].color = glm::vec4(particle->color(), particle->alpha() * alphaScale);
         glm::vec3 right, up;
         bool spins = false;
         switch (emitter->renderMode) {

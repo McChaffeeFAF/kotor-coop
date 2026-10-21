@@ -31,6 +31,7 @@
 #include "reone/game/d20/class.h"
 #include "reone/game/d20/forms.h"
 #include "reone/game/gui/pazaak.h"
+#include "reone/gui/control/listbox.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1455,14 +1456,37 @@ void Game::consoleKey(const ConsoleArgs &args) {
     info(line);
 }
 
+void Game::consolePointer(const ConsoleArgs &args) {
+    // Move the pointer the way the mouse does; "middle" then clicks the middle button there.
+    HarnessArgs parsed(args);
+    parsed.requireKnown({});
+    if (parsed.positional.size() < 2 || parsed.positional.size() > 3) {
+        throw std::runtime_error("Usage: pointer <x> <y> [middle]");
+    }
+    int x = std::stoi(parsed.positional[0]);
+    int y = std::stoi(parsed.positional[1]);
+    handle(input::Event::newMouseMotion(input::MouseMotionEvent(x, y, 0.0f, 0.0f)));
+    bool handled = false;
+    if (parsed.positional.size() == 3) {
+        if (boost::to_lower_copy(parsed.positional[2]) != "middle") {
+            throw std::runtime_error("Usage: pointer <x> <y> [middle]");
+        }
+        handled = handle(input::Event::newMouseButtonDown(input::MouseButtonEvent(input::MouseButton::Middle, true, 1, x, y)));
+        handle(input::Event::newMouseButtonUp(input::MouseButtonEvent(input::MouseButton::Middle, false, 1, x, y)));
+    }
+    std::string line = str(boost::format("pointer %d,%d handled=%d") % x % y % (handled ? 1 : 0));
+    _console.printLine(line);
+    info(line);
+}
+
 void Game::consoleGuiClick(const ConsoleArgs &args) {
     // Click a control of the screen's current page the way the mouse does:
     // move onto its centre, then press and release the left button. The
     // events go through Game::handle, so hit testing is the real one.
     HarnessArgs parsed(args);
-    parsed.requireKnown({"clicks"});
+    parsed.requireKnown({"clicks", "row", "gap"});
     if (parsed.positional.size() != 1) {
-        throw std::runtime_error("Usage: guiclick <control tag> [clicks=1|2]");
+        throw std::runtime_error("Usage: guiclick <control tag> [clicks=1|2] [row=<n> [gap=<px>]]");
     }
     auto gui = getScreenGUI();
     if (!gui) {
@@ -1501,6 +1525,17 @@ void Game::consoleGuiClick(const ConsoleArgs &args) {
     glm::ivec2 offset = page->guiControlOffset();
     int x = offset.x + extent.left + extent.width / 2;
     int y = offset.y + extent.top + extent.height / 2;
+    if (auto it = parsed.named.find("row"); it != parsed.named.end()) {
+        // A list box's n-th visible row (0 = first), for harness saves/loads.
+        if (auto *list = dynamic_cast<gui::ListBox *>(control.get()); list && list->protoItemOrNull()) {
+            int itemHeight = list->protoItemOrNull()->extent().height;
+            int gap = 4;
+            if (auto g = parsed.named.find("gap"); g != parsed.named.end()) {
+                gap = std::stoi(g->second);
+            }
+            y = offset.y + extent.top + itemHeight / 2 + std::stoi(it->second) * (itemHeight + gap);
+        }
+    }
     int clicks = 1;
     if (auto it = parsed.named.find("clicks"); it != parsed.named.end()) {
         clicks = std::clamp(std::stoi(it->second), 1, 2);

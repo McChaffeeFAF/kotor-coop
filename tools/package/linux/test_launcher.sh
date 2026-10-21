@@ -125,6 +125,21 @@ fake_game "$h/GOG Games/Kotor Eins" swkotor.exe
 check "k2 in GOG Games under its German title" "$h/GOG Games/STAR WARS Knights of the Old Republic II - Die Sith Lords" "$(detect "$h" k2)"
 check "k1 in GOG Games under a free name" "$h/GOG Games/Kotor Eins" "$(detect "$h" k1)"
 
+# 7f. Lutris and Heroic Wine prefixes (GOG installs inside drive_c), and Flatpak Heroic.
+h="$work/h7f"
+fake_game "$h/Games/kotor/drive_c/GOG Games/Star Wars - KotOR" swkotor.exe
+fake_game "$h/Games/Heroic/Prefixes/kotor2/pfx/drive_c/Program Files (x86)/LucasArts/SWKotOR2" swkotor2.exe
+check "k1 in a Lutris prefix" "$h/Games/kotor/drive_c/GOG Games/Star Wars - KotOR" "$(detect "$h" k1)"
+check "k2 in a Heroic (Proton-style) prefix" "$h/Games/Heroic/Prefixes/kotor2/pfx/drive_c/Program Files (x86)/LucasArts/SWKotOR2" "$(detect "$h" k2)"
+h="$work/h7g"
+fake_game "$h/.var/app/com.heroicgameslauncher.hgl/Games/Heroic/Star Wars KotOR" swkotor.exe
+check "k1 in the Flatpak Heroic folder" "$h/.var/app/com.heroicgameslauncher.hgl/Games/Heroic/Star Wars KotOR" "$(detect "$h" k1)"
+
+# 7h. Mixed-case Steam folders (SteamApps/Common).
+h="$work/h7h"
+fake_game "$h/.local/share/Steam/steamapps/Common/SWKOTOR" SWKOTOR.EXE CHITIN.KEY
+check "mixed-case Common folder" "$h/.local/share/Steam/steamapps/Common/SWKOTOR" "$(detect "$h" k1)"
+
 # 8. Setup writes reone.cfg non-interactively from a pre-seeded answer set.
 h="$work/h8"
 root="$work/pkg"
@@ -158,5 +173,16 @@ HOME="$h" "$root/join.sh" "203.0.113.7:28000" >/dev/null 2>&1
 check "join without a server: ip:port is passed as typed" "203.0.113.7:28000" "$(sed -n 2p "$root/args.txt")"
 HOME="$h" "$root/play.sh" solo >/dev/null 2>&1
 check "solo: no --host or --join" "--coop-record" "$(sed -n 1p "$root/args.txt")"
+
+# 10. On a Steam Deck setup leaves the window settings to the engine's Deck defaults.
+h="$work/h10"
+root="$work/pkg10"
+stage "$root"
+mkdir -p "$h/.local/share/Steam/steamapps/common"
+fake_game "$h/.local/share/Steam/steamapps/common/swkotor" swkotor.exe
+fake_game "$h/.local/share/Steam/steamapps/common/Knights of the Old Republic II" swkotor2.exe
+printf 'y\ny\nDeckUser\nk1\n' | HOME="$h" USER=tester SteamDeck=1 "$root/setup.sh" >/dev/null 2>&1
+check "deck: no window override written" "" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" fullscreen)"
+check "deck: game still written" "$h/.local/share/Steam/steamapps/common/swkotor" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" game)"
 
 [ "$fails" -eq 0 ] && echo "all launcher checks passed" || { echo "$fails launcher check(s) failed"; exit 1; }

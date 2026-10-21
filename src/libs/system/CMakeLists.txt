@@ -33,6 +33,7 @@ set(SYSTEM_HEADERS
     ${SYSTEM_INCLUDE_DIR}/exception/validation.h
     ${SYSTEM_INCLUDE_DIR}/fileutil.h
     ${SYSTEM_INCLUDE_DIR}/fixedstep.h
+    ${SYSTEM_INCLUDE_DIR}/gamedetect.h
     ${SYSTEM_INCLUDE_DIR}/hexutil.h
     ${SYSTEM_INCLUDE_DIR}/logger.h
     ${SYSTEM_INCLUDE_DIR}/logutil.h
@@ -69,6 +70,7 @@ set(SYSTEM_SOURCES
     ${SYSTEM_SOURCE_DIR}/di/module.cpp
     ${SYSTEM_SOURCE_DIR}/fileutil.cpp
     ${SYSTEM_SOURCE_DIR}/fixedstep.cpp
+    ${SYSTEM_SOURCE_DIR}/gamedetect.cpp
     ${SYSTEM_SOURCE_DIR}/hexutil.cpp
     ${SYSTEM_SOURCE_DIR}/logger.cpp
     ${SYSTEM_SOURCE_DIR}/randomutil.cpp

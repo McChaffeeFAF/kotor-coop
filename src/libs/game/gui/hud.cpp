@@ -853,6 +853,7 @@ void HUD::render() {
     _select.render();
     _actionBar.render(_gui->scale());
     _game.floatingText().render();
+    renderCoopChat();
 }
 
 void HUD::renderModal() {

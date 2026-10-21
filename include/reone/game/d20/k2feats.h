@@ -45,6 +45,11 @@ int targetingAttackBonus(const HasFeat &hasFeat);
 int closeCombatAttackBonus(const HasFeat &hasFeat);
 constexpr float kCloseCombatRange = 5.0f;
 
+/// Attack bonus for a melee attacker against a target holding a ranged
+/// weapon: +6, +4 with Close Combat, +2 with Improved Close Combat (the
+/// highest owned wins). Applies with no feats at all.
+int meleeOnRangedAttackBonus(const HasFeat &hasFeat);
+
 /// Superior Weapon Focus: Lightsaber I-III: the highest tier, +1 per tier.
 /// Lightsaber attacks only.
 int superiorLightsaberFocusBonus(const HasFeat &hasFeat);

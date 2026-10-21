@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <boost/json.hpp>
+#include <glm/vec3.hpp>
 
 #include "reone/net/protocol.h"
 #include "reone/net/transport.h"
@@ -22,9 +23,12 @@
 #include "cooploot.h"
 #include "coopflow.h"
 #include "coopminigame.h"
+#include "dedicated.h"
 #include "coopidmap.h"
 #include "guestbenchscreen.h"
 #include "visualeffectpresenter.h"
+
+#include "reone/game/coopchat.h"
 
 namespace reone {
 
@@ -79,6 +83,13 @@ struct CoopConfig {
     // "Handshake" step 4). Off in headless runs unless asked for; a player
     // rejoining with their rejoin token is let back in without asking.
     bool askToJoin {false};
+    // Dedicated host (docs/dedicated_host.md): no local player. The host is not
+    // a participant in ready checks, and the story driver (the guest longest
+    // in the session) makes the choices in conversations and terminals.
+    bool dedicated {false};
+    // The session password. Host: guests must present it (empty: open).
+    // Client: what is sent with the Hello.
+    std::string password;
     // Client: where the rejoin token is kept so a restarted game can reclaim
     // its companion (coop_rejoin.json next to reone.cfg), and what names the
     // session it belongs to (the join code, or the host address). Either empty
@@ -120,6 +131,10 @@ struct CoopLaunch {
     bool noPause {false};
     float pauseCooldown {0.0f};
     float enemyScaling {1.0f};
+    // Dedicated host (docs/dedicated_host.md): Free Mode with no local player.
+    bool dedicated {false};
+    int maxPlayers {7};      // guests a dedicated host takes; its host seat is not a player
+    std::string password;    // host: required of guests; client: sent with the Hello
 };
 
 /** A join request as the host's Accept/Decline prompt would show it. */
@@ -249,6 +264,14 @@ public:
         bool waiting {false};  // waiting for the host's Accept / Decline
     };
     std::vector<PlayerSummary> players() const;
+
+    // Dedicated host (coopdedicated.cpp)
+
+    bool dedicated() const { return _config.dedicated; }
+    /** Host: remove a player (the admin interface). False when no such client. */
+    bool kick(uint32_t clientId);
+    /** Host, dedicated: the client who makes story choices (see StoryDriverTracker); 0 for none. */
+    uint32_t storyDriver() const { return _storyDrivers.driver(); }
     /** A sentence for the player: bad code, version mismatch, files mismatch naming the file, host full, timed out... */
     std::string failureMessage() const;
 
@@ -274,6 +297,20 @@ public:
 
     /** Host: a one-line bark on the host's HUD; clients show it too. */
     void onBark(const std::string &text, float duration);
+    // Text chat and pings (coopchatsession.cpp). The host validates and relays; a client shows what it is sent.
+
+    /** Say a line to everyone, or to the team (Free Mode). The host's own line and a client's request. False: not connected or nothing to send. */
+    bool chatSay(const std::string &text, net::ChatChannel channel = net::ChatChannel::All);
+    /** Mark a point, or an object (a local object id on a client; the host then uses the object's own position), for everyone to see. */
+    bool pingAt(const glm::vec3 &point, uint32_t objectId = 0);
+    /** Host: stop or allow a player (by name) to chat and ping. */
+    bool chatMute(const std::string &name, bool muted);
+    ChatLog &chatLog() { return _chatLog; }
+    PingBoard &pingBoard() { return _pingBoard; }
+    CoopChatPolicy &chatPolicy() { return _chatPolicy; }
+    /** Seconds on the clock the chat log and ping board run on. */
+    double chatNow() const;
+
     /** Host: hand a story terminal or console to a player, or take it back ("Hand over terminal"). */
     bool handOver(uint32_t clientId, uint32_t objectId, bool on);
 
@@ -675,6 +712,10 @@ private:
     GuestBenchScreen _benchScreen;
     std::shared_ptr<Object> _benchHolder; // a local store shell holding the bench's stand-ins
     std::map<uint32_t, uint32_t> _storeLocal; // local store item id -> host item id
+    // Dedicated host (coopdedicated.cpp)
+    StoryDriverTracker _storyDrivers;
+    ConversationFallback _conversationFallback;
+    uint32_t _driverNoticed {0};
     uint64_t _guestSaves {0};
     std::vector<net::GuestRosterEntry> _roster;  // client: from the host
     std::vector<uint8_t> _rosterSent;            // host: the last list sent
@@ -780,6 +821,14 @@ private:
     uint64_t _barksReceived {0};
     std::string _lastBark;
     uint64_t _barksSent {0}; // host
+    CoopChatPolicy _chatPolicy; // host
+    ChatLog _chatLog;
+    PingBoard _pingBoard;
+    uint64_t _chatsRelayed {0};  // host
+    uint64_t _chatsRefused {0};  // host
+    uint64_t _pingsRelayed {0};  // host
+    uint64_t _chatsReceived {0}; // client
+    std::chrono::steady_clock::time_point _chatEpoch {std::chrono::steady_clock::now()};
     std::string _hostMovieName;
     std::string _lastNotice;
     std::deque<std::string> _notices;
@@ -845,6 +894,12 @@ private:
     void clientHandleInventory(const net::SharedInventory &inventory);
     void clientHandleSheet(const net::CharacterSheet &sheet);
     void clientHandleBark(const net::Bark &bark);
+    void hostHandleChat(HostClient &client, const net::ChatSend &chat);
+    void hostHandlePing(HostClient &client, const net::PingSend &ping);
+    void hostRelayChat(uint32_t sender, const std::string &name, net::ChatChannel channel, const std::string &text);
+    void hostRelayPing(uint32_t sender, const std::string &name, const glm::vec3 &point, uint32_t objectId);
+    void chatReceived(const net::ChatMessage &message);
+    void pingReceived(const net::PingMarker &marker);
     // Free Mode (coopfree.cpp)
     std::string hostCheckGuest(const net::GuestCharacter &guest) const;
     void hostHandleGuest(HostClient &client, const net::GuestCharacter &guest);
@@ -879,6 +934,8 @@ private:
     // Terminals (design, "Computer terminals")
     net::CommandReject hostGuestTerminal(HostClient &client, const std::shared_ptr<Object> &terminal);
     void hostUpdateTerminals();
+    void hostUpdateDedicated();
+    net::CommandReject hostDriverConversation(HostClient &client, const std::shared_ptr<Object> &target);
     void clientHandleTerminalNotice(const net::Notice &notice);
     void hostCaptureLoot(const Object &container);
     std::vector<net::ContainerItem> hostContainerView(HostClient &client, const Object &container);

@@ -1,9 +1,33 @@
 # KotOR co-op engine (a reone fork)
 
-A fork of [reone](https://github.com/seedhartha/reone), the free and open source
-engine for Star Wars: Knights of the Old Republic, that adds online co-op: play the
-KotOR campaign together, with friends taking your companions (Story Mode) or bringing
-their own characters (Free Mode).
+**Based on [reone](https://github.com/seedhartha/reone) by seedhartha and contributors. Licence: GPL-3.0.**
+
+An open-source engine for Star Wars: Knights of the Old Republic that adds online co-op
+to the KotOR campaign. It is a fork of reone, the free and open-source re-implementation
+of the Odyssey engine: the game logic, rendering and interface run in this code, and the
+game's data (models, textures, scripts, dialogue) is read from your own installs. Friends
+can take over your companions (Story Mode) or bring their own characters (Free Mode).
+Developers can build on it: see [docs/BUILDING.md](docs/BUILDING.md),
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Features
+
+- **Host-authoritative co-op.** The host runs the game; guests send commands and draw
+  what the host sends. Story Mode takes up to 3 players (the host and two guests playing
+  companions), Free Mode up to 8, each guest with their own character.
+- **Connect by IP:port** over UDP (port 27015 by default); no account or server needed.
+- **Co-op chat and pings**, shown on the K1 and K2 HUDs.
+- **Dedicated host**: `engine --dedicated` runs a Free Mode session with no local player
+  ([docs/dedicated_host.md](docs/dedicated_host.md)).
+- **K2 systems in K1**: with a KotOR II install, KotOR II's feats, Force powers and
+  prestige classes are merged into the KotOR campaign, read at run time from your install.
+- **Enhanced graphics**, each effect switchable: bloom, soft shadows, ambient occlusion,
+  tone mapping, reflections and locally generated Surface Detail maps. A fresh install
+  starts with a tuned selection of them on; the original look is one setting away.
+- **Headless test harness**: unit tests with synthetic data, a fixed-step deterministic
+  simulation, and a localhost control port for scripted runs ([docs/TESTING.md](docs/TESTING.md)).
+- **Linux and Steam Deck**: finds Steam (including extra libraries and Flatpak), GOG,
+  Heroic and Lutris installs, with Steam Deck screen defaults.
 
 ## This is a fan project
 
@@ -112,10 +136,12 @@ needed. Builds do not use one unless it is configured.
 
 ### Enhanced graphics
 
-The default look is the original one. *Options > Graphics > Enhanced Graphics* (or
-`enhanced=1` in reone.cfg) turns on bloom, SMAA, soft shadows, ambient occlusion, tone mapping, eye
+*Options > Graphics > Enhanced Graphics* (or `enhanced=1` in reone.cfg) turns on bloom, SMAA, soft shadows, ambient occlusion, tone mapping, eye
 adaptation, soft particles, reflections, lightsaber glow, conversation depth of field and
-Surface Detail. Each effect can also be toggled on its own.
+Surface Detail. Each effect can also be toggled on its own (*Options > Graphics >
+Advanced*). A fresh install, with no saved settings, starts with a tuned selection of
+these effects on; setting the Enhanced Graphics box to off (the Retail preset) gives the
+original look, and the options pages' Default button returns to the tuned selection.
 
 ### Surface Detail
 

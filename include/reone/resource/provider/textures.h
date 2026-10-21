@@ -42,6 +42,15 @@ public:
 
     virtual std::shared_ptr<graphics::Texture> get(const std::string &resRef, graphics::TextureUsage usage = graphics::TextureUsage::Default) = 0;
 
+    /**
+     * A feat, power or skill icon. With the K2 merge under a K1 HUD, an icon
+     * only K2 has is hue-shifted (in memory) from K2's green UI palette to
+     * K1's blue one; otherwise this is get().
+     */
+    virtual std::shared_ptr<graphics::Texture> getIcon(const std::string &resRef, graphics::TextureUsage usage = graphics::TextureUsage::GUI) {
+        return get(resRef, usage);
+    }
+
     /** Give every loaded texture the anisotropy the options now ask for. */
     virtual void applyAnisotropy() {}
 
@@ -82,6 +91,11 @@ public:
 
     std::shared_ptr<graphics::Texture> get(const std::string &resRef, graphics::TextureUsage usage = graphics::TextureUsage::Default) override;
 
+    std::shared_ptr<graphics::Texture> getIcon(const std::string &resRef, graphics::TextureUsage usage = graphics::TextureUsage::GUI) override;
+
+    /** On: icons only the K2 merge supplies are recoloured to K1's palette. */
+    void setK1IconPalette(bool on) { _k1IconPalette = on; }
+
     void applyAnisotropy() override;
 
     SurfaceDetailState surfaceDetail() override;
@@ -95,6 +109,8 @@ private:
     IResources &_resources;
 
     std::unordered_map<std::string, std::shared_ptr<graphics::Texture>> _cache;
+    std::unordered_map<std::string, std::shared_ptr<graphics::Texture>> _iconCache;
+    bool _k1IconPalette {false};
 
     std::shared_ptr<graphics::Texture> doGet(const std::string &resRef, graphics::TextureUsage usage);
 

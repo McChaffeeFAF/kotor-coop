@@ -30,6 +30,8 @@
 #include "reone/resource/strings.h"
 #include "reone/scene/di/services.h"
 #include "reone/scene/graphs.h"
+#include "reone/scene/node/emitter.h"
+#include "reone/scene/node/light.h"
 #include "reone/scene/types.h"
 
 using namespace reone::audio;
@@ -275,6 +277,8 @@ void CharacterMenu::refresh3D() {
     _controls.LBL_3DCHAR->setSceneName(kSceneCharacter);
 }
 
+static void softenAlignmentLights(SceneNode &node, float factor);
+
 std::shared_ptr<ModelSceneNode> CharacterMenu::getSceneModel(ISceneGraph &sceneGraph) const {
     auto partyLeader = _game.party().getLeader();
 
@@ -306,8 +310,26 @@ std::shared_ptr<ModelSceneNode> CharacterMenu::getSceneModel(ISceneGraph &sceneG
     sceneModel->attach("charrec_light", *character->sceneNode());
     sceneModel->playAnimation(alignmentAnimation(partyLeader->goodEvil()), nullptr,
                               AnimationProperties::fromFlags(AnimationFlags::loop));
+    int goodEvil = std::clamp(partyLeader->goodEvil(), 0, 100);
+    if (goodEvil < 50) {
+        softenAlignmentLights(*sceneModel, 1.0f - 0.8f * (50 - goodEvil) / 50.0f);
+    }
 
     return sceneModel;
+}
+
+// The dark side's fire lights the character far brighter than the light and
+// neutral backdrops do. Scale this scene's lights down toward the dark end.
+static void softenAlignmentLights(SceneNode &node, float factor) {
+    if (node.type() == SceneNodeType::Light) {
+        auto &light = static_cast<LightSceneNode &>(node);
+        light.setMultiplier(light.multiplier() * factor);
+    } else if (node.type() == SceneNodeType::Emitter) {
+        static_cast<EmitterSceneNode &>(node).setAlphaScale(0.5f + 0.5f * factor);
+    }
+    for (auto &child : node.children()) {
+        softenAlignmentLights(*child, factor);
+    }
 }
 
 std::string CharacterMenu::alignmentAnimation(int goodEvil) {

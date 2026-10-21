@@ -29,11 +29,14 @@
 #include "reone/game/object/module.h"
 #include "reone/resource/2da.h"
 #include "reone/resource/provider/2das.h"
+#include "reone/scene/collision.h"
 #include "reone/scene/graphs.h"
 #include "reone/scene/node/camera.h"
 #include "reone/system/logutil.h"
 
 #include <algorithm>
+
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace reone {
 
@@ -285,6 +288,12 @@ bool Game::dispatchKeyAction(KeyAction action) {
             leader->cancelLastQueuedAction();
         }
         return true;
+    case KeyAction::CoopPing:
+        if (!_coop) {
+            return false;
+        }
+        pingAtCursor();
+        return true;
     default:
         // Bound but not acted on yet (Quickload, Stealth): design note p1_ui.
         return false;
@@ -311,6 +320,67 @@ bool Game::handleEscape() {
         }
         return false;
     }
+}
+
+bool Game::handleChatInput(const input::Event &event) {
+    // Co-op chat line (coopchatui.h): Enter opens it in the world, then it
+    // takes every key press until Enter sends or Escape cancels.
+    if (!_coop || (!_chatInput.isOpen() && (_movie || _screen != Screen::InGame || _cameraType != CameraType::ThirdPerson))) {
+        return false;
+    }
+    auto result = _chatInput.handle(event, _keymap.keyFor(KeyAction::CoopChat));
+    applyChatInputResult(result, _coop->chatLog());
+    switch (result) {
+    case CoopChatInput::Result::Ignored:
+        return false;
+    case CoopChatInput::Result::Send: {
+        auto line = _chatInput.takeLine();
+        if (!line.empty() && !_coop->chatSay(line)) {
+            info("coop chat: the line was not sent");
+        }
+        return true;
+    }
+    default:
+        return true;
+    }
+}
+
+bool Game::pingAtCursor() {
+    if (!_coop || !_module || !_module->area()) {
+        return false;
+    }
+    auto area = _module->area();
+    if (auto *object = area->getObjectAt(_cursorPosition.x, _cursorPosition.y)) {
+        return _coop->pingAt(object->position(), object->id());
+    }
+    // The ground under the cursor: the camera ray meets the leader's height,
+    // then the walkmesh gives the elevation there.
+    auto leader = _party.getLeader();
+    glm::vec3 point = leader ? leader->position() : glm::vec3(0.0f);
+    auto camera = getActiveCamera();
+    auto cameraNode = camera ? camera->cameraSceneNode() : nullptr;
+    auto graphicsCamera = cameraNode ? cameraNode->camera() : nullptr;
+    if (graphicsCamera) {
+        float width = static_cast<float>(_options.graphics.width);
+        float height = static_cast<float>(_options.graphics.height);
+        glm::vec4 viewport(0.0f, 0.0f, width, height);
+        glm::vec3 window(static_cast<float>(_cursorPosition.x), height - static_cast<float>(_cursorPosition.y), 0.0f);
+        glm::vec3 nearPoint = glm::unProject(window, graphicsCamera->view(), graphicsCamera->projection(), viewport);
+        window.z = 1.0f;
+        glm::vec3 farPoint = glm::unProject(window, graphicsCamera->view(), graphicsCamera->projection(), viewport);
+        glm::vec3 dir = farPoint - nearPoint;
+        if (std::abs(dir.z) > 1e-5f) {
+            float t = (point.z - nearPoint.z) / dir.z;
+            if (t > 0.0f && t < 1.0f) {
+                point = nearPoint + dir * t;
+                scene::Collision collision;
+                if (_services.scene.graphs.get(kSceneMain).testElevation(point, collision)) {
+                    point.z = collision.intersection.z;
+                }
+            }
+        }
+    }
+    return _coop->pingAt(point, 0);
 }
 
 } // namespace game

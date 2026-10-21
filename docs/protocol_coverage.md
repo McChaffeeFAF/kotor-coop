@@ -1,6 +1,6 @@
 # Co-op protocol: coverage and hardening, round 2
 
-Task 04 fuzzed the wire format as it was. This round lists what the protocol has now, what each part
+The first round fuzzed the wire format as it was. This round lists what the protocol has now, what each part
 is tested and fuzzed by, and what the host does with a player who names what is not theirs.
 
 ## What is covered

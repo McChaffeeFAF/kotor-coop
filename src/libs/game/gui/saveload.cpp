@@ -100,7 +100,7 @@ std::vector<SavedGame> prepareSaveBrowserEntries(
     if (mode == SaveLoadMode::Save) {
         saves.erase(
             std::remove_if(saves.begin(), saves.end(),
-                           [](const auto &save) { return save.slot < 2; }),
+                           [](const auto &save) { return save.slot < 2 || save.slot >= kAreaCheckpointSlot; }),
             saves.end());
     }
     std::sort(saves.begin(), saves.end(), [tsl](const auto &a, const auto &b) {
@@ -196,9 +196,21 @@ void SaveLoad::onGUILoaded() {
 
 bool SaveLoad::handle(const input::Event &event) {
     if (_confirmation && _confirmation->isVisible()) {
+        if (event.type == input::EventType::KeyDown && event.key.code == input::KeyCode::Escape) {
+            _confirmation->hide(); // Cancel, even if its button is hard to reach
+            return true;
+        }
         return _confirmation->handle(event);
     }
     if (_saveNameVisible && _saveNameGUI) {
+        if (event.type == input::EventType::KeyDown && event.key.code == input::KeyCode::Return) {
+            confirmSaveName();
+            return true;
+        }
+        if (event.type == input::EventType::KeyDown && event.key.code == input::KeyCode::Escape) {
+            hideSaveName();
+            return true;
+        }
         if (event.type == input::EventType::KeyDown && _saveNameInput.handle(event)) {
             _saveNameControls.EDITBOX->setTextMessage(std::string(_saveNameBuffer.str()));
             return true;
@@ -206,6 +218,13 @@ bool SaveLoad::handle(const input::Event &event) {
         return _saveNameGUI->handle(event);
     }
     return GameGUI::handle(event);
+}
+
+PresentationGUI *SaveLoad::inputPage() {
+    if (_confirmation && _confirmation->isVisible()) {
+        return _confirmation.get();
+    }
+    return this;
 }
 
 void SaveLoad::update(float dt) {
@@ -217,8 +236,10 @@ void SaveLoad::update(float dt) {
     const auto &result = _game.lastSaveResult();
     if (!consumeTerminalResult(result)) return;
     _controls.BTN_SAVELOAD->setDisabled(false);
+    // Success or failure, rebuild the list (selection and buttons go back to a
+    // usable state), then say what happened: the refresh clears the label.
+    refreshSavedGames();
     showStatus(terminalMessage(*result));
-    if (result->durable) refreshSavedGames();
 }
 
 void SaveLoad::render() {
@@ -423,7 +444,14 @@ void SaveLoad::confirmSaveName() {
 }
 
 void SaveLoad::saveGame(uint32_t number, std::string name) {
-    auto result = _game.requestManualSave(number, std::move(name));
+    SaveResult result;
+    try {
+        result = _game.requestManualSave(number, std::move(name));
+    } catch (const std::exception &e) {
+        warn("Save request threw: " + std::string(e.what()));
+        showStatus("The save could not be completed.");
+        return;
+    }
     if (result.status == SaveStatus::Accepted) {
         _pendingRequestId = result.requestId;
         _controls.BTN_SAVELOAD->setDisabled(true);
@@ -450,8 +478,11 @@ void SaveLoad::loadGame(uint32_t number) {
 
 bool SaveLoad::consumeTerminalResult(
     const std::optional<SaveResult> &result) {
+    // A later request's result also ends ours: the game keeps only the latest
+    // result, and waiting for an id that was overwritten would wedge the
+    // screen (Save disabled, "Saving game..." forever).
     if (!_pendingRequestId || !result ||
-        result->requestId != *_pendingRequestId ||
+        result->requestId < *_pendingRequestId ||
         result->status == SaveStatus::Accepted) {
         return false;
     }

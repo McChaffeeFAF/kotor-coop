@@ -324,7 +324,8 @@ static void getSituationalAttackBonuses(
 
     auto targetWeapon = target.getEquippedItem(InventorySlots::rightWeapon);
     if (targetWeapon && targetWeapon->isRanged()) {
-        meleeOnRangedBonus = kSituationalAttackBonus;
+        meleeOnRangedBonus = k2feats::meleeOnRangedAttackBonus(
+            [&attacker](FeatType feat) { return attacker.hasEffectiveFeat(feat); });
     }
 }
 
@@ -1482,10 +1483,42 @@ void Creature::spawnBodyBag() {
     debug("Creature " + _tag + " left a body bag");
 }
 
+void Creature::syncTalkLayer(ModelSceneNode &model) {
+    // The state-driven path below plays the talk overlay along with the body
+    // clip. It does not run while an explicitly played clip (a dialogue
+    // gesture, a stunt) owns the body, and playing that clip drops the overlay
+    // too: the speaker's mouth then stays shut. A layer sits on top of any
+    // body clip and so covers that gap.
+    const bool statePathRuns = _animFireForget ? model.isAnimationFinished() : _animDirty;
+    auto talkAnim = model.model().getAnimation(getHeadTalkAnimation());
+    if (!talkAnim) {
+        _talkLayerOn = false;
+        return;
+    }
+    if (_talking && !_dead && !statePathRuns) {
+        if (!_talkLayerOn || _talkLayerLip != _lipAnimation) {
+            if (_talkLayerOn) {
+                model.fadeOutLayer(talkAnim->name(), true);
+            }
+            model.playAnimation(*talkAnim, _lipAnimation,
+                                AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::layer | AnimationFlags::propagate));
+            _talkLayerOn = true;
+            _talkLayerLip = _lipAnimation;
+        }
+    } else if (_talkLayerOn) {
+        model.fadeOutLayer(talkAnim->name(), true);
+        _talkLayerOn = false;
+        _talkLayerLip.reset();
+    }
+}
+
 void Creature::updateModelAnimation() {
     auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
     if (!model)
         return;
+
+    // While a stunt or gesture clip owns the body, the mouth still moves.
+    syncTalkLayer(*model);
 
     if (_animFireForget) {
         if (!model->isAnimationFinished())
@@ -1505,9 +1538,17 @@ void Creature::updateModelAnimation() {
     switch (_movementType) {
     case MovementType::Run:
         anim = model->model().getAnimation(getRunAnimation());
+        if (_talking && !_dead) {
+            // The mouth moves while the speaker walks or runs (a soldier
+            // delivering a line as he storms in).
+            talkAnim = model->model().getAnimation(getHeadTalkAnimation());
+        }
         break;
     case MovementType::Walk:
         anim = model->model().getAnimation(getWalkAnimation());
+        if (_talking && !_dead) {
+            talkAnim = model->model().getAnimation(getHeadTalkAnimation());
+        }
         break;
     default:
         if (_dead) {
@@ -1546,8 +1587,20 @@ void Creature::updateModelAnimation() {
         break;
     }
 
+    if (_talking) {
+        debug(str(boost::format("Lip: %s talking lip=%d body=%s talk=%d move=%d held=%d") % _tag % (_lipAnimation ? 1 : 0) %
+                  (anim ? anim->name() : std::string("-")) % (talkAnim ? 1 : 0) % static_cast<int>(_movementType) %
+                  (getHeldPoseAnimation().empty() ? 0 : 1)));
+    }
     if (talkAnim && anim) {
-        model->playAnimation(*anim, nullptr, AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::propagate));
+        AnimationProperties bodyProperties = AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::propagate);
+        // The gait still matches the ground speed under the talking overlay.
+        if (_movementType == MovementType::Run) {
+            bodyProperties.speed = gaitPlaybackRate(runSpeed(), anim->length(), _runSpeed);
+        } else if (_movementType == MovementType::Walk) {
+            bodyProperties.speed = gaitPlaybackRate(walkSpeed(), anim->length(), _walkSpeed);
+        }
+        model->playAnimation(*anim, nullptr, std::move(bodyProperties));
         model->playAnimation(*talkAnim, _lipAnimation, AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::propagate));
     } else {
         if (anim) {
@@ -2280,6 +2333,9 @@ bool Creature::equip(int slot, const std::shared_ptr<Item> &item) {
     item->setEquipped(true);
     item->setOwner(_id);
     replaceEffectState(std::move(replacementEffects));
+    if (auto module = _game.module()) {
+        module->setLastItemEquipped(item->id());
+    }
 
     updateEquipmentPresentation();
     if (_sceneNode && _combatState.active &&

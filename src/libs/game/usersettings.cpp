@@ -39,10 +39,49 @@ std::string trimmed(const std::string &s) {
 
 } // namespace
 
+const std::map<std::string, std::string> &UserSettings::builtinDefaults() {
+    static const std::map<std::string, std::string> defaults {
+        {"audio.movie", "62"},
+        {"audio.music", "39"},
+        {"audio.sound", "60"},
+        {"audio.voice", "89"},
+        {"graphics.antialiasing", "2"},
+        {"optgameplay.CB_DISABLEMOVE", "1"},
+        {"optgameplay.CB_LEVELUP", "0"},
+        {"optgameplay.CB_SMARTCOMPANIONS", "1"},
+        {"optgraphicsadv.CB_AMBIENTOCC", "1"},
+        {"optgraphicsadv.CB_AUTOEXPOSURE", "1"},
+        {"optgraphicsadv.CB_BLOOM", "1"},
+        {"optgraphicsadv.CB_CHROMATIC", "0"},
+        {"optgraphicsadv.CB_DOF", "0"},
+        {"optgraphicsadv.CB_FILMGRAIN", "0"},
+        {"optgraphicsadv.CB_GRADING", "1"},
+        {"optgraphicsadv.CB_LENSFLARES", "0"},
+        {"optgraphicsadv.CB_MOTIONBLUR", "0"},
+        {"optgraphicsadv.CB_NORMALMAPS", "1"},
+        {"optgraphicsadv.CB_REFLECTIONS", "1"},
+        {"optgraphicsadv.CB_RESHADE", "0"},
+        {"optgraphicsadv.CB_SABERFX", "1"},
+        {"optgraphicsadv.CB_SHARPEN", "1"},
+        {"optgraphicsadv.CB_SOFTPARTICLES", "1"},
+        {"optgraphicsadv.CB_SOFTSHADOWS", "1"},
+        {"optgraphicsadv.CB_SSGI", "0"},
+        {"optgraphicsadv.CB_TONEMAP", "1"},
+        {"optgraphicsadv.CB_VIGNETTE", "1"},
+        {"optgraphicsadv.CB_VOLUMETRICS", "1"},
+    };
+    return defaults;
+}
+
 std::optional<std::string> UserSettings::get(const std::string &key) const {
     auto it = _values.find(key);
     if (it == _values.end()) {
-        return std::nullopt;
+        const auto &defaults = builtinDefaults();
+        auto def = defaults.find(key);
+        if (def == defaults.end()) {
+            return std::nullopt;
+        }
+        return def->second;
     }
     return it->second;
 }

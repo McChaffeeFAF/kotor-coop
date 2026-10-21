@@ -2124,6 +2124,28 @@ TEST(Object, should_convert_credits_to_party_gold_when_looted_by_party_member) {
     EXPECT_TRUE(footlocker->items().empty());
 }
 
+TEST(Object, should_turn_a_credit_item_given_to_a_party_member_into_gold) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    EXPECT_CALL(engine.resourceModule().twoDas(), get("baseitems"))
+        .Times(AnyNumber())
+        .WillRepeatedly(Return(makeBaseItemsTable()));
+    EXPECT_CALL(engine.resourceModule().textures(), get(AnyOf("ii_credits_000", "ii_datapad_000"), _))
+        .Times(AnyNumber());
+
+    auto player = game.newCreature();
+    game.party().addMember(kNpcPlayer, player);
+    game.party().setPlayer(player);
+
+    player->addItem(makeItem(game, "g_i_credits015", 0, 15));
+    player->addItem(makeItem(game, "g_i_datapad001", 1, 1));
+
+    EXPECT_EQ(game.party().gold(), 15);
+    ASSERT_EQ(player->items().size(), 1);
+    EXPECT_EQ(player->items().front()->tag(), "g_i_datapad001");
+}
+
 TEST(Object, should_move_credits_as_items_when_destination_is_not_in_party) {
     TestEngine &engine = testEngine();
     StubConsole console;

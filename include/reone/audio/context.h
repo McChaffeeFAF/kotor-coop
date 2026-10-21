@@ -21,6 +21,17 @@ namespace reone {
 
 namespace audio {
 
+/**
+ * Attributes for the OpenAL context, zero-terminated. HRTF is off unless
+ * asked for: OpenAL Soft turns it on by itself on headphones and the
+ * built-in dataset rolls off the low end, which reads as "no bass"; a
+ * headset with its own virtual surround would also process everything twice.
+ */
+std::vector<int> contextAttributes(bool hrtf);
+
+/** Whether the REONE_HRTF environment variable asks for HRTF ("1"). */
+bool hrtfRequested();
+
 class IContext {
 public:
     virtual ~IContext() = default;

@@ -27,6 +27,7 @@
 #include "reone/graphics/modelnode.h"
 #include "reone/graphics/types.h"
 #include "reone/resource/parser/gff/are.h"
+#include "reone/system/portablemath.h"
 
 namespace reone {
 
@@ -245,6 +246,25 @@ std::optional<MinigameSpec> parseMinigameSpec(const resource::generated::ARE &ar
 
 namespace {
 
+// glm::slerp calls the C library's acos and sin, which differ between
+// platforms; track hooks place the actors the collisions are tested against.
+glm::quat portableSlerp(const glm::quat &x, glm::quat y, float t) {
+    float cosine = glm::dot(x, y);
+    if (cosine < 0.0f) {
+        y = -y;
+        cosine = -cosine;
+    }
+    if (cosine > 0.9995f) {
+        return glm::normalize(glm::quat(x.w + t * (y.w - x.w), x.x + t * (y.x - x.x),
+                                        x.y + t * (y.y - x.y), x.z + t * (y.z - x.z)));
+    }
+    float sine = std::sqrt(1.0f - cosine * cosine);
+    float angle = portable::atan2f(sine, cosine);
+    float a = portable::sinf((1.0f - t) * angle) / sine;
+    float b = portable::sinf(t * angle) / sine;
+    return glm::quat(a * x.w + b * y.w, a * x.x + b * y.x, a * x.y + b * y.y, a * x.z + b * y.z);
+}
+
 constexpr float kTrackRateDivisor = 100.0f; // speed 100 plays a track as authored
 constexpr float kDefaultSwoopMovementPerSec = 6.0f;
 constexpr float kTunnelWallTolerance = 0.01f;
@@ -287,8 +307,8 @@ MiniGameTrack::MiniGameTrack(glm::mat4 base,
     _positions(std::move(positions)),
     _orientations(std::move(orientations)),
     _length(length) {
-    std::sort(_positions.begin(), _positions.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
-    std::sort(_orientations.begin(), _orientations.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+    std::stable_sort(_positions.begin(), _positions.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
+    std::stable_sort(_orientations.begin(), _orientations.end(), [](const auto &a, const auto &b) { return a.time < b.time; });
 }
 
 MiniGameTrack MiniGameTrack::fixed(const glm::vec3 &position) {
@@ -302,7 +322,7 @@ glm::mat4 MiniGameTrack::hookAt(float time) const {
     });
     glm::quat orientation(_restOrientation);
     sampleKeys(_orientations, time, orientation, [](const glm::quat &a, const glm::quat &b, float f) {
-        return glm::slerp(a, b, f);
+        return portableSlerp(a, b, f);
     });
     return _base * glm::translate(_restPosition + delta) * glm::mat4_cast(orientation);
 }

@@ -364,6 +364,9 @@ private:
 
     void renderMinimap();
     void renderGuestList();
+    // Co-op chat overlay and ping markers (hudchat.cpp).
+    void renderCoopChat();
+    float chatOverlayBottom() const;
     std::shared_ptr<graphics::Font> _guestListFont;
 };
 

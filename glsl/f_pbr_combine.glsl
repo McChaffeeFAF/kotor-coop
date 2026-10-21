@@ -116,7 +116,7 @@ void main() {
             for (int i = 0; i < uNumLights; ++i) {
                 vec3 fragToLight = uLights[i].position.xyz - fragPosWorld;
                 float lightDist = length(fragToLight);
-                if (lightDist > uLights[i].radius * uLights[i].radius) {
+                if (lightDist > uLights[i].radius) { // the reach is the radius, not its square
                     continue;
                 }
                 float attenuation = lightAttenuationQuadratic(uLights[i], lightDist);

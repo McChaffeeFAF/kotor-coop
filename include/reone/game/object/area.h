@@ -248,6 +248,14 @@ public:
 
     // Objects
 
+    /**
+     * The nearest spot to \p position where \p creature stands on walkable
+     * ground clear of every living creature's personal space: \p position
+     * itself when that is free, else the first free spot on rings around it
+     * (nearest ring first, fixed order of directions), else \p position.
+     */
+    glm::vec3 findFreeCreaturePosition(const Creature &creature, const glm::vec3 &position) const;
+
     std::shared_ptr<Object> createObject(ObjectType type, const std::string &blueprintResRef, const std::shared_ptr<Location> &location);
 
     /**

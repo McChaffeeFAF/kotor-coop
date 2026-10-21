@@ -18,6 +18,8 @@
 #pragma once
 
 #include "reone/audio/di/module.h"
+#include "reone/game/dedicated.h"
+#include "reone/game/dedicatedgame.h"
 #include "reone/game/di/module.h"
 #include "reone/game/game.h"
 #include "reone/graphics/di/module.h"
@@ -32,6 +34,7 @@
 
 #include "console.h"
 #include "controlchannel.h"
+#include "controlprotocol.h"
 #include "options.h"
 #include "profiler.h"
 
@@ -110,6 +113,15 @@ private:
 
     bool _showCursor {true};
     bool _relativeMouseMode {false};
+
+    // Dedicated host (--dedicated, docs/dedicated_host.md)
+    std::unique_ptr<game::DedicatedGameBackend> _dedicatedBackend;
+    std::unique_ptr<game::DedicatedHost> _dedicated;
+    std::shared_ptr<ControlQueue> _adminQueue; // standard-input lines, read on a thread
+    void initDedicated();
+    void processDedicated(double dt, bool &quit);
+    void runAdminLine(const std::string &line, bool toStdout);
+    int _exitCode {0};
 
     void processEvents(bool &quit);
     void initAutomationCommands();

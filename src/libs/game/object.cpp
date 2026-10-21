@@ -19,6 +19,7 @@
 
 #include "reone/game/effect/linkeffects.h"
 
+#include <boost/algorithm/string.hpp>
 #include <exception>
 #include <sstream>
 #include <typeinfo>
@@ -831,6 +832,21 @@ std::shared_ptr<Action> Object::getCurrentAction() const {
 }
 
 std::shared_ptr<Item> Object::addItem(const std::string &resRef, int stackSize, bool dropable) {
+    // Credit items are money, not inventory: the party's gold takes the
+    // amount (the blueprint's own stack when the caller asked for one).
+    if (boost::istarts_with(resRef, "g_i_credits") && _game.party().isMember(*this)) {
+        if (auto credits = _game.newItemFromBlueprint(resRef)) {
+            if (credits->isCredits()) {
+                int amount = stackSize > 1 ? stackSize : credits->stackSize();
+                credits->setOwner(0);
+                _game.destroyRuntimeObjectGraph(credits);
+                _game.party().giveGold(amount);
+                return nullptr;
+            }
+            credits->setOwner(0);
+            _game.destroyRuntimeObjectGraph(credits);
+        }
+    }
     std::shared_ptr<Item> result;
     std::vector<std::shared_ptr<Object>> noObsolete;
     std::vector<std::shared_ptr<Item>> replacement(_items);
@@ -876,6 +892,12 @@ void Object::addItem(const std::shared_ptr<Item> &item) {
     if (item->owner() != 0 && item->owner() != script::kObjectInvalid &&
         item->owner() != _id) {
         throw ValidationException("Runtime item already has another owner");
+    }
+    if (item->isCredits() && _game.party().isMember(*this)) {
+        _game.party().giveGold(item->stackSize());
+        item->setOwner(0);
+        _game.destroyRuntimeObjectGraph(item);
+        return;
     }
     auto alreadyOwned = std::find(_items.begin(), _items.end(), item);
     if (alreadyOwned != _items.end()) {

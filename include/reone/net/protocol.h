@@ -21,7 +21,7 @@ namespace net {
  * floats, so nothing malformed reaches the game.
  */
 
-constexpr uint16_t kProtocolVersion = 5; // 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit)
+constexpr uint16_t kProtocolVersion = 6; // 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit); 6: text chat and pings (ChatSend/ChatMessage/PingSend/PingMarker, ids 100+), optional Hello password and Reject BadPassword (dedicated hosts)
 
 /** A client message is small: a hello, a slot request or one command. */
 constexpr size_t kMaxClientMessageBytes = 2048;
@@ -73,7 +73,12 @@ enum class MessageType : uint8_t {
     BenchView = 27,       // host -> client: the workbench or lab a guest uses, with what it can do there
     // Guest minigames (swoop races, turret sequences): the host simulates, the owner steers
     MiniGameControl = 28, // client -> host: the owner's input for the running minigame
-    MiniGameState = 29    // host -> client: what a client needs to draw the running minigame
+    MiniGameState = 29,   // host -> client: what a client needs to draw the running minigame
+    // Text chat and pings: numbered from 100 so in-flight branches do not collide.
+    ChatSend = 100,       // client -> host: a chat line to relay
+    ChatMessage = 101,    // host -> client: a relayed chat line
+    PingSend = 102,       // client -> host: mark a point or object in the world
+    PingMarker = 103      // host -> client: a short-lived marker to draw
 };
 
 /** The largest message a client may send, by its leading type byte. */
@@ -127,6 +132,10 @@ struct Hello {
     // reconnect presenting it replaces a connection the host still thinks
     // is alive, and gets the same companion back.
     uint64_t rejoinToken {0};
+    // The session password (dedicated hosts, --coop-password). Appended after
+    // the other fields and sent only when set, so a Hello without one is the
+    // same bytes as before and the protocol version did not change.
+    std::string password;
 };
 
 struct Welcome {
@@ -146,7 +155,8 @@ enum class RejectReason : uint8_t {
     SessionFull = 6,
     Declined = 7,
     Malformed = 8,
-    Kicked = 9
+    Kicked = 9,
+    BadPassword = 10 // the host needs a password and this one is missing or wrong
 };
 
 const char *rejectReasonName(RejectReason reason);
@@ -815,6 +825,56 @@ struct Offer {
     int32_t maximumWager {0};
 };
 
+// Chat and pings
+
+/** The longest chat line, in UTF-8 bytes, after the host has accepted it. */
+constexpr size_t kMaxChatBytes = 200;
+/** The longest chat line a client may put on the wire, so the host can answer "too long" instead of dropping it. */
+constexpr size_t kMaxChatWireBytes = 512;
+constexpr uint8_t kChatColours = 16; // colour indices 0..15; the palette is the client's
+constexpr float kMaxPingCoordinate = 100000.0f;
+constexpr float kMaxPingSeconds = 60.0f;
+
+enum class ChatChannel : uint8_t {
+    All = 0,
+    Team = 1 // Free Mode: the sender's own side (party or guests); Story Mode: same as All
+};
+
+/** Client -> host. The text is raw: the host validates and cleans it. */
+struct ChatSend {
+    ChatChannel channel {ChatChannel::All};
+    std::string text;
+};
+
+/** Host -> client. sender 0 is the host. The text is already valid UTF-8 without control characters. */
+struct ChatMessage {
+    uint32_t sender {0};
+    std::string name;
+    uint8_t colour {0};
+    ChatChannel channel {ChatChannel::All};
+    std::string text;
+};
+
+/** Client -> host: target 0 marks the point, otherwise the object (the host uses the object's own position). */
+struct PingSend {
+    Vec3 position;
+    uint32_t target {0};
+};
+
+/** Host -> client: a marker for every player to draw for a few seconds. */
+struct PingMarker {
+    uint32_t sender {0};
+    std::string name;
+    uint8_t colour {0};
+    Vec3 position;
+    uint32_t target {0};
+    std::string targetName; // empty for a bare point
+    float seconds {0.0f};
+};
+
+/** True for well-formed UTF-8 (no overlong forms, surrogates or code points past U+10FFFF). */
+bool validUtf8(const std::string &text);
+
 /** A one-line bark on the host's HUD (BarkString and friends). */
 struct Bark {
     std::string text;
@@ -848,6 +908,10 @@ std::vector<uint8_t> encode(const Offer &message);
 std::vector<uint8_t> encode(const BenchView &message);
 std::vector<uint8_t> encode(const MiniGameControl &message);
 std::vector<uint8_t> encode(const MiniGameState &message);
+std::vector<uint8_t> encode(const ChatSend &message);
+std::vector<uint8_t> encode(const ChatMessage &message);
+std::vector<uint8_t> encode(const PingSend &message);
+std::vector<uint8_t> encode(const PingMarker &message);
 
 // Decoding: false for anything malformed; the output is then unspecified.
 
@@ -876,6 +940,10 @@ bool decode(const std::vector<uint8_t> &bytes, Offer &out);
 bool decode(const std::vector<uint8_t> &bytes, BenchView &out);
 bool decode(const std::vector<uint8_t> &bytes, MiniGameControl &out);
 bool decode(const std::vector<uint8_t> &bytes, MiniGameState &out);
+bool decode(const std::vector<uint8_t> &bytes, ChatSend &out);
+bool decode(const std::vector<uint8_t> &bytes, ChatMessage &out);
+bool decode(const std::vector<uint8_t> &bytes, PingSend &out);
+bool decode(const std::vector<uint8_t> &bytes, PingMarker &out);
 
 // Entity deltas
 

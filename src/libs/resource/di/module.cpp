@@ -123,6 +123,9 @@ void ResourceModule::init() {
     _director->init();
     _shaders->init();
     _textures->init();
+    // K2-only feat and power icons are K2-green; recolour them to K1 blue
+    // unless the HUD is K2's.
+    _textures->setK1IconPalette(_k2DataResources && _k2PresentationPath.empty());
 
     _services = std::make_unique<ResourceServices>(
         *_gffs,

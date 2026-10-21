@@ -132,6 +132,9 @@ public:
     /// Make one item of a recipe. False without the skill or the material.
     bool create(const crafting::Recipe &recipe, const Creature &crafter);
 
+    /// The template of a recipe: K1's when K1 has one of that name, else K2's (the "k2:" prefix).
+    std::string resolveTemplate(const std::string &resRef) const;
+
 private:
     Game &_game;
     ServicesView &_services;
@@ -143,9 +146,6 @@ private:
     /// The inventory items are taken from and made into.
     std::shared_ptr<Object> inventoryHolder() const;
 
-    /// The template of a recipe: K1's when K1 has one of that name, else
-    /// K2's (the "k2:" prefix).
-    std::string resolveTemplate(const std::string &resRef) const;
     std::shared_ptr<Item> previewItem(const std::string &resRef) const;
     void addMaterial(crafting::Material material, int amount);
 };

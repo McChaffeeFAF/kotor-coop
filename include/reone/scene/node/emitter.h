@@ -51,6 +51,9 @@ public:
 
     void renderLeafs(IRenderPass &pass, const std::vector<SceneNode *> &leafs) override;
 
+    /** Scales how opaque the emitter draws its particles (presentation only). */
+    void setAlphaScale(float scale) { _alphaScale = scale; }
+
     void detonate();
     void rearmSingle();
 
@@ -107,6 +110,8 @@ public:
         const std::vector<std::pair<uint16_t, glm::vec3>> &vectors);
 
 private:
+    float _alphaScale {1.0f};
+
     template <class T>
     struct StartMidEnd {
         // Zero until a controller sets them: an unset height ramp read as

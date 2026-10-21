@@ -360,6 +360,7 @@ void CoopSession::clientSendHello() {
     hello.k1 = _config.k1;
     hello.k2 = _config.k2;
     hello.rejoinToken = _rejoinToken;
+    hello.password = _config.password;
     send(_hostConnection, encode(hello));
 }
 
@@ -522,6 +523,7 @@ void CoopSession::hostDropClient(ConnectionId connection, const std::string &rea
             placeable->signalClosed(client.slot.creatureId);
         }
     }
+    _chatPolicy.forget(client.clientId);
     _clients.erase(it);
     if (!_guests.empty()) {
         hostTrimAbsentGuests();
@@ -613,6 +615,24 @@ void CoopSession::hostHandleMessage(HostClient &client, const std::vector<uint8_
         hostHandleMiniGameControl(client, control);
         break;
     }
+    case MessageType::ChatSend: {
+        ChatSend chat;
+        if (!client.welcomed || !decode(data, chat)) {
+            hostViolation(client, "a chat line out of turn or malformed");
+            return;
+        }
+        hostHandleChat(client, chat);
+        break;
+    }
+    case MessageType::PingSend: {
+        PingSend ping;
+        if (!client.welcomed || !decode(data, ping)) {
+            hostViolation(client, "a ping out of turn or malformed");
+            return;
+        }
+        hostHandlePing(client, ping);
+        break;
+    }
     case MessageType::SnapshotAck: {
         SnapshotAck ack;
         if (!client.welcomed || !decode(data, ack)) {
@@ -660,6 +680,20 @@ void CoopSession::hostHandleAck(HostClient &client, const SnapshotAck &ack) {
     client.history.erase(client.history.begin(), it);
 }
 
+namespace {
+
+/** Compares without stopping at the first difference, so timing does not reveal how much matched. */
+bool passwordsMatch(const std::string &given, const std::string &expected) {
+    unsigned char diff = given.size() == expected.size() ? 0 : 1;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        unsigned char a = i < given.size() ? static_cast<unsigned char>(given[i]) : 0;
+        diff |= static_cast<unsigned char>(a ^ static_cast<unsigned char>(expected[i]));
+    }
+    return diff == 0;
+}
+
+} // namespace
+
 void CoopSession::hostHandleHello(HostClient &client, const Hello &hello) {
     if (hello.protocol != kProtocolVersion) {
         hostReject(client, RejectReason::ProtocolMismatch,
@@ -672,6 +706,10 @@ void CoopSession::hostHandleHello(HostClient &client, const Hello &hello) {
     }
     if (!hello.mode.empty() && hello.mode != _config.mode) {
         hostReject(client, RejectReason::ModeMismatch, "host mode " + _config.mode);
+        return;
+    }
+    if (!_config.password.empty() && !passwordsMatch(hello.password, _config.password)) {
+        hostReject(client, RejectReason::BadPassword, hello.password.empty() ? "this game needs a password" : "wrong password");
         return;
     }
     // The BIF index and the modules must match; dialog.tlk is the game's language and may
@@ -720,7 +758,8 @@ void CoopSession::hostHandleHello(HostClient &client, const Hello &hello) {
         return entry.second.welcomed;
     }));
     if (welcomed >= _config.maxClients) {
-        hostReject(client, RejectReason::SessionFull, std::string(freeMode() ? "Free Mode" : "Story Mode") + " takes " + std::to_string(_config.maxClients + 1) + " players");
+        hostReject(client, RejectReason::SessionFull, std::string(freeMode() ? "Free Mode" : "Story Mode") + " takes " +
+                   std::to_string(_config.dedicated ? _config.maxClients : _config.maxClients + 1) + " players");
         return;
     }
     auto nameTaken = [&](const std::string &name) {
@@ -1270,6 +1309,8 @@ std::string CoopSession::failureMessage() const {
             return "The host declined your request to join.";
         case RejectReason::Kicked:
             return "The host removed you from the game.";
+        case RejectReason::BadPassword:
+            return _config.password.empty() ? "This game needs a password." : "That password is not right.";
         default:
             return "The host refused the connection (" + std::string(rejectReasonName(_reject.reason)) + ").";
         }
@@ -1347,6 +1388,15 @@ void CoopSession::beforeTick() {
                     uint32_t controlled = hostControlledId(client);
                     bool own = controlled != 0 && (controlled == client.standIn || controlled == client.guestId);
                     reason = validateCoopCommand(_game, command, controlled, targets, own, freeMode());
+                    if (reason == CommandReject::HostLeadsConversation && _config.dedicated && freeMode() && controlled == client.guestId &&
+                        client.clientId == _storyDrivers.driver() && targets.target && !targets.target->conversation().empty()) {
+                        // Dedicated host: nobody leads on the host's side, so the
+                        // story driver talks to anyone (docs/dedicated_host.md).
+                        reason = hostDriverConversation(client, targets.target);
+                        if (reason == CommandReject::None) {
+                            session = true;
+                        }
+                    }
                     if (reason == CommandReject::HostLeadsConversation && freeMode() && controlled == client.guestId &&
                         targets.target && targets.target->type() == ObjectType::Placeable) {
                         // Free Mode terminals: info-only ones are open to guests;
@@ -1583,6 +1633,9 @@ void CoopSession::afterTick() {
         hostUpdateGuests();
         hostSendRoster();
         hostUpdateTerminals();
+        if (_config.dedicated) {
+            hostUpdateDedicated();
+        }
     } else {
         hostUpdateStandIns();
     }
@@ -2027,6 +2080,22 @@ void CoopSession::clientHandleMessage(const std::vector<uint8_t> &data) {
         ok = decode(data, bark);
         if (ok) {
             clientHandleBark(bark);
+        }
+        break;
+    }
+    case MessageType::ChatMessage: {
+        ChatMessage chat;
+        ok = decode(data, chat);
+        if (ok) {
+            chatReceived(chat);
+        }
+        break;
+    }
+    case MessageType::PingMarker: {
+        PingMarker marker;
+        ok = decode(data, marker);
+        if (ok) {
+            pingReceived(marker);
         }
         break;
     }
@@ -3091,6 +3160,18 @@ json::object CoopSession::statusJson() const {
         root["controlled"] = std::move(controlled);
         root["players"] = hostPlayerCount();
         root["barksSent"] = _barksSent;
+        {
+            json::object chat;
+            chat["relayed"] = _chatsRelayed;
+            chat["refused"] = _chatsRefused;
+            chat["pings"] = _pingsRelayed;
+            json::array muted;
+            for (const auto &name : _chatPolicy.muted()) {
+                muted.push_back(json::value(name));
+            }
+            chat["muted"] = std::move(muted);
+            root["chat"] = std::move(chat);
+        }
         root["partyGold"] = _game.party().gold();
         root["pcSpeaker"] = _pcSpeaker;
         if (freeMode()) {

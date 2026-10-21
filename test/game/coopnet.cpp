@@ -1777,6 +1777,7 @@ protected:
         config.maxClients = 7;
         config.build = "build-A";
         config.k1 = {true, 1, 2, 3};
+        configure(config);
         // Any class the guest names is a plain class of that type.
         _classes = std::make_unique<Classes>(_strings, _twoDas);
         ON_CALL(_engine.gameModule().classes(), get(_)).WillByDefault(Invoke([this](ClassType type) {
@@ -1795,6 +1796,9 @@ protected:
     void TearDown() override {
         _game->setCoopSession(nullptr);
     }
+
+    /** A derived fixture changes the host's config before the session exists. */
+    virtual void configure(CoopConfig &) {}
 
     void exchange() {
         _session->pollNetwork();
@@ -1815,6 +1819,7 @@ protected:
         hello.mode = "free";
         hello.playerName = "Alice";
         hello.k1 = {true, 1, 2, 3};
+        hello.password = _password;
         _client.send(hello);
         exchange();
         net::SlotRequest request;
@@ -1832,6 +1837,7 @@ protected:
         return static_cast<uint32_t>(clients[0].as_object().at("guest").as_object().at("id").to_number<int64_t>());
     }
 
+    std::string _password; // what join() presents
     NiceMock<MockStrings> _strings;
     NiceMock<MockTwoDAs> _twoDas;
     std::unique_ptr<Classes> _classes;
@@ -1930,6 +1936,159 @@ TEST_F(CoopFreeSessionTest, a_host_that_asks_holds_a_guest_until_accepted) {
     ASSERT_TRUE(_session->answerJoin(players[0].clientId, true));
     tick();
     EXPECT_NE(0u, guestId());
+}
+
+// Dedicated host (docs/dedicated_host.md): a password, kicks and the leaderless rules.
+
+class CoopDedicatedSessionTest : public CoopFreeSessionTest {
+protected:
+    void configure(CoopConfig &config) override {
+        config.dedicated = true;
+        config.askToJoin = false;
+        config.password = "tableword";
+        config.maxClients = 3;
+    }
+
+    uint32_t clientId() const {
+        auto players = _session->players();
+        return players.empty() ? 0 : players[0].clientId;
+    }
+};
+
+TEST_F(CoopDedicatedSessionTest, a_guest_without_the_password_is_turned_away) {
+    join(sampleGuest());
+    exchange();
+    auto rejects = _client.take<net::Reject>(net::MessageType::Reject);
+    ASSERT_EQ(1u, rejects.size());
+    EXPECT_EQ(net::RejectReason::BadPassword, rejects[0].reason);
+    EXPECT_TRUE(_client.take<net::Welcome>(net::MessageType::Welcome).empty());
+    EXPECT_EQ(0u, guestId());
+}
+
+TEST_F(CoopDedicatedSessionTest, a_wrong_password_is_turned_away_and_a_prefix_of_the_right_one_is_wrong) {
+    for (const char *wrong : {"tablewor", "tablewordd", "TABLEWORD", "x"}) {
+        _password = wrong;
+        _client.inbox.clear();
+        join(sampleGuest());
+        exchange();
+        auto rejects = _client.take<net::Reject>(net::MessageType::Reject);
+        ASSERT_EQ(1u, rejects.size()) << wrong;
+        EXPECT_EQ(net::RejectReason::BadPassword, rejects[0].reason) << wrong;
+        // The connection is closed after a Reject; a fresh pair for the next try.
+        _session.reset();
+        _game->setCoopSession(nullptr);
+        auto [host, client] = net::createLoopbackPair();
+        _client = RawClient();
+        _client.transport = std::move(client);
+        CoopConfig config;
+        config.role = CoopRole::Host;
+        config.mode = "free";
+        config.build = "build-A";
+        config.k1 = {true, 1, 2, 3};
+        configure(config);
+        _session = std::make_shared<CoopSession>(*_game, config, std::move(host));
+        _game->setCoopSession(_session);
+        exchange();
+    }
+}
+
+TEST_F(CoopDedicatedSessionTest, the_right_password_joins_and_the_first_guest_drives_the_story) {
+    _password = "tableword";
+    join(sampleGuest());
+    tick();
+    EXPECT_FALSE(_client.take<net::Welcome>(net::MessageType::Welcome).empty());
+    ASSERT_NE(0u, guestId());
+    ASSERT_NE(0u, clientId());
+    EXPECT_EQ(clientId(), _session->storyDriver());
+    EXPECT_TRUE(_session->dedicated());
+    // The driver is told so.
+    bool told = false;
+    for (const auto &notice : _client.take<net::Notice>(net::MessageType::Notice)) {
+        told = told || notice.text.find("lead the story") != std::string::npos;
+    }
+    EXPECT_TRUE(told);
+}
+
+TEST_F(CoopDedicatedSessionTest, without_a_guest_there_is_no_driver_and_it_returns_when_the_driver_leaves) {
+    tick();
+    EXPECT_EQ(0u, _session->storyDriver());
+    _password = "tableword";
+    join(sampleGuest());
+    tick();
+    EXPECT_NE(0u, _session->storyDriver());
+    _client.transport->close(_client.connection, "bye");
+    exchange();
+    tick();
+    EXPECT_EQ(0u, _session->storyDriver());
+}
+
+TEST_F(CoopDedicatedSessionTest, kick_removes_a_player_and_tells_them_why) {
+    _password = "tableword";
+    join(sampleGuest());
+    tick();
+    uint32_t id = clientId();
+    ASSERT_NE(0u, id);
+    EXPECT_FALSE(_session->kick(id + 100)) << "no such player";
+    EXPECT_TRUE(_session->kick(id));
+    exchange();
+    auto rejects = _client.take<net::Reject>(net::MessageType::Reject);
+    ASSERT_EQ(1u, rejects.size());
+    EXPECT_EQ(net::RejectReason::Kicked, rejects[0].reason);
+    _session->pollNetwork(); // the close lands on the next poll
+    EXPECT_TRUE(_session->players().empty());
+    tick(); // the driver is worked out once a tick
+    EXPECT_EQ(0u, _session->storyDriver());
+}
+
+TEST_F(CoopDedicatedSessionTest, the_host_is_not_a_player_in_a_ready_check) {
+    _password = "tableword";
+    join(sampleGuest());
+    tick();
+    _client.inbox.clear();
+    // A scripted exit with a guest present asks the guests alone.
+    EXPECT_TRUE(_session->interceptTransition("test_next", "", 0, 0));
+    tick();
+    auto checks = _client.take<net::ReadyCheck>(net::MessageType::ReadyCheck);
+    ASSERT_FALSE(checks.empty());
+    EXPECT_EQ(net::ReadyState::Active, checks.back().state);
+    ASSERT_EQ(1u, checks.back().players.size());
+    EXPECT_EQ("Alice", checks.back().players[0].name);
+}
+
+class CoopFreeReadyTest : public CoopFreeSessionTest {};
+
+TEST_F(CoopFreeReadyTest, the_ordinary_host_is_still_in_the_ready_check) {
+    join(sampleGuest());
+    tick();
+    _client.inbox.clear();
+    EXPECT_TRUE(_session->interceptTransition("test_next", "", 0, 0));
+    tick();
+    auto checks = _client.take<net::ReadyCheck>(net::MessageType::ReadyCheck);
+    ASSERT_FALSE(checks.empty());
+    EXPECT_EQ(2u, checks.back().players.size());
+}
+
+TEST(CoopHelloPassword, a_hello_without_one_is_byte_for_byte_the_old_message_and_one_with_one_round_trips) {
+    net::Hello plain;
+    plain.build = "b";
+    plain.playerName = "P";
+    auto bytes = net::encode(plain);
+    net::Hello withPassword = plain;
+    withPassword.password = "secret";
+    auto longer = net::encode(withPassword);
+    EXPECT_GT(longer.size(), bytes.size());
+    // The old layout: the longer message starts with exactly the shorter one's bytes.
+    EXPECT_TRUE(std::equal(bytes.begin(), bytes.end(), longer.begin()));
+    net::Hello back;
+    ASSERT_TRUE(net::decode(longer, back));
+    EXPECT_EQ("secret", back.password);
+    ASSERT_TRUE(net::decode(bytes, back));
+    EXPECT_TRUE(back.password.empty());
+    // Trailing junk after the password is still a malformed message.
+    auto junk = longer;
+    junk.push_back(7);
+    EXPECT_FALSE(net::decode(junk, back));
+    EXPECT_STREQ("bad_password", net::rejectReasonName(net::RejectReason::BadPassword));
 }
 
 namespace {

@@ -230,6 +230,8 @@ public:
     void back();
     /** Assemble: apply the staged slots and return. */
     bool assemble();
+    /** The retail bench sound (guisounds.2da "Upgrade") on a successful assemble, create or break down. */
+    void playUpgradeSound();
     void close();
 
     /**

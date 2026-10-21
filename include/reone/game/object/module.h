@@ -152,6 +152,10 @@ public:
 
     const ItemActivation &itemActivation() const { return _itemActivation; }
 
+    /** GetLastItemEquipped: the item most recently equipped by a creature. */
+    uint32_t lastItemEquipped() const { return _lastItemEquipped; }
+    void setLastItemEquipped(uint32_t item) { _lastItemEquipped = item; }
+
     // Module events. Raising one queues it; updateEvents() (the simulation
     // tick) records its values and runs the module's script for it.
 
@@ -275,6 +279,7 @@ private:
     ModuleInfo _info;
     ReturnOption _returnOption;
     ItemActivation _itemActivation;
+    uint32_t _lastItemEquipped {script::kObjectInvalid};
     std::shared_ptr<Area> _area;
     std::unique_ptr<Player> _player;
     bool _isSaveGame {false};

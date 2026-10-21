@@ -68,7 +68,15 @@ inline double reduce(double x, int &quadrant) {
     double q = std::floor(x / kHalfPi + 0.5);
     double r = x - q * kHalfPi;
     double m = q - std::floor(q / 4.0) * 4.0;
+    if (!(m >= 0.0 && m < 4.0)) {
+        m = 0.0; // a non-finite argument
+    }
     quadrant = static_cast<int>(m);
+    if (!(r >= -kHalfPi && r <= kHalfPi)) {
+        // Past ~1e15 the reduction has no precision left (and the kernels would
+        // overflow to inf, so tan = inf/inf = NaN): treat the remainder as 0.
+        r = 0.0;
+    }
     return r;
 }
 

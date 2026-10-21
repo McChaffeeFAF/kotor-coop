@@ -28,6 +28,7 @@
 
 #include "reone/game/game.h"
 #include "reone/game/guestbench.h"
+#include "reone/game/gui/confirmpopup.h"
 #include "reone/game/gui/upgrade.h"
 #include "reone/gui/control/listbox.h"
 #include "reone/game/modulesnapshot.h"
@@ -793,4 +794,20 @@ TEST_F(GuestBenchTest, breaking_down_is_refused_for_plot_items_missing_items_oth
     EXPECT_EQ(0, _components);
     EXPECT_TRUE(_guest->getItemByTag("pistol"));
     EXPECT_TRUE(_player->getItemByTag("host_pistol"));
+}
+
+// The confirmation popup's panel holds every stacked button with the same inset
+// above the first element below the last (K1 confirm.gui: OK at 34, step 24,
+// height 22, message inset 10).
+TEST(ConfirmPopupLayout, PanelContainsEveryButtonStack) {
+    const int top = 34, step = 24, height = 22, inset = 10;
+    const int expected[] {66, 90, 114, 138};
+    for (int buttons = 1; buttons <= 4; ++buttons) {
+        int lastTop = top + step * (buttons - 1);
+        int panel = confirmPanelHeight(lastTop, height, inset);
+        EXPECT_EQ(expected[buttons - 1], panel) << buttons << " buttons";
+        EXPECT_GE(panel, lastTop + height + inset);
+    }
+    // A long message pushes the buttons and the panel down together.
+    EXPECT_EQ(90 + 18, confirmPanelHeight(58, 22, 10, 18));
 }

@@ -37,6 +37,15 @@ namespace game {
  * dismissed with the OK button. An optional icon is shown left of the
  * message text.
  */
+/**
+ * Height of a popup panel (authored units) that holds a stack of buttons whose
+ * last one starts at lastButtonTop: the button's bottom plus the same inset the
+ * panel keeps above its first element, plus any growth for a long message.
+ */
+inline int confirmPanelHeight(int lastButtonTop, int lastButtonHeight, int inset, int growth = 0) {
+    return lastButtonTop + lastButtonHeight + inset + growth;
+}
+
 class ConfirmPopup : public GameGUI {
 public:
     ConfirmPopup(Game &game, ServicesView &services) :
@@ -84,11 +93,25 @@ private:
     std::string _cancelLabel;
     gui::Control::Extent _trimmedRootExtent;
     gui::Control::Extent _choicesRootExtent;
+    gui::Control::Extent _twoChoicesRootExtent;
 
     std::shared_ptr<gui::Control> _icon;
     gui::Control::Extent _messageExtent;
     int _iconSize {0};
     int _iconPadding {0};
+
+    // Authored extents of what moves when a long message needs more room
+    // (the panel is sized for about two lines), and the growth applied now.
+    gui::Control::Extent _baseOk;
+    gui::Control::Extent _baseCancel;
+    gui::Control::Extent _baseThird;
+    gui::Control::Extent _baseFourth;
+    gui::Control::Extent _baseMessageList;
+    int _growth {0};
+
+    void applyGrowth(int growth);
+    void fitPanelForTwoButtons();
+    int growthForMessageLines(size_t lines) const;
 
     void preload(gui::IGUI &gui) override;
     void onGUILoaded() override;

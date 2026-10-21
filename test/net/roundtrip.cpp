@@ -879,5 +879,5 @@ TEST(NetCoverage, a_message_type_byte_is_a_message_exactly_when_the_protocol_nam
         EXPECT_NE(std::string("unknown"), messageTypeName(*type)) << "type " << value;
         EXPECT_TRUE(isHostMessage(*type) || isClientMessage(*type)) << messageTypeName(*type) << " goes nowhere";
     }
-    EXPECT_GE(named, 23);
+    EXPECT_GE(named, 29);
 }

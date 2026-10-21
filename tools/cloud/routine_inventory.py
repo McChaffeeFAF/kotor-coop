@@ -406,6 +406,13 @@ def render(entries):
     for name in sorted(stubs):
         info = stubs[name]
         lines.append(f"| `{name}` | {'+'.join(sorted(info['games']))} | `{info['sig']}` | {info['reason']} |")
+    lines += ["", "### Tranche 5: stubs given a model", "",
+              "`GetLastItemEquipped` answers the item most recently put on by any creature (`Creature::equip` records it",
+              "on the module; it is invalid once the item is gone from the world). `GetSpellCastItem` answers the item",
+              "whose Activate Item property cast the spell: `CastSpellAtObjectAction` passes it to the impact script as",
+              "`ArgKind::SpellCastItem`. Tests are in `test/game/routines4.cpp`.",
+              "The remaining stubs need a model the engine lacks (stances, attack records, area-of-effect casters,",
+              "screens, controller input), none of which public documentation lets a routine invent."]
     lines += ["", "### Still unknown", "",
               "Nothing is missing. Behaviour the documentation leaves open is stated next to each routine in the",
               "tests; the choices that deserve a second look are:", "",

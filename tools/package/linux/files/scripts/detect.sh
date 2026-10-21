@@ -47,13 +47,46 @@ children() {
     find "$1" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null | sort
 }
 
-# Folders where GOG installs (the offline installers under Wine, Heroic, Lutris) usually put games.
+# Folders where GOG installs (the offline installers under Wine, Heroic, Lutris) usually put games,
+# including the game folders inside Wine prefixes (<prefix>/drive_c/..., or <prefix>/pfx/drive_c/...
+# for Proton-style prefixes) that Heroic and Lutris create under their default folders.
 gog_roots() {
-    local dir
-    for dir in "$HOME/GOG Games" "$HOME/Games/GOG" "$HOME/Games/gog" "$HOME/Games/Heroic" "$HOME/Games" \
-        "$HOME/.wine/drive_c/GOG Games" "$HOME/.wine/drive_c/Program Files (x86)/GOG Galaxy/Games"; do
-        [ -d "$dir" ] && printf '%s\n' "$dir"
+    local dir prefix drive driveC base b
+    for dir in "$HOME/GOG Games" "$HOME/Games/GOG" "$HOME/Games/gog" "$HOME/Games/Heroic" "$HOME/Games/Heroic/Prefixes" "$HOME/Games/Heroic/Prefixes/default" "$HOME/Games" \
+        "$HOME/.wine/drive_c/GOG Games" "$HOME/.wine/drive_c/Program Files (x86)/GOG Galaxy/Games" \
+        "$HOME/.var/app/com.heroicgameslauncher.hgl/Games/Heroic" "$HOME/.var/app/com.heroicgameslauncher.hgl/Games" \
+        "$HOME/.var/app/net.lutris.Lutris/Games"; do
+        [ -d "$dir" ] || continue
+        printf '%s\n' "$dir"
+        while IFS= read -r prefix; do
+            for drive in "$prefix" "$prefix/pfx"; do
+                driveC=$(find_ci "$drive" drive_c)
+                [ -n "$driveC" ] || continue
+                for base in "GOG Games" "Program Files (x86)" "Program Files" "Program Files (x86)/GOG Galaxy/Games" \
+                    "Program Files (x86)/LucasArts" "Program Files/LucasArts" "Games"; do
+                    b=$(find_path_ci "$driveC" "$base")
+                    [ -n "$b" ] && printf '%s\n' "$b"
+                done
+            done
+        done < <(children "$dir")
     done
+}
+
+# find_path_ci DIR A/B/C: the entry DIR/A/B/C with each part matched ignoring case.
+find_path_ci() {
+    local cur=$1 part rest=$2
+    while [ -n "$rest" ]; do
+        part=${rest%%/*}
+        if [ "$part" = "$rest" ]; then rest=""; else rest=${rest#*/}; fi
+        cur=$(find_ci "$cur" "$part")
+        [ -n "$cur" ] || return 1
+    done
+    printf '%s\n' "$cur"
+}
+
+# is_steam_deck: succeeds on a Steam Deck (Gaming Mode sets SteamDeck=1; the user is "deck").
+is_steam_deck() {
+    [ "${SteamDeck:-}" = 1 ] || [ "${USER:-}" = deck ] || [ "$(id -un 2>/dev/null)" = deck ]
 }
 
 # Every Steam root that exists: the usual folders on a desktop, the Flatpak Steam,
@@ -100,27 +133,28 @@ steam_apps() {
 # candidates K1|K2: folders that might hold the game, most reliable first, as
 # "Source<TAB>Path" lines.
 candidates() {
-    local which=$1 app names apps manifest installdir name found
+    local which=$1 app names apps manifest installdir name found common
     if [ "$which" = k1 ]; then app=$K1_APP; names=("${K1_NAMES[@]}"); else app=$K2_APP; names=("${K2_NAMES[@]}"); fi
     while IFS= read -r apps; do
         # The app manifest names the real install folder, even a renamed one.
+        common=$(find_ci "$apps" common)
         manifest=$(find_ci "$apps" "appmanifest_${app}.acf")
         if [ -n "$manifest" ]; then
             installdir=$(grep -o '"installdir"[[:space:]]*"[^"]*"' "$manifest" 2>/dev/null |
                 sed -E 's/^"installdir"[[:space:]]*"([^"]*)"$/\1/' | head -n 1)
             if [ -n "$installdir" ]; then
-                found=$(find_ci "$apps/common" "$installdir")
+                found=$(find_ci "${common:-$apps/common}" "$installdir")
                 [ -n "$found" ] && printf 'Steam\t%s\n' "$found"
             fi
         fi
         for name in "${names[@]}"; do
-            found=$(find_ci "$apps/common" "$name")
+            found=$(find_ci "${common:-$apps/common}" "$name")
             [ -n "$found" ] && printf 'Steam\t%s\n' "$found"
         done
         # Any other folder of the library: the games' localised store names are not all listed.
         while IFS= read -r found; do
             printf 'Steam\t%s\n' "$found"
-        done < <(children "$apps/common")
+        done < <(children "${common:-$apps/common}")
     done < <(steam_apps)
     local root
     while IFS= read -r root; do

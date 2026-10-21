@@ -602,4 +602,40 @@ TEST_P(Tranche4Routines, events_for_conversation_and_item_activation_carry_their
     EXPECT_EQ(EventKind::ActivateItem, std::static_pointer_cast<Event>(activation.engineType)->kind());
 }
 
+// Equipment and item spells
+
+TEST_P(Tranche4Routines, last_item_equipped_is_the_item_most_recently_put_on) {
+    TwoDA::Builder baseItems;
+    baseItems.columns({"weapontype", "itemclass", "equipableslots", "weaponwield", "numdice", "dietoroll", "maxattackrange",
+                       "crithitmult", "critthreat", "damageflags", "ammunitiontype", "bodyvar"});
+    baseItems.row({"1", "w_stunbaton", "48", "1", "1", "4", "1.5", "2", "2", "2", "-1", ""});
+    ON_CALL(engine.resourceModule().twoDas(), get(std::string("baseitems")))
+        .WillByDefault(Return(std::shared_ptr<TwoDA>(baseItems.build())));
+    auto makeBaton = [&] {
+        auto gff = Gff::Builder()
+                       .field(Gff::Field::newInt("BaseItem", 0))
+                       .field(Gff::Field::newWord("StackSize", 1))
+                       .build();
+        auto item = game->newItem();
+        item->deserialize(*gff, SerializedIdentityContext::templateResource());
+        return item;
+    };
+    auto creature = addCreature();
+    EXPECT_EQ(kObjectInvalid, call("GetLastItemEquipped", {}).objectId) << "nothing equipped yet";
+
+    auto first = makeBaton();
+    auto second = makeBaton();
+    ASSERT_TRUE(creature->equip(InventorySlots::rightWeapon, first));
+    EXPECT_EQ(first->id(), call("GetLastItemEquipped", {}).objectId);
+    ASSERT_TRUE(creature->equip(InventorySlots::leftWeapon, second));
+    EXPECT_EQ(second->id(), call("GetLastItemEquipped", {}).objectId);
+}
+
+TEST_P(Tranche4Routines, spell_cast_item_is_the_item_argument_of_the_impact_script) {
+    auto item = game->newItem();
+    EXPECT_EQ(kObjectInvalid, call("GetSpellCastItem", {}).objectId) << "not in a spell script";
+    execution.args.push_back({ArgKind::SpellCastItem, Variable::ofObject(item->id())});
+    EXPECT_EQ(item->id(), call("GetSpellCastItem", {}).objectId);
+}
+
 INSTANTIATE_TEST_SUITE_P(BothGames, Tranche4Routines, Values(GameID::KotOR, GameID::TSL));

@@ -524,7 +524,7 @@ std::optional<std::reference_wrapper<const ModelSceneNode::AnimationChannel>> Mo
     return std::cref(_animChannels[layers]);
 }
 
-bool ModelSceneNode::fadeOutLayer(const std::string &name) {
+bool ModelSceneNode::fadeOutLayer(const std::string &name, bool propagate) {
     auto lower = boost::to_lower_copy(name);
     bool found = false;
     const size_t layers = layerCount();
@@ -534,6 +534,14 @@ bool ModelSceneNode::fadeOutLayer(const std::string &name) {
         }
         _animChannels[i].finished = true;
         found = true;
+    }
+    if (propagate) {
+        for (auto &attachment : _attachments) {
+            if (attachment.second->type() == SceneNodeType::Model &&
+                static_cast<ModelSceneNode *>(attachment.second)->fadeOutLayer(name, true)) {
+                found = true;
+            }
+        }
     }
     return found;
 }

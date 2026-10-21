@@ -23,6 +23,7 @@
 #include "imgui.h"
 
 #include "reone/game/coopsession.h"
+#include "reone/game/dedicated.h"
 #include "reone/graphics/format/tgawriter.h"
 #include "reone/graphics/gamepadevents.h"
 #include "reone/graphics/gputimer.h"
@@ -36,9 +37,12 @@
 #include "reone/system/stream/fileoutput.h"
 #include "reone/system/stringutil.h"
 
+#include <chrono>
 #include <iomanip>
+#include <iostream>
 #include <set>
 #include <sstream>
+#include <thread>
 
 using namespace reone::audio;
 using namespace reone::game;
@@ -235,6 +239,7 @@ void Engine::init() {
     defaults.service = _options.coop.server;
     defaults.relayOnly = _options.coop.relayOnly;
     defaults.askToJoin = _options.coop.askJoin;
+    defaults.password = _options.coop.password;
     _game->setCoopDefaults(defaults);
     if (!_options.coop.recordPath.empty()) {
         _game->setCoopRecordPath(_options.coop.recordPath);
@@ -247,7 +252,9 @@ void Engine::init() {
         net::setNetworkSimulation(simulation);
     }
     bool joining = !_options.coop.joinAddress.empty() || !_options.coop.joinCode.empty();
-    if (_options.coop.hostPort > 0 || joining) {
+    if (_options.dedicated.enabled) {
+        initDedicated(); // it starts hosting itself, in Free Mode, on its first frame
+    } else if (_options.coop.hostPort > 0 || joining) {
         CoopLaunch launch = defaults;
         launch.role = _options.coop.hostPort > 0 ? CoopRole::Host : CoopRole::Client;
         launch.address = _options.coop.joinAddress;
@@ -358,7 +365,11 @@ int Engine::run() {
         }
         auto frameTime = (ticks - _ticks) / 10e5f;
         _ticks = ticks;
-        if (_options.graphics.headless) {
+        if (_options.dedicated.enabled) {
+            // A server runs on the wall clock (paced below), not on fixed headless frames.
+            // A stall is not charged to the world as more than a quarter second.
+            frameTime = std::min(frameTime, 0.25f);
+        } else if (_options.graphics.headless) {
             frameTime = _options.headlessFrameTime;
         }
         ++_frame;
@@ -366,6 +377,12 @@ int Engine::run() {
         processScriptedCommands(quit);
         if (quit) {
             break;
+        }
+        if (_dedicated) {
+            processDedicated(frameTime, quit);
+            if (quit) {
+                break;
+            }
         }
         _profiler->measure(kMainThreadName, kProfilerInputTimeIndex, [this, &quit]() {
             frameperf::Scope inputScope(frameperf::Phase::Input);
@@ -391,7 +408,9 @@ int Engine::run() {
             break;
         }
         _profiler->measure(kMainThreadName, kProfilerUpdateTimeIndex, [this, &frameTime]() {
-            imguiNewFrame();
+            if (!_options.dedicated.enabled) {
+                imguiNewFrame();
+            }
             _game->update(frameTime);
             bool showcur = _game->cursorType() == CursorType::None;
             bool relmouse = _game->relativeMouseMode();
@@ -399,6 +418,16 @@ int Engine::run() {
             setRelativeMouseMode(relmouse);
             _profiler->update(frameTime);
         });
+        if (_options.dedicated.enabled) {
+            // No rendering and no audio: a dedicated host only simulates. Sleep off the rest of the frame.
+            frameperf::endFrame();
+            auto spent = std::chrono::microseconds(static_cast<int64_t>(clock.micros() - ticks));
+            constexpr auto kFrame = std::chrono::microseconds(1000000 / 60);
+            if (spent < kFrame) {
+                std::this_thread::sleep_for(kFrame - spent);
+            }
+            continue;
+        }
         _profiler->measure(kMainThreadName, kProfilerRenderGraphicsTimeIndex, [this, &quit]() {
             frameperf::Scope renderScope(frameperf::Phase::Render);
             _services->graphics.statistic.resetDrawCalls();
@@ -425,7 +454,71 @@ int Engine::run() {
     }
 
     imguiShutdown();
-    return 0;
+    return _exitCode;
+}
+
+void Engine::initDedicated() {
+    auto &settings = _options.dedicated;
+    // The backend runs console commands (newgame, warp) the way a command file does.
+    _dedicatedBackend = std::make_unique<DedicatedGameBackend>(*_game, [this](const std::string &command) {
+        return _console->execute(command);
+    });
+    _dedicated = std::make_unique<DedicatedHost>(settings, *_dedicatedBackend);
+    // On the control port: `dedicated players`, `dedicated kick 3`, `dedicated save`, `dedicated shutdown`.
+    _console->registerCommand("dedicated", "dedicated host admin: dedicated [help|status|players|kick <id|name>|save|shutdown]", [this](const auto &args) {
+        std::string line;
+        for (size_t i = 1; i < args.size(); ++i) {
+            line += (i > 1 ? " " : "") + std::string(*args[i]);
+        }
+        auto reply = executeDedicatedAdmin(*_dedicated, line.empty() ? "help" : line);
+        for (const auto &text : reply.lines) {
+            _console->printLine(text);
+        }
+        if (!reply.ok) {
+            throw std::runtime_error("dedicated: command failed");
+        }
+    });
+    if (settings.adminStdin) {
+        // std::getline blocks, so the reader is a thread that hands lines over. It
+        // is detached: at exit it may still be waiting on a terminal nobody types in.
+        _adminQueue = std::make_shared<ControlQueue>();
+        std::thread([queue = _adminQueue]() {
+            std::string line;
+            while (std::getline(std::cin, line)) {
+                if (!line.empty()) {
+                    queue->push(line);
+                }
+            }
+        }).detach();
+    }
+    installDedicatedSignalHandlers();
+    info("Dedicated host: Free Mode on UDP port " + std::to_string(settings.port) + ", up to " + std::to_string(settings.maxPlayers) +
+         " players, save slot " + std::to_string(settings.saveSlot) + ", autosave " +
+         (settings.autosaveSeconds > 0.0 ? std::to_string(static_cast<int>(settings.autosaveSeconds)) + " s" : std::string("off")));
+}
+
+void Engine::runAdminLine(const std::string &line, bool toStdout) {
+    auto reply = executeDedicatedAdmin(*_dedicated, line);
+    if (toStdout) {
+        for (const auto &text : reply.lines) {
+            std::cout << text << std::endl;
+        }
+    }
+}
+
+void Engine::processDedicated(double dt, bool &quit) {
+    if (_adminQueue) {
+        while (auto request = _adminQueue->pop()) {
+            runAdminLine(request->command, true);
+        }
+    }
+    _dedicated->update(dt);
+    if (_dedicated->finished()) {
+        if (_dedicated->failed()) {
+            _exitCode = 4;
+        }
+        quit = true;
+    }
 }
 
 void Engine::initAutomationCommands() {

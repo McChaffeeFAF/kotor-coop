@@ -839,6 +839,7 @@ void Game::initConsole() {
     registerConsoleCommand("guidump", "print named controls of the current screen: guidump <tag>...", &Game::consoleGuiDump);
     registerConsoleCommand("guishow", "show or hide a control of the current screen: guishow <tag> 0|1", &Game::consoleGuiShow);
     registerConsoleCommand("key", "press a key as the keyboard does (keymap applies): key <name> [down|up]", &Game::consoleKey);
+    registerConsoleCommand("pointer", "move the mouse pointer as the mouse does: pointer <x> <y> [middle]", &Game::consolePointer);
     registerConsoleCommand("options", "open an options page over the in-game Options, as its button does: options [status|open <panel>|back]", &Game::consoleOptions);
 
     registerConsoleCommand("setglobal", "set a global as a script does: setglobal number|boolean <name> <value>", &Game::consoleSetGlobal);
@@ -1012,6 +1013,9 @@ bool Game::handle(const input::Event &rawEvent) {
     // In the world, keys go through the player's bindings (keymap.2da
     // defaults): an action the game performs, or the key the existing
     // handlers expect for it (design note p1_ui, "Key bindings").
+    if (handleChatInput(rawEvent)) {
+        return true;
+    }
     input::Event event = rawEvent;
     bool keyEvent = event.type == input::EventType::KeyDown || event.type == input::EventType::KeyUp;
     if (keyEvent && !_movie && _screen == Screen::InGame && _cameraType == CameraType::ThirdPerson) {
@@ -1134,6 +1138,13 @@ void Game::update(float frameTime) {
     float frameDt = frameTime * _gameSpeed;
     if (_coop) {
         _coop->pollNetwork();
+    }
+    if (_chatInput.isOpen() && (!_coop || _screen != Screen::InGame || _movie)) {
+        // A conversation, a menu or the session ending takes the chat line away.
+        _chatInput.close();
+        if (_coop) {
+            _coop->chatLog().setOpen(false);
+        }
     }
     if (_coopRecord) {
         recordCoopState(frameTime);
@@ -1595,10 +1606,16 @@ bool Game::handleDeveloperKeyDown(const input::KeyEvent &event) {
 
 bool Game::handleMouseMotion(const input::MouseMotionEvent &event) {
     _pointer->setPosition({event.x, event.y});
+    _cursorPosition = {event.x, event.y};
     return false;
 }
 
 bool Game::handleMouseButtonDown(const input::MouseButtonEvent &event) {
+    if (event.button == input::MouseButton::Middle && _coop && !_movie && _screen == Screen::InGame) {
+        // Co-op: the middle button pings, as the CoopPing key does.
+        pingAtCursor();
+        return true;
+    }
     if (event.button != input::MouseButton::Left) {
         return false;
     }
@@ -7093,6 +7110,23 @@ void Game::consoleShowPopup(const ConsoleArgs &args) {
 
     std::shared_ptr<Texture> icon;
     std::string_view iconResRef(args[1].value());
+    if (iconResRef.rfind("buttons:", 0) == 0) {
+        // Harness capture of the stacked-button layouts: buttons:confirm (OK +
+        // Cancel) or buttons:0..4 (the death screen's choices).
+        std::string mode(iconResRef.substr(8));
+        std::string message = joinConsoleArgs(args, 2);
+        if (boost::iequals(mode, "confirm")) {
+            _confirmPopup->showConfirm(message, []() {});
+            return;
+        }
+        int count = std::clamp(std::atoi(mode.c_str()), 0, 4);
+        std::vector<ConfirmPopup::Choice> choices;
+        for (int i = 1; i <= count; ++i) {
+            choices.push_back({"Choice " + std::to_string(i), []() {}});
+        }
+        _confirmPopup->showChoices(message, std::move(choices));
+        return;
+    }
     if (!boost::iequals(iconResRef, "none")) {
         icon = _services.resource.textures.get(std::string(iconResRef), TextureUsage::GUI);
     }
@@ -7463,8 +7497,12 @@ void Game::consoleKillRoom(const ConsoleArgs &args) {
     auto leader = party().getLeader();
     bool killEnemies = &*target == &*leader;
 
+    // Tenants are ordered by address; kill them in id order so the deaths
+    // (and the scripts they fire) happen in the same order on every run.
+    std::vector<Object *> tenants(room->tenants().begin(), room->tenants().end());
+    std::sort(tenants.begin(), tenants.end(), [](const Object *a, const Object *b) { return a->id() < b->id(); });
     SmallSet<Creature *, 16> targets;
-    for (Object *object : room->tenants()) {
+    for (Object *object : tenants) {
         Creature *creature = dyn_cast<Creature>(object);
         if (!creature || creature->isDead()) {
             continue;

@@ -71,6 +71,9 @@ public:
     void update(float dt) override;
     void render() override;
 
+    /** The overwrite/delete confirmation, while it is up, takes the input. */
+    PresentationGUI *inputPage() override;
+
     friend class TestGameModule;
 
 private:
