@@ -58,6 +58,7 @@ struct Options {
         std::string slot;
         // Host options (co-op design notes)
         bool hostOnlyTransitions {false}; // --coop-host-only-transitions
+        bool hostOnlyScenes {true};       // --coop-host-only-scenes
         bool hostOnlyTrading {false};     // --coop-host-only-trading
         bool noPause {false};             // --coop-no-pause
         float pauseCooldown {0.0f};       // --coop-pause-cooldown <seconds>

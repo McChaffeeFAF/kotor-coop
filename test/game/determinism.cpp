@@ -548,8 +548,8 @@ Trace minigameTicks(uint32_t seed, size_t shuffle) {
     spec.lateralAccel = 300.0f;
     spec.useInertia = true;
     spec.player.models = {{"v_superbike", true}};
-    spec.player.hitPoints = 400;
-    spec.player.maxHitPoints = 400;
+    spec.player.hitPoints = 100000;
+    spec.player.maxHitPoints = 100000;
     spec.player.sphereRadius = 3.0f;
     spec.player.invincePeriod = 0.3f;
     spec.player.accelSecs = 25.0f;
@@ -605,6 +605,8 @@ Trace minigameTicks(uint32_t seed, size_t shuffle) {
             session.setPlayerSpeed(session.playerSpeed() * 1.05f);
         }
         player->invulnerableTime = player->invincePeriod;
+        // A lasting consequence of the roll: the speed boost saturates at the cap.
+        session.changeHitPoints(*player, -randomInt(1, 50));
         if (auto pad = session.actorByObjectId(player->lastFollowerHit)) {
             session.changeHitPoints(*pad, -100);
         }

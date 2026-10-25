@@ -108,6 +108,14 @@ private:
      * it until another authored animation replaces it or the dialogue ends.
      */
     std::vector<RuntimeObjectRef<Creature>> _heldCutParticipants;
+    /**
+     * Every creature this conversation set talking and has not stopped. The
+     * reply list makes the player character the speaker without stopping
+     * the entry's speaker, so stopping only the previous speaker left an NPC
+     * talking (talk clips over walk and run) after the conversation ended.
+     */
+    std::vector<RuntimeObjectRef<Creature>> _talkers;
+    void stopTalkers(const std::shared_ptr<Object> &except = nullptr);
     std::vector<RuntimeObjectRef<Creature>> _sceneUnequipped;
 
     void hideSceneEquipment(const std::shared_ptr<Creature> &creature);

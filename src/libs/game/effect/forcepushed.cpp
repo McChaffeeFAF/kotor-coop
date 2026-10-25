@@ -18,6 +18,7 @@
 #include "reone/system/portablemath.h"
 #include "reone/game/effect/forcepushed.h"
 
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -35,6 +36,7 @@ bool ForcePushedEffect::push(
         return false;
     }
     if (!ignoreImmunity && creature.hasEffectImmunity(ImmunityType::Knockdown, versus)) {
+        addEffectImmunityFeedback(creature.game(), versus, creature, ImmunityType::Knockdown);
         return false;
     }
     const glm::vec3 origin(creature.position());

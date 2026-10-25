@@ -1,171 +1,125 @@
-# KotOR co-op engine (a reone fork)
+# KotOR Co-op
 
-**Based on [reone](https://github.com/seedhartha/reone) by seedhartha and contributors. Licence: GPL-3.0.**
+Play Star Wars: Knights of the Old Republic's campaign online with friends. KotOR Co-op
+is a fan-made, open-source engine based on [reone](https://github.com/seedhartha/reone)
+(GPL-3.0). It plays the game from your own installed copy and adds host-authoritative
+co-op: friends join your game by IP address and take over your companions, or bring
+characters of their own.
 
-An open-source engine for Star Wars: Knights of the Old Republic that adds online co-op
-to the KotOR campaign. It is a fork of reone, the free and open-source re-implementation
-of the Odyssey engine: the game logic, rendering and interface run in this code, and the
-game's data (models, textures, scripts, dialogue) is read from your own installs. Friends
-can take over your companions (Story Mode) or bring their own characters (Free Mode).
-Developers can build on it: see [docs/BUILDING.md](docs/BUILDING.md),
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+## Download and play
+
+1. Download the latest release from
+   **[Releases](https://github.com/McChaffeeFAF/kotor-coop/releases)** and unzip it
+   anywhere (not inside your game folder).
+2. Double-click **Play KotOR Co-op.cmd**. The first time, it finds your game installs by
+   itself (Steam, including libraries on other drives, and GOG). If it can't, click
+   *Change...* and pick the folder that has `swkotor.exe`.
+3. Choose *Play solo*, *Host a co-op game* or *Join by IP:port*.
+
+The first time, Windows may warn that `engine.exe` is an unrecognised app (it is not
+code-signed): click *More info*, then *Run anyway*. Allow it through Windows Firewall
+when asked, or co-op cannot connect. On Linux, run `./play.sh` from the Linux package
+instead.
+
+**What you need**
+
+- **Your own copy of Star Wars: Knights of the Old Republic**, ideally the Steam version
+  (other versions such as GOG may work but are untested). No game files are included or
+  downloaded; the engine reads your install and never changes it.
+- **Knights of the Old Republic II is optional.** If you have it installed, the engine
+  can use its interface look, and merges KotOR II's feats, Force powers and classes into
+  the KotOR campaign.
+
+## Host and join by IP
+
+- **Host:** click *Host a co-op game*, then start a new game or load a save. You host on
+  **UDP port 27015**. For friends outside your home network, **forward UDP 27015** on
+  your router to your PC and allow `engine.exe` through your firewall. Then send them
+  your **public IP** address and the port, for example `203.0.113.7:27015`.
+- **Join:** type the host's IP:port into the launcher and click *Join by IP:port*. An
+  address without a port uses 27015.
+- **Same network (LAN):** use the host's local IP address (for example `192.168.1.10`);
+  no port forwarding is needed.
+- When someone connects, the host gets an **Accept / Decline** prompt.
+
+**Story Mode** takes up to 3 players: the host plays the main character and friends take
+over companions. **Free Mode** takes up to 8 players, each with their own character.
+
+## Known issues
+
+This is an alpha. Known problems in v0.5.0:
+
+- **Endar Spire, first room door with a guest playing Trask:** if a guest controls Trask,
+  the door out of the first room may not open. Workaround: the guest leaves the session,
+  the host takes control of Trask and opens the door, then the guest rejoins.
+- **KotOR II tables for guest stand-ins** aren't written yet: in a KotOR II game a guest
+  with no free companion plays a copy of the host's character.
+- **Free Mode map:** a guest exploring a different area from the host doesn't reveal that
+  area's map.
+- **Gamepad support** is lightly tested.
+- All players must run the same version (network protocol 14).
+
+## Reporting bugs
+
+- Open an issue on **[GitHub Issues](https://github.com/McChaffeeFAF/kotor-coop/issues)**
+  with the *Bug report* template.
+- Right after the problem happens, click *Report a bug* in the launcher (or run
+  **ReportBug.cmd**; `./report-bug.sh` on Linux). It packs the game's log, the co-op
+  recording and your settings (no game files, no saves) into the `reports` folder.
+  Attach that file to the issue.
+- Questions and ideas: use
+  **[Discussions](https://github.com/McChaffeeFAF/kotor-coop/discussions)**.
 
 ## Features
 
-- **Host-authoritative co-op.** The host runs the game; guests send commands and draw
-  what the host sends. Story Mode takes up to 3 players (the host and two guests playing
-  companions), Free Mode up to 8, each guest with their own character.
-- **Connect by IP:port** over UDP (port 27015 by default); no account or server needed.
-- **Co-op chat and pings**, shown on the K1 and K2 HUDs.
+- **Host-authoritative co-op**: the host runs the game, and guests send what they do and
+  see the host's world. Story Mode up to 3 players, Free Mode up to 8.
+- **Connect by IP:port** over UDP; no account or server needed.
+- **Co-op chat and pings.**
 - **Dedicated host**: `engine --dedicated` runs a Free Mode session with no local player
   ([docs/dedicated_host.md](docs/dedicated_host.md)).
-- **K2 systems in K1**: with a KotOR II install, KotOR II's feats, Force powers and
-  prestige classes are merged into the KotOR campaign, read at run time from your install.
-- **Enhanced graphics**, each effect switchable: bloom, soft shadows, ambient occlusion,
-  tone mapping, reflections and locally generated Surface Detail maps. A fresh install
-  starts with a tuned selection of them on; the original look is one setting away.
-- **Headless test harness**: unit tests with synthetic data, a fixed-step deterministic
-  simulation, and a localhost control port for scripted runs ([docs/TESTING.md](docs/TESTING.md)).
-- **Linux and Steam Deck**: finds Steam (including extra libraries and Flatpak), GOG,
-  Heroic and Lutris installs, with Steam Deck screen defaults.
+- **KotOR II systems in KotOR** (optional, with a KotOR II install): KotOR II's feats,
+  Force powers and prestige classes in the KotOR campaign.
+- **Enhanced graphics**: bloom, soft shadows, ambient occlusion, tone mapping,
+  reflections and more, each effect switchable in *Options > Graphics*. A fresh install
+  starts with a tuned selection on, and the Retail preset gives the original look.
+  *Surface Detail* maps can be generated on your PC from your own textures
+  ([docs/texgen.md](docs/texgen.md)).
+- **Gamepad support** with rebinding ([docs/gamepad.md](docs/gamepad.md)).
+- **Linux and Steam Deck**: finds Steam (including Flatpak), GOG, Heroic and Lutris
+  installs.
+
+## Building from source
+
+CMake and a C++17 compiler on Windows (Visual Studio and vcpkg) or Linux. See
+**[docs/BUILDING.md](docs/BUILDING.md)**. The unit tests need no game files
+([docs/TESTING.md](docs/TESTING.md)). How the engine and co-op are put together:
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/COOP.md](docs/COOP.md).
+Contributions are welcome: see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Credits
+
+This project builds on the work of:
+
+- **reone** by seedhartha and its contributors, the engine this project is based on;
+- the **modawan** fork, whose commits form a large part of this tree;
+- the forks and ports credited in [CONTRIBUTORS](CONTRIBUTORS);
+- contributors to this project, including **BruhfessorX** (packaging fixes).
+
+Thank you to all of them. The full list is in [CONTRIBUTORS](CONTRIBUTORS).
 
 ## This is a fan project
 
-This is an unofficial, non-commercial fan project. It is not affiliated with,
-endorsed by or connected to Lucasfilm, Disney, BioWare, Aspyr or Electronic Arts.
-Star Wars, Knights of the Old Republic and related names are trademarks of their
-respective owners.
+This is an unofficial, non-commercial fan project. It is not affiliated with, endorsed
+by or connected to Lucasfilm, Disney, BioWare, Aspyr or Electronic Arts. Star Wars,
+Knights of the Old Republic and related names are trademarks of their respective
+owners. You need your own, legally obtained copy of the game. This repository contains
+no game files.
 
-**You need your own, legally obtained copies of Knights of the Old Republic and
-Knights of the Old Republic II.** This repository contains no game files, and none
-are ever downloaded: the engine reads the data files from your own installs and
-never changes them. KotOR II's install is used for its interface and systems.
-
-
-**Target platform:** this project is intended for the **Steam versions** of Star Wars:
-Knights of the Old Republic and Knights of the Old Republic II. Other versions (GOG,
-retail discs) may work but are untested.
+Licence: GPL-3.0, see [COPYING](COPYING). Source files keep their copyright headers.
 
 ## How this was made
 
 The engine's behaviour was matched using public file-format documentation, observation
 of the original games, and clean-room research notes. No original game code or assets
-are included or distributed. This is an unofficial fan project.
-
-## Building
-
-The build uses CMake (3.16 or newer) and a C++17 compiler. The executables land in
-`build/bin`: `engine` is the game, `texgen` the enhanced-texture generator and
-`tests` the unit tests.
-
-### Windows
-
-Visual Studio 2022 or newer with the C++ workload, and
-[vcpkg](https://github.com/microsoft/vcpkg) for the libraries:
-
-```
-vcpkg install --triplet x64-windows boost-program-options boost-json boost-format ^
-    boost-algorithm boost-tokenizer sdl3 gtest libmad openal-soft ^
-    ffmpeg gamenetworkingsockets openssl protobuf
-cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake ^
-    -DBUILD_TOOLKIT=OFF -DBUILD_LAUNCHER=OFF
-cmake --build build --config Release --parallel
-```
-
-The toolkit and the old launcher need wxWidgets; turn them on only if you have it.
-
-### Linux
-
-On Ubuntu 24.04, `tools/cloud/linux_deps.sh` installs the packages and builds the
-two libraries Ubuntu does not package (SDL3 and GameNetworkingSockets). Then:
-
-```
-source tools/cloud/linux_deps.sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLKIT=OFF -DBUILD_LAUNCHER=OFF
-cmake --build build
-```
-
-Other distributions need the same libraries: Boost, SDL3, GoogleTest, libmad, OpenAL,
-FFmpeg and GameNetworkingSockets (with OpenSSL and Protobuf).
-
-### Tests
-
-Run `tests` from `build/bin` (with Visual Studio, `build\bin\Release` or `build\bin`,
-depending on the generator). The unit tests use synthetic data only and need no game
-files. The integration probes used during development drive a real game install and are
-not part of this repository; comments that mention a "design note" refer to development
-notes that are not included either.
-
-## Playing
-
-### The launcher
-
-`tools/package/make_tester_package.ps1` (Windows) and `tools/package/make_linux_package.sh`
-(Linux) build a portable folder with the engine and its libraries, and no game files.
-In it, run **Play KotOR Co-op.cmd** (Windows) or **./play.sh** (Linux). The first time it
-finds your KotOR and KotOR II installs (Steam first, GOG too); if it can't, pick the folders
-yourself. The Steam versions are the intended target; other versions (GOG, retail discs)
-may work but are untested. Then choose Host, Join or Play solo.
-
-You can also run the engine directly:
-
-```
-engine --game <KotOR folder> --k2game <KotOR II folder>
-```
-
-### Host and join by IP:port
-
-Co-op connects players directly over UDP.
-
-- **Host:** click *Host a co-op game* (or run `engine --host`), then start a new game or
-  load a save. You listen on **UDP port 27015** (`--host <port>` picks another).
-  Friends outside your home network need that port forwarded: **forward UDP 27015 on
-  your router to your PC**, then share your public IP address and the port, for example
-  `203.0.113.7:27015`. Allow the engine through your firewall the first time.
-- **Join:** type the host's IP:port into the launcher and click *Join by IP:port*, or use
-  *Co-op > Join by IP:port* on the main menu (or `engine --join 203.0.113.7:27015`). A
-  bare IP or host name (launcher, Co-op screen and `--join`) gets port 27015.
-
-When someone connects, the host gets an Accept / Decline prompt. Players on the same
-network can use the host's local IP and need no forwarding.
-
-An optional join-code service is in `tools/coopserver` for anyone who wants to run their
-own (`coop-server=your.server:27200` in reone.cfg, or `-Server` / `--server` when
-packaging). With it, the host gets a short join code instead and no port forwarding is
-needed. Builds do not use one unless it is configured.
-
-### Enhanced graphics
-
-*Options > Graphics > Enhanced Graphics* (or `enhanced=1` in reone.cfg) turns on bloom, SMAA, soft shadows, ambient occlusion, tone mapping, eye
-adaptation, soft particles, reflections, lightsaber glow, conversation depth of field and
-Surface Detail. Each effect can also be toggled on its own (*Options > Graphics >
-Advanced*). A fresh install, with no saved settings, starts with a tuned selection of
-these effects on; setting the Enhanced Graphics box to off (the Retail preset) gives the
-original look, and the options pages' Default button returns to the tuned selection.
-
-### Surface Detail
-
-Surface Detail adds normal and material maps that are generated on your own PC from your
-own KotOR textures. Click *Generate enhanced textures* in the launcher, or run:
-
-```
-texgen --game <KotOR folder> --out enhanced_textures
-```
-
-The maps land in `enhanced_textures` beside the engine, which picks them up the next time
-you play. They are derived from the game's textures, so they stay on your PC: never
-commit, upload or share them. See [docs/texgen.md](docs/texgen.md).
-
-## Licence and credits
-
-GPL-3.0: see [COPYING](COPYING). Source files keep their copyright headers.
-
-This project builds on the work of:
-
-- **reone** by seedhartha and its [contributors](CONTRIBUTORS), the engine this fork
-  is based on;
-- the **modawan** fork, whose commits form a large part of this tree;
-- work that came in through forks and ports, credited in [CONTRIBUTORS](CONTRIBUTORS) and
-  in the original commit messages.
-
-Thank you to all of them.
+are included or distributed.

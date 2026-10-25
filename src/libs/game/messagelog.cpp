@@ -36,6 +36,10 @@ void MessageLog::addDialog(const std::string &speaker, const std::string &text) 
 }
 
 void MessageLog::add(uint32_t type, Style style, std::string text) {
+    // A line without text (a talk-table row the game does not ship) is not written.
+    if (text.empty()) {
+        return;
+    }
     while (_entries.size() >= kMaxEntries) {
         _entries.pop_front();
     }

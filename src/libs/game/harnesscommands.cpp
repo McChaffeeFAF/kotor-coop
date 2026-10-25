@@ -24,7 +24,9 @@
 #include "reone/game/effect/visual.h"
 #include "reone/game/visualeffects.h"
 #include "reone/game/game.h"
+#include "reone/graphics/preset.h"
 #include "reone/game/gui/chargen.h"
+#include "reone/game/gui/confirmpopup.h"
 #include "reone/resource/k2merge.h"
 #include "reone/game/d20/prestige.h"
 #include "reone/game/crafting.h"
@@ -453,6 +455,56 @@ void Game::consoleClick(const ConsoleArgs &args) {
     report(prefix + " -> " + outcome);
 }
 
+void Game::consoleTargetMenu(const ConsoleArgs &args) {
+    HarnessArgs parsed(args);
+    parsed.requireKnown({"pick"});
+    if (parsed.positional.size() != 1 || parsed.actor) {
+        throw std::runtime_error("Usage: targetmenu id|tag [pick=N]");
+    }
+    auto mod = module();
+    if (!mod || !mod->area()) {
+        throw std::runtime_error("Module is not loaded");
+    }
+    auto object = findConsoleObject(parsed.positional[0]);
+    auto leader = getConsoleLeader();
+    // The menu SelectionOverlay builds for the leader on this object.
+    auto actions = mod->getContextActions(object);
+    std::string line = str(boost::format("targetmenu %s id=%u leader=%s count=%u") % object->tag() % object->id() %
+                           leader->tag() % actions.size());
+    for (size_t i = 0; i < actions.size(); ++i) {
+        const auto &a = actions[i];
+        line += str(boost::format(" [%u] %s") % i % describeActionType(a.type));
+        if (a.type == ActionType::UseSkill) {
+            line += ":" + std::to_string(static_cast<int>(a.skill));
+        }
+    }
+    if (auto pick = parsed.named.find("pick"); pick != parsed.named.end()) {
+        size_t index = static_cast<size_t>(std::stoul(pick->second));
+        if (index >= actions.size()) {
+            throw std::runtime_error("No menu entry " + pick->second);
+        }
+        const auto &a = actions[index];
+        mod->area()->selectObject(object);
+        if (_coop && _coop->clientContextAction(a, object)) {
+            line += " -> sent to the host";
+        } else if (a.type == ActionType::UseSkill) {
+            auto action = newAction<UseSkillAction>(a.skill, object);
+            action->setUserAction(true);
+            leader->addAction(std::move(action));
+            line += " -> UseSkillAction";
+        } else if (a.type == ActionType::AttackObject) {
+            auto action = newAction<AttackObjectAction>(object);
+            action->setUserAction(true);
+            leader->addAction(std::move(action));
+            line += " -> AttackObjectAction";
+        } else {
+            throw std::runtime_error("targetmenu picks a skill or an attack only");
+        }
+    }
+    _console.printLine(line);
+    info(line);
+}
+
 void Game::consoleCancelCombat(const ConsoleArgs &args) {
     HarnessArgs parsed(args);
     parsed.requireKnown({});
@@ -475,8 +527,32 @@ void Game::consoleAutoCombat(const ConsoleArgs &args) {
     }
     auto actor = findConsoleActor(parsed.actor);
     bool on = parsed.positional.empty() ? !actor->autoCombat() : parsed.positional[0] != "0";
-    setAutoCombat(*actor, on);
+    if (_coop && _coop->isClient() && actor == _party.getLeader()) {
+        // A co-op client: the HUD toggle's request to the host.
+        if (on != actor->autoCombat()) {
+            toggleLeaderAutoCombat();
+        }
+    } else {
+        setAutoCombat(*actor, on);
+    }
     std::string line = str(boost::format("autocombat id=%u tag=%s on=%d") % actor->id() % actor->tag() % on);
+    _console.printLine(line);
+    info(line);
+}
+
+void Game::consoleStealth(const ConsoleArgs &args) {
+    HarnessArgs parsed(args);
+    parsed.requireKnown({});
+    if (parsed.positional.size() > 1) {
+        throw std::runtime_error("Usage: stealth [1|0] [@id|tag]");
+    }
+    auto actor = findConsoleActor(parsed.actor);
+    bool on = parsed.positional.empty() ? !actor->isStealthed() : parsed.positional[0] != "0";
+    auto refusal = on && !actor->isStealthed() ? stealthRefusal(*actor) : stealth::Refusal::None;
+    bool ok = requestStealth(*actor, on, StealthAsk::AssumeYes);
+    std::string line = str(boost::format("stealth id=%u tag=%s want=%d on=%d ok=%d refusal=%d solo=%d") % actor->id() %
+                           actor->tag() % on % actor->isStealthed() % ok % static_cast<int>(refusal) %
+                           _party.isSoloMode());
     _console.printLine(line);
     info(line);
 }
@@ -1488,7 +1564,10 @@ void Game::consoleGuiClick(const ConsoleArgs &args) {
     if (parsed.positional.size() != 1) {
         throw std::runtime_error("Usage: guiclick <control tag> [clicks=1|2] [row=<n> [gap=<px>]]");
     }
-    auto gui = getScreenGUI();
+    // A confirmation pop-up that is up takes the clicks (Game::handle sends
+    // them to it first): its buttons are what the mouse would hit.
+    bool onPopup = _confirmPopup && _confirmPopup->isVisible();
+    GameGUI *gui = onPopup ? static_cast<GameGUI *>(_confirmPopup.get()) : getScreenGUI();
     if (!gui) {
         throw std::runtime_error("guiclick: the current screen has no GUI");
     }
@@ -1645,7 +1724,12 @@ void Game::consoleOptions(const ConsoleArgs &args) {
                            str(boost::format(" music=%d voice=%d sound=%d movie=%d difficulty=%d radius=%.1f fixedbar=%d") %
                                _options.audio.musicVolume % _options.audio.voiceVolume % _options.audio.soundVolume %
                                _options.audio.movieVolume % static_cast<int>(_options.game.clientDifficulty) %
-                               _selectionRadius % (_fixedActionBar ? 1 : 0));
+                               _selectionRadius % (_fixedActionBar ? 1 : 0)) +
+                           str(boost::format(" smart=%d grass=%d shadows=%d vsync=%d bloom=%d gtao=%d sharpen=%d aa=%d") %
+                               (_options.game.smartCompanions ? 1 : 0) % (_options.graphics.grass ? 1 : 0) %
+                               (_options.graphics.shadows ? 1 : 0) % (_options.graphics.vsync ? 1 : 0) %
+                               (_options.graphics.bloom ? 1 : 0) % (_options.graphics.gtao ? 1 : 0) %
+                               (_options.graphics.sharpen ? 1 : 0) % static_cast<int>(graphics::antiAliasing(_options.graphics)));
         _console.printLine(line);
         info(line);
         return;

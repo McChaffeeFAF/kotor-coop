@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// Text in fonts: UTF-8 in, glyphs of the install's code page out (docs/international_installs.md).
+// Text in fonts: UTF-8 in, glyphs of the install's code page out (docs/dev/international_installs.md).
 
 #include <gtest/gtest.h>
 

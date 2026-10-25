@@ -50,6 +50,10 @@ void reone::game::TestGameModule::loadAreaBehaviourFlags(Area &area, const resou
     area.loadBehaviourFlags(are);
 }
 
+void reone::game::TestGameModule::loadAreaFlagsFromGit(Area &area, const resource::Gff &gff) {
+    area.loadFlagsFromGit(gff);
+}
+
 namespace {
 
 // Locals the probe scripts below write their observations to.
@@ -559,6 +563,46 @@ TEST_F(GateG2Test, unescapable_is_loaded_from_the_are_and_read_by_the_routine) {
     are.Unescapable = 0;
     TestGameModule::loadAreaBehaviourFlags(*_area, are);
     EXPECT_FALSE(_area->isUnescapable());
+}
+
+// The game keeps the area flags in the GIT's AreaProperties.
+TEST_F(GateG2Test, area_flags_are_read_from_the_git_area_properties) {
+    auto properties = Gff::Builder()
+                          .type(100)
+                          .field(Gff::Field::newByte("Unescapable", 1))
+                          .build();
+    auto git = Gff::Builder()
+                   .type(0xffffffff)
+                   .field(Gff::Field::newStruct("AreaProperties", std::move(properties)))
+                   .build();
+    EXPECT_FALSE(_area->isUnescapable());
+    TestGameModule::loadAreaFlagsFromGit(*_area, *git);
+    EXPECT_TRUE(_area->isUnescapable());
+
+    // The GIT's value wins over the ARE's.
+    resource::generated::ARE are;
+    are.Unescapable = 0;
+    TestGameModule::loadAreaBehaviourFlags(*_area, are);
+    TestGameModule::loadAreaFlagsFromGit(*_area, *git);
+    EXPECT_TRUE(_area->isUnescapable());
+}
+
+// A save of an older build kept Unescapable in the ARE and none in the GIT.
+TEST_F(GateG2Test, area_flags_of_an_older_save_still_come_from_the_are) {
+    resource::generated::ARE are;
+    are.Unescapable = 1;
+    TestGameModule::loadAreaBehaviourFlags(*_area, are);
+    auto bareGit = Gff::Builder().type(0xffffffff).build();
+    TestGameModule::loadAreaFlagsFromGit(*_area, *bareGit);
+    EXPECT_TRUE(_area->isUnescapable());
+
+    auto emptyProperties = Gff::Builder().type(100).build();
+    auto git = Gff::Builder()
+                   .type(0xffffffff)
+                   .field(Gff::Field::newStruct("AreaProperties", std::move(emptyProperties)))
+                   .build();
+    TestGameModule::loadAreaFlagsFromGit(*_area, *git);
+    EXPECT_TRUE(_area->isUnescapable());
 }
 
 TEST_F(GateG2Test, area_flags_interior_areas_have_no_weather) {

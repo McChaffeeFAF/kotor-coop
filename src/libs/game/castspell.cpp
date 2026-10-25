@@ -105,7 +105,7 @@ SpellSchedule::State SpellSchedule::update(
         break;
     }
     case SpellSchedule::WaitFinish: {
-        if (round.state == CombatRound::Finished) {
+        if (round.hasEnded(action)) {
             _state = SpellSchedule::Finish;
         }
         break;

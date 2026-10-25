@@ -23,7 +23,11 @@
 #include "../fixtures/engine.h"
 
 #include "reone/game/action/closedoor.h"
+#include "reone/game/coopreplication.h"
 #include "reone/game/action/attackobject.h"
+#include "reone/game/action/useskill.h"
+#include "reone/game/combat.h"
+#include "reone/system/randomutil.h"
 #include "reone/game/action/movetolocation.h"
 #include "reone/game/action/movetoobject.h"
 #include "reone/game/action/movetopoint.h"
@@ -1787,6 +1791,54 @@ TEST(DialogGUI, should_preserve_cut_band_precedence_for_k1_direct_rows) {
     EXPECT_CALL(engine.resourceModule().twoDas(), get("dialoganimations")).Times(0);
 
     MixedStuntTestAccess::updateAnimationsForEntry(gui, entry);
+}
+
+// alpha-0.4.5: Trask talks (end_trask01 E54) as he runs in, then stops. The
+// run he stopped went on looping, footsteps and all, under the talk clips, and
+// a co-op client was sent the head's talk clip alone and showed his bind pose.
+TEST(Creature, a_talking_creature_that_stops_running_drops_the_run_and_replicates_its_body_clip) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game(GameID::KotOR, "", engine.options(), engine.services(), console);
+    DialogAnimScene scene(engine);
+    auto model = makeModel("trask_body", {makeAnimation("crun", {{0.25f, "snd_footstep"}}), makeAnimation("cpause1"),
+                                          makeAnimation("tlknorm"), makeAnimation("talk")});
+    auto trask = scene.newCreature(game, engine, 1, "end_trask", model);
+    auto node = modelNodeOf(trask);
+    auto names = [&node]() {
+        std::vector<std::string> result;
+        for (const auto &channel : node->animationChannels()) {
+            result.push_back(channel.anim->name());
+        }
+        return result;
+    };
+    auto has = [&](const std::string &name) {
+        auto all = names();
+        return std::find(all.begin(), all.end(), name) != all.end();
+    };
+
+    trask->startTalking(nullptr);
+    trask->updateModelAnimation();
+    trask->setMovementType(Creature::MovementType::Run);
+    for (int i = 0; i < 5; ++i) {
+        trask->updateModelAnimation();
+        node->update(0.1f);
+    }
+    ASSERT_TRUE(has("crun"));
+    EXPECT_EQ("crun", CoopReplication::capture(*trask, "k").anim) << "the client gets the body clip, not the head's";
+
+    trask->setMovementType(Creature::MovementType::None);
+    for (int i = 0; i < 5; ++i) {
+        trask->resumeStateDrivenAnimation(); // a new line, a combat or state change
+        node->update(0.1f);
+    }
+    EXPECT_FALSE(has("crun")) << "the run he stopped does not go on underneath";
+    EXPECT_LE(node->animationChannelCount(), 3u) << "body, head talk and the talk layer at most";
+    EXPECT_EQ("tlknorm", CoopReplication::capture(*trask, "k").anim);
+
+    trask->stopTalking();
+    trask->updateModelAnimation();
+    EXPECT_EQ("cpause1", CoopReplication::capture(*trask, "k").anim);
 }
 
 TEST(DialogGUI, should_animate_the_real_player_when_an_animated_cut_authors_no_stunt_participants) {
@@ -4581,6 +4633,285 @@ TEST(CombatVisibility, retired_subject_does_not_remain_perceived) {
     EXPECT_FALSE(fixture.observer->perception().sees(strongStorage->id()));
 }
 
+// Stealth Mode (design note stealth): the game side of the rules in
+// test/game/stealth.cpp.
+namespace {
+
+std::shared_ptr<TwoDA> makeStealthBaseItemsTable() {
+    TwoDA::Builder builder;
+    builder.columns({"label", "itemtype", "maxattackrange", "crithitmult", "critthreat", "damageflags", "dietoroll",
+                     "equipableslots", "itemclass", "numdice", "weapontype", "weaponwield",
+                     "ammunitiontype", "bodyvar"});
+    // Row 0: the stealth unit (K1 row 88, belt or creature armour); row 1: a plain belt (K1 row 47).
+    builder.row({"Stealth_Unit", "44", "", "", "", "", "", "0x20400", "I_Belt", "", "", "", "", ""});
+    builder.row({"Belt", "21", "", "", "", "", "", "0x00400", "I_Belt", "", "", "", "", ""});
+    return std::shared_ptr<TwoDA>(builder.build());
+}
+
+struct StealthFixture : VisibilityFixture {
+    MockReputes &reputes = static_cast<MockReputes &>(engine.services().game.reputes);
+    std::shared_ptr<Item> unit;
+
+    StealthFixture() {
+        EXPECT_CALL(engine.resourceModule().twoDas(), get("baseitems"))
+            .Times(AnyNumber())
+            .WillRepeatedly(Return(makeStealthBaseItemsTable()));
+        EXPECT_CALL(engine.resourceModule().textures(), get(_, _)).Times(AnyNumber());
+        ON_CALL(reputes, getIsEnemy(A<const Creature &>(), A<const Creature &>())).WillByDefault(Return(true));
+        EXPECT_CALL(reputes, getIsEnemy(A<const Creature &>(), A<const Creature &>())).Times(AnyNumber());
+        game.party().addMember(kNpcPlayer, target);
+        game.party().setPlayer(target);
+        unit = makeItem(game, "g_i_belt010", 0, 1); // equipped straight from the template, as equip() wants
+        target->attributes().setSkillRank(SkillType::Stealth, 4);
+    }
+
+    void equipUnit() {
+        ASSERT_TRUE(target->equip(InventorySlots::belt, unit));
+    }
+    bool enter() {
+        return game.requestStealth(*target, true, Game::StealthAsk::NoPrompt);
+    }
+};
+
+} // namespace
+
+TEST(StealthMode, needs_an_equipped_stealth_unit_and_paid_points) {
+    StealthFixture fixture;
+    EXPECT_EQ(stealth::Refusal::Requirements, fixture.game.stealthRefusal(*fixture.target));
+    EXPECT_FALSE(fixture.enter());
+    EXPECT_FALSE(fixture.target->isStealthed());
+
+    fixture.equipUnit();
+    EXPECT_TRUE(fixture.target->hasStealthUnitEquipped());
+    fixture.target->attributes().setSkillRank(SkillType::Stealth, 0);
+    EXPECT_EQ(stealth::Refusal::Requirements, fixture.game.stealthRefusal(*fixture.target));
+
+    fixture.target->attributes().setSkillRank(SkillType::Stealth, 1);
+    EXPECT_EQ(stealth::Refusal::None, fixture.game.stealthRefusal(*fixture.target));
+    EXPECT_TRUE(fixture.enter());
+    EXPECT_TRUE(fixture.target->isStealthed());
+    EXPECT_TRUE(fixture.game.requestStealth(*fixture.target, false, Game::StealthAsk::NoPrompt));
+    EXPECT_FALSE(fixture.target->isStealthed());
+}
+
+TEST(StealthMode, a_plain_belt_is_not_a_stealth_unit) {
+    StealthFixture fixture;
+    auto belt = makeItem(fixture.game, "g_i_belt001", 1, 1);
+    ASSERT_TRUE(fixture.target->equip(InventorySlots::belt, belt));
+    EXPECT_FALSE(fixture.target->hasStealthUnitEquipped());
+    EXPECT_EQ(stealth::Refusal::Requirements, fixture.game.stealthRefusal(*fixture.target));
+}
+
+TEST(StealthMode, combat_refuses_entry_and_cancels_the_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    fixture.target->activateCombat();
+    EXPECT_EQ(stealth::Refusal::InCombat, fixture.game.stealthRefusal(*fixture.target));
+    EXPECT_FALSE(fixture.enter());
+
+    StealthFixture second;
+    second.equipUnit();
+    ASSERT_TRUE(second.enter());
+    // The stealthed creature attacks: combat cancels the field.
+    auto attack = second.game.newAction<AttackObjectAction>(second.observer);
+    second.target->addAction(attack);
+    second.game.combat().addAction(attack, *second.target);
+    EXPECT_FALSE(second.target->isStealthed());
+}
+
+TEST(StealthMode, being_attacked_by_an_enemy_cancels_the_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    ASSERT_TRUE(fixture.enter());
+    auto attack = fixture.game.newAction<AttackObjectAction>(fixture.target);
+    fixture.observer->addAction(attack);
+    fixture.game.combat().addAction(attack, *fixture.observer);
+    EXPECT_FALSE(fixture.target->isStealthed());
+}
+
+TEST(StealthMode, running_is_disabled_while_stealthed) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    ASSERT_TRUE(fixture.enter());
+    EXPECT_TRUE(fixture.target->stealthWalkOnly());
+    fixture.target->setMovementType(Creature::MovementType::Run);
+    EXPECT_EQ(Creature::MovementType::Walk, fixture.target->movementType());
+    fixture.game.requestStealth(*fixture.target, false, Game::StealthAsk::NoPrompt);
+    EXPECT_FALSE(fixture.target->stealthWalkOnly());
+    fixture.target->setMovementType(Creature::MovementType::Run);
+    EXPECT_EQ(Creature::MovementType::Run, fixture.target->movementType());
+}
+
+TEST(StealthMode, a_hostile_observer_loses_sight_until_a_check_succeeds) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    TestGameModule::updatePerception(*fixture.area);
+    ASSERT_TRUE(fixture.observer->perception().sees(fixture.target->id()));
+
+    // Stealth far above any awareness roll: never detected.
+    fixture.target->attributes().setSkillRank(SkillType::Stealth, 40);
+    ASSERT_TRUE(fixture.enter());
+    EXPECT_FALSE(fixture.observer->perception().sees(fixture.target->id()));
+    EXPECT_FALSE(fixture.observer->perception().hears(fixture.target->id()));
+    EXPECT_FALSE(fixture.area->hasDetectedStealthed(fixture.observer->id(), fixture.target->id()));
+
+    // The next pass inside 20 s does not re-check, even with a sharp observer.
+    fixture.observer->attributes().setSkillRank(SkillType::Awareness, 60);
+    fixture.area->updatePerception(1.0f);
+    EXPECT_FALSE(fixture.observer->perception().sees(fixture.target->id()));
+    // After 20 s it does, and awareness 60 beats stealth 40.
+    for (int i = 0; i < 21; ++i) {
+        fixture.area->updatePerception(1.0f);
+    }
+    EXPECT_TRUE(fixture.area->hasDetectedStealthed(fixture.observer->id(), fixture.target->id()));
+    EXPECT_TRUE(fixture.observer->perception().sees(fixture.target->id()));
+}
+
+TEST(StealthMode, a_sharp_observer_detects_at_once_and_a_friend_always_sees) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    fixture.observer->attributes().setSkillRank(SkillType::Awareness, 60);
+    ASSERT_TRUE(fixture.enter());
+    EXPECT_TRUE(fixture.area->hasDetectedStealthed(fixture.observer->id(), fixture.target->id()));
+    EXPECT_TRUE(fixture.observer->perception().sees(fixture.target->id()));
+
+    StealthFixture friendly;
+    ON_CALL(friendly.reputes, getIsEnemy(A<const Creature &>(), A<const Creature &>())).WillByDefault(Return(false));
+    friendly.equipUnit();
+    friendly.target->attributes().setSkillRank(SkillType::Stealth, 40);
+    ASSERT_TRUE(friendly.enter());
+    TestGameModule::updatePerception(*friendly.area);
+    EXPECT_TRUE(friendly.observer->perception().sees(friendly.target->id()));
+}
+
+TEST(StealthMode, the_checks_follow_the_seeded_gameplay_stream) {
+    auto run = [](uint32_t seed) {
+        setRandomSeed(seed);
+        StealthFixture fixture;
+        fixture.equipUnit();
+        fixture.target->attributes().setSkillRank(SkillType::Stealth, 2);
+        fixture.observer->attributes().setSkillRank(SkillType::Awareness, 2);
+        fixture.enter();
+        std::string trace;
+        for (int i = 0; i < 200; ++i) {
+            fixture.area->updatePerception(1.0f);
+            bool detected = fixture.area->hasDetectedStealthed(fixture.observer->id(), fixture.target->id());
+            trace += detected ? '1' : '0';
+            if (detected) {
+                fixture.area->forgetStealthChecks(fixture.target->id());
+            }
+        }
+        return trace;
+    };
+    EXPECT_EQ(run(7), run(7));
+    EXPECT_NE(std::string::npos, run(7).find('1')) << "an even contest should be won sometimes";
+}
+
+TEST(StealthMode, losing_the_unit_ends_the_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    ASSERT_TRUE(fixture.enter());
+    ASSERT_TRUE(fixture.target->takeEquippedItem(fixture.unit));
+    fixture.target->update(0.0f);
+    EXPECT_FALSE(fixture.target->isStealthed());
+}
+
+TEST(StealthMode, the_leader_with_followers_needs_solo_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    auto follower = makeMovingCreature(fixture.game, fixture.engine);
+    follower->setMaxHitPoints(10);
+    follower->setCurrentHitPoints(10);
+    fixture.area->add(follower);
+    fixture.game.party().addAvailableMember(0, follower);
+    ASSERT_TRUE(fixture.game.party().addMember(0, follower));
+    ASSERT_FALSE(follower->isDead());
+    ASSERT_EQ(fixture.target.get(), fixture.game.party().getLeader().get());
+    EXPECT_EQ(stealth::Refusal::NeedSolo, fixture.game.stealthRefusal(*fixture.target));
+    // The harness answers yes: solo mode comes on with the field.
+    EXPECT_TRUE(fixture.game.requestStealth(*fixture.target, true, Game::StealthAsk::AssumeYes));
+    EXPECT_TRUE(fixture.game.party().isSoloMode());
+    EXPECT_TRUE(fixture.target->isStealthed());
+}
+
+TEST(StealthMode, each_hostile_noticing_the_party_lowers_the_stealth_xp_pool_once) {
+    StealthFixture fixture;
+    fixture.area->setStealthXPEnabled(true);
+    fixture.area->setMaxStealthXP(500);
+    fixture.area->setCurrentStealthXP(500);
+    fixture.area->setStealthXPDecrement(125);
+    TestGameModule::updatePerception(*fixture.area);
+    EXPECT_EQ(375, fixture.area->currentStealthXP());
+    TestGameModule::updatePerception(*fixture.area);
+    EXPECT_EQ(375, fixture.area->currentStealthXP());
+    auto second = makeMovingCreature(fixture.game, fixture.engine);
+    second->setMaxHitPoints(10);
+    second->setCurrentHitPoints(10);
+    TestGameModule::setPerceptionRanges(*second, 10.0f, 10.0f);
+    second->setPosition(glm::vec3(2.0f, 0.0f, 0.0f));
+    fixture.area->add(second);
+    TestGameModule::updatePerception(*fixture.area);
+    EXPECT_EQ(250, fixture.area->currentStealthXP());
+}
+
+TEST(StealthMode, an_undetected_party_keeps_the_pool) {
+    StealthFixture fixture;
+    fixture.area->setStealthXPEnabled(true);
+    fixture.area->setMaxStealthXP(300);
+    fixture.area->setCurrentStealthXP(300);
+    fixture.area->setStealthXPDecrement(300);
+    fixture.equipUnit();
+    fixture.target->attributes().setSkillRank(SkillType::Stealth, 40);
+    ASSERT_TRUE(fixture.enter());
+    for (int i = 0; i < 30; ++i) {
+        fixture.area->updatePerception(1.0f);
+    }
+    EXPECT_EQ(300, fixture.area->currentStealthXP());
+}
+
+TEST(StealthMode, the_mode_loads_from_the_creature_record) {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game {GameID::KotOR, "", engine.options(), engine.services(), console};
+    game.initLocalServices();
+    auto creature = makeMovingCreature(game, engine);
+    EXPECT_FALSE(creature->isStealthed());
+    auto gff = Gff::Builder().field(Gff::Field::newByte("StealthMode", 1)).build();
+    creature->deserialize(*gff, SerializedIdentityContext::templateResource());
+    EXPECT_TRUE(creature->isStealthed());
+}
+
+TEST(StealthMode, is_stealthed_reports_the_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    Routines routines(GameID::TSL, &fixture.game, &fixture.engine.services());
+    routines.init();
+    script::ExecutionContext execution;
+    auto isStealthed = [&]() {
+        return routines.get(810).invoke({script::Variable::ofObject(fixture.target->id())}, execution).intValue;
+    };
+    EXPECT_EQ(0, isStealthed());
+    ASSERT_TRUE(fixture.enter());
+    EXPECT_EQ(1, isStealthed());
+}
+
+TEST(StealthMode, use_skill_stealth_toggles_the_mode) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    auto action = fixture.game.newAction<UseSkillAction>(SkillType::Stealth, nullptr, 0, nullptr);
+    action->execute(action, *fixture.target, 0.0f);
+    EXPECT_TRUE(fixture.target->isStealthed());
+    EXPECT_TRUE(action->isCompleted());
+}
+
+TEST(StealthMode, conversations_end_it_unless_the_script_keeps_it) {
+    StealthFixture fixture;
+    fixture.equipUnit();
+    ASSERT_TRUE(fixture.enter());
+    fixture.game.endStealthForConversation();
+    EXPECT_FALSE(fixture.target->isStealthed());
+}
+
 TEST(CreatureBlockedByDoor, should_record_the_door_that_obstructs_navigation) {
     BlockedDoorFixture fixture;
     auto npc = fixture.addCreature("k_def_blocked01");
@@ -6386,6 +6717,89 @@ struct HeartbeatFixture {
 
 } // namespace
 
+// A container broken open: in K1 it becomes plot and unlocked and opens for the
+// party leader a second later, however far away the leader stands.
+namespace {
+
+std::shared_ptr<Gff> makeLockedContainerGff() {
+    return Gff::Builder()
+        .field(Gff::Field::newCExoString("Tag", "crate"))
+        .field(Gff::Field::newDword("Appearance", 0))
+        .field(Gff::Field::newByte("HasInventory", 1))
+        .field(Gff::Field::newByte("Locked", 1))
+        .field(Gff::Field::newShort("HP", 5))
+        .field(Gff::Field::newShort("CurrentHP", 5))
+        .build();
+}
+
+void addLeader(Game &game, Area &area, const glm::vec3 &position) {
+    auto leader = game.newCreature();
+    leader->setPosition(position);
+    leader->setCurrentHitPoints(10);
+    area.add(leader);
+    game.party().addMember(kNpcPlayer, leader);
+    game.party().setPlayer(leader);
+}
+
+struct BrokenContainerFixture {
+    TestEngine &engine = testEngine();
+    StubConsole console;
+    Game game;
+    std::shared_ptr<Area> area;
+
+    explicit BrokenContainerFixture(GameID id) :
+        game(id, "", engine.options(), engine.services(), console) {
+        testSceneGraph(engine);
+        EXPECT_CALL(engine.resourceModule().twoDas(), get("placeables"))
+            .Times(AnyNumber())
+            .WillRepeatedly(Return(makePlaceablesTable()));
+        EXPECT_CALL(engine.resourceModule().models(), get("plc_footlker"))
+            .Times(AnyNumber());
+        game.initLocalServices();
+        area = game.newArea();
+        TestGameModule::setActiveModuleArea(game, area);
+    }
+
+    std::shared_ptr<Placeable> addContainer() {
+        auto placeable = game.newPlaceable();
+        placeable->deserialize(*makeLockedContainerGff(), SerializedIdentityContext::templateResource());
+        area->add(placeable);
+        return placeable;
+    }
+};
+
+} // namespace
+
+TEST(BrokenContainer, k1_opens_for_a_distant_leader_after_a_second) {
+    BrokenContainerFixture fixture(GameID::KotOR);
+    addLeader(fixture.game, *fixture.area, glm::vec3(100.0f, 0.0f, 0.0f));
+    auto crate = fixture.addContainer();
+    ASSERT_TRUE(crate->isLocked());
+
+    crate->damage(std::numeric_limits<int>::max(), nullptr);
+    EXPECT_FALSE(crate->isDead());
+    EXPECT_TRUE(crate->plotFlag());
+    EXPECT_FALSE(crate->isLocked());
+    EXPECT_GT(crate->brokenOpenSeconds(), 0.0f);
+
+    crate->update(0.5f);
+    EXPECT_NE(Game::Screen::Container, fixture.game.currentScreen());
+    EXPECT_GE(crate->brokenOpenSeconds(), 0.0f);
+    crate->update(0.6f);
+    EXPECT_EQ(Game::Screen::Container, fixture.game.currentScreen());
+    EXPECT_LT(crate->brokenOpenSeconds(), 0.0f);
+}
+
+TEST(BrokenContainer, tsl_container_is_destroyed_as_before) {
+    BrokenContainerFixture fixture(GameID::TSL);
+    addLeader(fixture.game, *fixture.area, glm::vec3(100.0f, 0.0f, 0.0f));
+    auto crate = fixture.addContainer();
+
+    crate->damage(std::numeric_limits<int>::max(), nullptr);
+    EXPECT_TRUE(crate->isDead());
+    EXPECT_LT(crate->brokenOpenSeconds(), 0.0f);
+}
+
 // A. The shipped pattern: a placeable's heartbeat removes its own heartbeat
 // script. It runs once, and the area's heartbeat cadence never runs it again,
 // however long the object stays around.
@@ -6751,6 +7165,8 @@ protected:
         dialog->entries[0].replies.push_back(link);
         dialog->replies.resize(1);
         dialog->replies[0].text = "Finish";
+        // A conversation of another type is never a one-liner, so the reply is picked.
+        dialog->conversationType = static_cast<ConversationType>(2);
         EXPECT_CALL(fixture->engine.resourceModule().gffs(), get("fade_admission", ResType::Dlg))
             .Times(AnyNumber()).WillRepeatedly(Return(Gff::Builder().build()));
         EXPECT_CALL(static_cast<resource::MockDialogs &>(fixture->engine.services().resource.dialogs), get("fade_admission"))

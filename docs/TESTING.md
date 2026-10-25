@@ -21,11 +21,11 @@ Where they live: `test/<library>/` mirrors `src/libs/<library>/`. Useful pieces:
 - `test/fixtures/`: mocks and builders for the engine's services, so a `Game` can run
   without an install.
 - `test/support/nsscomp.h`: a small NWScript compiler for tests, so a test can write a
-  script as a string and run it on the engine's VM ([testing_scripts.md](testing_scripts.md)).
+  script as a string and run it on the engine's VM ([testing_scripts.md](dev/testing_scripts.md)).
 - `test/game/coopnet.cpp` and the other `test/game/coop*.cpp`: a host and guests in one
   process over the loopback transport ([COOP.md](COOP.md)).
 - `test/net/`: the wire format, round trips and the join-code link against a fake
-  service on loopback sockets ([protocol_coverage.md](protocol_coverage.md)).
+  service on loopback sockets ([protocol_coverage.md](dev/protocol_coverage.md)).
 - `test/game/determinism.cpp` and `test/data/determinism_golden.txt`: see
   [DETERMINISM.md](DETERMINISM.md).
 
@@ -35,7 +35,7 @@ free of game data: write the 2DA rows, GFF fields or scripts a test needs into t
 Other test tooling, all opt-in: sanitizer builds (`REONE_ASAN`, `REONE_UBSAN`,
 `REONE_TSAN`; `tools/cloud/sanitize.sh`), libFuzzer targets for the file formats and the
 network protocol (`REONE_FUZZ`, `fuzz/`, `tools/cloud/fuzz.sh`), simulation benchmarks
-(`REONE_BENCH`, `bench/`, [sim_perf.md](sim_perf.md)) and the determinism runs
+(`REONE_BENCH`, `bench/`, [sim_perf.md](dev/sim_perf.md)) and the determinism runs
 (`tools/cloud/determinism.sh`).
 
 ## The headless harness (control port)

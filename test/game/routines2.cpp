@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// NWScript routines implemented in tranche 2 (docs/routines_missing.md): effect
+// NWScript routines implemented in tranche 2 (docs/dev/routines_missing.md): effect
 // subtype and duration queries, stealth XP, and faction queries.
 
 #include <gmock/gmock.h>

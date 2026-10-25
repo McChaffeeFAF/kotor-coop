@@ -101,6 +101,12 @@ void Routines::insert(
         std::move(argTypes),
         [this, index, fn, retType, constructsEffect](auto &args, auto &execution) {
             RoutineContext ctx(*_game, *_services, execution);
+            // Actions this routine queues are a script's (guest-controlled companions, coopcommand.cpp).
+            struct Depth {
+                Game &game;
+                explicit Depth(Game &game) : game(game) { game.enterScriptRoutine(); }
+                ~Depth() { game.leaveScriptRoutine(); }
+            } depth(*_game);
             Variable result;
             if (_argumentRemap) {
                 std::vector<Variable> remapped(args);

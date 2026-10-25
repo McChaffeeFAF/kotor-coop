@@ -84,6 +84,10 @@ public:
 
     /** Remove every model and sound (module or area change). */
     void clear();
+    /** How many times clear() has run: a lasting request begun before the last clear is gone. */
+    uint32_t clearCount() const { return _clearCount; }
+    /** visualeffects.2da rows of the requests not ended on this target, pending or shown (inspection). */
+    std::vector<uint32_t> rowsOn(uint32_t targetId) const;
 
     /** Camera offset for this frame's scene render (shake). Zero when none. */
     const glm::vec3 &cameraShake() const { return _shakeOffset; }
@@ -128,6 +132,7 @@ public:
     static std::vector<scene::BodyOverlay> speedGhosts(const glm::vec3 &velocity, float strength, float time);
 
 private:
+    uint32_t _clearCount {0};
     enum class Phase {
         Impact,    /**< playing impact once */
         Duration,  /**< looping duration/default */

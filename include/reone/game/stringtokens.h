@@ -60,6 +60,10 @@ struct StringTokenSubject {
     // Name of the key bound to keymap.2da row "action<row>", with the suffix
     // "a" (direction 1) or "b" (direction 2) for a two-way binding.
     std::function<std::string(int row, int direction)> keyName;
+    // TSL: the mouse-button names (token action 26) are other talk-table rows.
+    bool tsl {false};
+    // TSL: the Nar Shaddaa bounty on the player, in credits (token action 27).
+    std::optional<int> bounty;
 };
 
 inline constexpr const char *kUnrecognizedToken = "<UNRECOGNIZED TOKEN>";

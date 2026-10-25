@@ -33,6 +33,17 @@ namespace game {
 
 void UseSkillAction::execute(std::shared_ptr<Action> self, Object &actor, float dt) {
     switch (_skill) {
+    case SkillType::Stealth: {
+        // ActionUseSkill(SKILL_STEALTH): toggle the actor's Stealth Mode
+        // through the game's checks (design note stealth).
+        if (auto *creature = dyn_cast<Creature>(&actor)) {
+            if (auto self = _game.getObjectById<Creature>(creature->id())) {
+                _game.requestStealth(*self, !self->isStealthed(), Game::StealthAsk::NoPrompt);
+            }
+        }
+        complete();
+        return;
+    }
     case SkillType::Security: {
         if (!_target) {
             warn("ActionExecutor: unsupported Security target: null");

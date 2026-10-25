@@ -18,6 +18,7 @@
 #include "reone/game/gui/map.h"
 
 #include "reone/game/di/services.h"
+#include "reone/game/coopchat.h"
 #include "reone/game/game.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
@@ -318,7 +319,6 @@ glm::vec2 Map::markerScreenPosition(Mode mode, const glm::vec4 &bounds, float sc
 // K2 rings party members in orange; co-op players' characters take a blue
 // ring of our own (design note p2_ui, "Party markers").
 static const glm::vec3 kPartyMemberMarkerColor(0.98f, 0.45f, 0.0f);
-static const glm::vec3 kCoopPlayerMarkerColor(0.25f, 0.75f, 1.0f);
 static constexpr int kMemberMarkerSize = 16;
 
 void Map::renderPartyMembers(Mode mode, const glm::vec4 &bounds, float scale) {
@@ -328,26 +328,29 @@ void Map::renderPartyMembers(Mode mode, const glm::vec4 &bounds, float scale) {
     }
     // Party members first, then the co-op markers, which win for a character
     // that is both.
-    std::vector<std::pair<std::shared_ptr<Object>, bool>> markers;
-    auto addMarker = [&](const std::shared_ptr<Object> &object, bool player) {
+    std::vector<std::tuple<std::shared_ptr<Object>, bool, uint8_t>> markers;
+    auto addMarker = [&](const std::shared_ptr<Object> &object, bool player, uint8_t colour) {
         if (!object || object == leader || object->isDead()) {
             return;
         }
         for (auto &marker : markers) {
-            if (marker.first == object) {
-                marker.second = marker.second || player;
+            if (std::get<0>(marker) == object) {
+                if (player) {
+                    std::get<1>(marker) = true;
+                    std::get<2>(marker) = colour;
+                }
                 return;
             }
         }
-        markers.emplace_back(object, player);
+        markers.emplace_back(object, player, colour);
     };
     auto &party = _game.party();
     for (int i = 0; i < party.getSize(); ++i) {
-        addMarker(party.getMember(i), false);
+        addMarker(party.getMember(i), false, 0);
     }
     if (auto coop = _game.coop()) {
         for (const auto &marker : coop->mapMarkers()) {
-            addMarker(marker.object, marker.player);
+            addMarker(marker.object, marker.player, marker.colour);
         }
     }
     if (markers.empty()) {
@@ -356,7 +359,7 @@ void Map::renderPartyMembers(Mode mode, const glm::vec4 &bounds, float scale) {
     const float size = kMemberMarkerSize * scale;
     auto draw = [&]() {
         _services.graphics.context.bindTexture(*_memberTexture);
-        for (const auto &[object, player] : markers) {
+        for (const auto &[object, player, colourIndex] : markers) {
             glm::vec2 pos = markerScreenPosition(mode, bounds, scale, glm::vec2(object->position()), glm::vec2(leader->position()));
             // Off the minimap: no marker. (A scissor pass would clear the
             // map already drawn there.)
@@ -368,7 +371,12 @@ void Map::renderPartyMembers(Mode mode, const glm::vec4 &bounds, float scale) {
             glm::mat4 transform(1.0f);
             transform = glm::translate(transform, glm::vec3(pos.x - 0.5f * size, pos.y - 0.5f * size, 0.0f));
             transform = glm::scale(transform, glm::vec3(size, size, 1.0f));
-            glm::vec3 color = player ? kCoopPlayerMarkerColor : kPartyMemberMarkerColor;
+            glm::vec3 color = kPartyMemberMarkerColor;
+            if (player) {
+                // The player's chat colour, so a marker matches the name tag.
+                auto chosen = chatColour(colourIndex);
+                color = glm::vec3(chosen.r, chosen.g, chosen.b);
+            }
             _services.graphics.uniforms.setLocals([&](auto &locals) {
                 locals.reset();
                 locals.model = transform;

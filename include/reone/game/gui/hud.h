@@ -48,6 +48,8 @@ namespace reone {
 
 namespace game {
 
+class Creature;
+
 class HUD : public GameGUI {
     friend class TestGameModule;
 
@@ -348,6 +350,9 @@ private:
     // TB_PAUSE / TB_SOLO follow the game's state each frame (design note k1hud_parity_2).
     void updateModeToggles();
     bool soloToggleAvailable() const;
+    /** K1's mipc* layouts lack the TB_STEALTH its mipc2* ones author: one in that art and place. */
+    void addK1StealthToggle();
+    bool stealthToggleAvailable() const;
 
     // P1 item 10: the auto-combat toggle, built at load beside the weapon-swap
     // button (K2 layout) or the Cancel Combat button (K1 layout, which has no
@@ -368,6 +373,21 @@ private:
     void renderCoopChat();
     float chatOverlayBottom() const;
     std::shared_ptr<graphics::Font> _guestListFont;
+    // Co-op name tags and guest-character portraits (hudcoop.cpp).
+    struct CoopPortrait {
+        std::shared_ptr<Creature> creature;
+        glm::vec4 rect; // x, y, width, height in screen pixels
+    };
+    std::vector<CoopPortrait> _coopPortraits;
+    bool coopOverlaysShown() const;
+    void renderCoopNameTags();
+    struct PortraitSource {
+        std::shared_ptr<Creature> creature;
+        std::string name;
+        uint8_t colour {0};
+    };
+    void renderCoopPortraits(const std::vector<PortraitSource> &sources, float scale);
+    bool handleCoopPortraitClick(const input::Event &event);
 };
 
 } // namespace game

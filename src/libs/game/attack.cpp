@@ -27,6 +27,7 @@
 #include "reone/resource/provider/2das.h"
 
 #include "reone/game/animations.h"
+#include "reone/game/combatfeedback.h"
 #include "reone/game/combatsounds.h"
 #include "reone/game/d20/feats.h"
 #include "reone/game/di/services.h"
@@ -295,7 +296,11 @@ static AttackResolution computeAttack(
         if ((confirmationRoll + attackBonus + confirmationBonus) >= resolution.defense) {
             bool criticalHitImmune =
                 targetCreature && hasCriticalHitImmunity(*targetCreature);
-            if (!criticalHitImmune) {
+            if (criticalHitImmune) {
+                // The confirmed critical lands as an ordinary hit; the
+                // target and the attacker are told why.
+                addEffectImmunityFeedback(attacker.game(), &attacker, *targetCreature, ImmunityType::CriticalHit);
+            } else {
                 resolution.result = AttackResultType::CriticalHit;
                 debug(str(boost::format("computeAttack: critical hit: roll(%d), confirmation(%d),"
                                         " bonus(%d), defense(%d), critical threat(%d)") %
@@ -914,16 +919,6 @@ bool AttackBuffer::hasRangedAttack() const {
     return std::any_of(_attacks.begin(), _attacks.end(), [](const Attack &attack) { return attack.ranged; });
 }
 
-static constexpr float kCombatFeedbackRange2 = 900.0f;
-
-static bool canReceiveCombatFeedback(
-    const Creature &player,
-    const Creature &subject) {
-
-    return player.faction() == subject.faction() &&
-           player.getSquareDistanceTo(subject) <= kCombatFeedbackRange2;
-}
-
 static constexpr int kStrRefAttackSummary = 42042;
 static constexpr int kStrRefAttackSuccessVerb = 42043;
 static constexpr int kStrRefAttackFailureVerb = 42044;
@@ -950,18 +945,11 @@ static constexpr int kStrRefBaseAttackBonus = 42392;
 
 static std::string getFeedbackString(
     Game &game,
-    ServicesView &services,
+    ServicesView &,
     int strRef,
     std::initializer_list<std::pair<int, std::string>> tokens) {
 
-    std::string text = services.resource.strings.getText(strRef);
-    for (const auto &[token, value] : tokens) {
-        text = game.substituteCustomToken(
-            std::move(text),
-            token,
-            value);
-    }
-    return text;
+    return feedbackText(game, strRef, tokens);
 }
 
 void AttackBuffer::addCombatFeedback(
@@ -1484,7 +1472,7 @@ AttackSchedule::State AttackSchedule::update(
         break;
     }
     case AttackSchedule::WaitFinish: {
-        if (round.state == CombatRound::Finished) {
+        if (round.hasEnded(action)) {
             _state = AttackSchedule::Finish;
         }
         break;

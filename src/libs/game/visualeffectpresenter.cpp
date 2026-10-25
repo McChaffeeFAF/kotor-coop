@@ -238,6 +238,21 @@ void VisualEffectPresenter::begin(std::shared_ptr<Request> request) {
     _pending.push_back(std::move(request));
 }
 
+std::vector<uint32_t> VisualEffectPresenter::rowsOn(uint32_t targetId) const {
+    std::vector<uint32_t> rows;
+    for (const auto &request : _pending) {
+        if (request && !request->ended && request->targetId == targetId) {
+            rows.push_back(request->desc->id);
+        }
+    }
+    for (const auto &presented : _active) {
+        if (!presented.request->ended && presented.request->targetId == targetId) {
+            rows.push_back(presented.request->desc->id);
+        }
+    }
+    return rows;
+}
+
 size_t VisualEffectPresenter::numModels() const {
     size_t count = 0;
     for (auto &presented : _active) {
@@ -266,6 +281,7 @@ void VisualEffectPresenter::removePart(Part &part) {
 }
 
 void VisualEffectPresenter::clear() {
+    ++_clearCount;
     for (auto &presented : _active) {
         for (auto &part : presented.parts) {
             removePart(part);

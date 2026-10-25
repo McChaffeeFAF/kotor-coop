@@ -293,13 +293,14 @@ void HUD::onGUILoaded() {
              _controls.LBL_JOURNAL, _controls.LBL_HEALTHBG, _controls.LBL_ITEMRCVD, _controls.LBL_ITEMLOST,
              _controls.LBL_LIGHTSHIFT, _controls.LBL_MAP, _controls.LBL_MOULDING1, _controls.LBL_MOULDING3,
              _controls.LBL_NAME, _controls.LBL_NAMEBG, _controls.LBL_PLOTXP, _controls.LBL_STEALTHXP,
-             _controls.LBL_ARROW, _controls.TB_STEALTH}) {
+             _controls.LBL_ARROW}) {
         setVisible(control, false);
     }
-    // Stealth has no mechanic in the build (no stealth mode); its toggle
-    // stays hidden on both layouts. Pause and solo mode are live
-    // (design note k1hud_parity_2): their SELECTED art shows the state.
-    for (auto &toggle : {_controls.TB_PAUSE, _controls.TB_SOLO}) {
+    // Pause, solo mode and Stealth Mode are live (design note k1hud_parity_2,
+    // design note stealth): their SELECTED art shows the state. K1's mipc2* layouts
+    // author TB_STEALTH right of solo; its mipc* ones get one there.
+    addK1StealthToggle();
+    for (auto &toggle : {_controls.TB_PAUSE, _controls.TB_SOLO, _controls.TB_STEALTH}) {
         if (toggle) {
             toggle->setShowCheckedFill(true);
             toggle->setSharpenBorderFillAlpha(true);
@@ -311,6 +312,10 @@ void HUD::onGUILoaded() {
     setOnClick(_controls.TB_SOLO, [this]() {
         _game.toggleSoloModeAsKey();
     });
+    setOnClick(_controls.TB_STEALTH, [this]() {
+        _game.toggleStealthAsKey();
+    });
+    setVisible(_controls.TB_STEALTH, false);
 
     if (isTSL()) {
         tintK2HUDMenuButton(_controls.BTN_EQU, _baseColor);
@@ -526,6 +531,9 @@ void HUD::activatePersonalAction(int index) {
 bool HUD::handle(const input::Event &event) {
     if (_statusSummary && _statusSummary->isVisible()) {
         return _statusSummary->handle(event);
+    }
+    if (handleCoopPortraitClick(event)) {
+        return true;
     }
     if (_select.handle(event)) {
         return true;
@@ -853,6 +861,7 @@ void HUD::render() {
     _select.render();
     _actionBar.render(_gui->scale());
     _game.floatingText().render();
+    renderCoopNameTags();
     renderCoopChat();
 }
 
@@ -913,6 +922,48 @@ void HUD::renderGuestList() {
     });
 }
 
+void HUD::addK1StealthToggle() {
+    if (isTSL() || _controls.TB_STEALTH || !_controls.TB_PAUSE || !_controls.TB_SOLO) {
+        return;
+    }
+    // K1's mipc2* layouts author TB_STEALTH right of TB_SOLO (i_mistealth,
+    // 37,500 in 800x600); its mipc* layouts have none. Those get one in the
+    // same place and art, in authored coordinates.
+    auto control = std::shared_ptr<Control>(_gui->newControl(ControlType::ToggleButton, "TB_STEALTH"));
+    auto toggle = std::static_pointer_cast<ToggleButton>(control);
+    if (auto border = _controls.TB_SOLO->borderOrNull()) {
+        toggle->setBorder(*border);
+    }
+    if (auto hilight = _controls.TB_SOLO->hilightOrNull()) {
+        toggle->setHilight(*hilight);
+    }
+    auto texture = [this](const char *name) {
+        return _services.resource.textures.get(name, graphics::TextureUsage::GUI);
+    };
+    toggle->setCheckedFills(texture("i_mistealth"), texture("i_mistealth1"), texture("i_mistealth3"), texture("i_mistealth2"));
+    static constexpr int kK1StealthOffset = 31; // TB_STEALTH.left - TB_SOLO.left in K1's mipc28x6
+    auto extent = _controls.TB_SOLO->authoredExtent();
+    extent.left += kK1StealthOffset;
+    toggle->setAuthoredExtent(extent);
+    toggle->setExtent(extent);
+    _gui->addControlToFront(toggle, IGUI::ControlCoordinates::Authored);
+    _controls.TB_STEALTH = std::move(toggle);
+}
+
+bool HUD::stealthToggleAvailable() const {
+    auto leader = _game.party().getLeader();
+    if (!leader) {
+        return false;
+    }
+    // A co-op client asks the host, which knows its equipment.
+    auto *coop = _game.coop();
+    if (coop && coop->isClient()) {
+        return true;
+    }
+    // Shown while a stealth unit is worn (the tutorial: "click on the Stealth button").
+    return leader->isStealthed() || leader->hasStealthUnitEquipped();
+}
+
 bool HUD::soloToggleAvailable() const {
     // Co-op: the party's follow mode is the host's (as the V key).
     auto *coop = _game.coop();
@@ -933,6 +984,8 @@ void HUD::updateModeToggles() {
     const bool present = _game.party().getLeader() != nullptr;
     syncToggle(_controls.TB_PAUSE, present, _game.isPaused());
     syncToggle(_controls.TB_SOLO, present && soloToggleAvailable(), _game.party().isSoloMode());
+    auto leader = _game.party().getLeader();
+    syncToggle(_controls.TB_STEALTH, present && stealthToggleAvailable(), leader && leader->isStealthed());
     if (!isTSL()) {
         // K1's left moulding frames the toggle column and its backing.
         setVisible(_controls.LBL_MOULDING1, present);

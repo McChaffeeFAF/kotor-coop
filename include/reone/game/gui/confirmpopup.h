@@ -72,8 +72,11 @@ public:
     void showChoices(const std::string &message, std::vector<Choice> choices);
 
     bool isVisible() const { return _visible; }
+    /** Changes with every show and hide: tells a caller whether what it put up is still what shows. */
+    uint64_t serial() const { return _serial; }
 
 private:
+    uint64_t _serial {0};
     struct Controls {
         std::shared_ptr<gui::Button> BTN_CANCEL;
         std::shared_ptr<gui::Button> BTN_OK;

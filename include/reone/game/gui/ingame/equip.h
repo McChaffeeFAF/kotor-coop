@@ -60,15 +60,14 @@ public:
     void update(float dt) override;
     void openItems();
 
+    using Extent = gui::Control::Extent;
     /**
-     * K1 layout: the slot a weapon slot button edits while the second set is
-     * shown (WeapL/WeapR -> WeapL2/WeapR2); others unchanged.
+     * K1 layout: where the "Set 2" weapon slots sit (640x480 canvas), in the
+     * gap under the portrait. Only the second set's left and right slots.
      */
-    static Slot k1SetSlot(Slot slot, bool secondSet);
-    /** K1 layout: the set toggle's authored extent (640x480 canvas). */
-    static gui::Control::Extent k1WeaponSetToggleExtent() { return {172, 410, 72, 28}; }
-    static constexpr const char *kK1WeaponSetIcon = "i_2weap01";
-    bool k1SecondSetShown() const { return _k1SecondSet; }
+    static Extent k1SecondSetExtent(Slot slot) {
+        return slot == Slot::WeapL2 ? Extent {52, 254, 56, 56} : Extent {107, 254, 56, 56};
+    }
     /** K2 layout's BTN_SWAPWEAPONS: swap the subject's two sets. */
     void swapWeaponSets() { swapWeaponSetsFromScreen(); }
     /** Performs the swap; returns whether the sets changed now (false: queued or refused). */
@@ -77,12 +76,9 @@ public:
 private:
     friend class EquipmentTestAccess;
 
-    bool _k1SecondSet {false};
     std::function<bool()> _onSwapWeapons;
-    std::shared_ptr<gui::Button> _k1WeaponSet;
-    std::shared_ptr<gui::Label> _k1WeaponSetIcon;
-    void addK1WeaponSetToggle();
-    void refreshK1WeaponSetToggle();
+    std::vector<std::shared_ptr<gui::Label>> _k1SecondSetMarks;
+    void addK1SecondSetSlots();
     void swapWeaponSetsFromScreen();
     int inventorySlotFor(Slot slot) const;
 

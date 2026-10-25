@@ -486,16 +486,36 @@ void ModelSceneNode::playBase(Animation &anim, std::shared_ptr<LipAnimation> lip
         break;
     }
 
-    case AnimationBlendMode::Overlay:
+    case AnimationBlendMode::Overlay: {
         // In Overlay mode, clear channels only if previous mode is not
-        // Overlay and add animation on top. (Layers are no longer overlays
-        // that keep the channels: they are kept apart, above the base.)
+        // Overlay (or the animation starts a new overlay set) and add
+        // animation on top. (Layers are no longer overlays that keep the
+        // channels: they are kept apart, above the base.)
+        AnimationChannel channel(anim, lipAnim, properties);
         if (_animBlendMode != AnimationBlendMode::Overlay) {
             interp::snapBelow(*this);
             _animChannels.clear();
+        } else if (properties.flags & AnimationFlags::newOverlaySet) {
+            // The same clip without lip sync goes on from where it was: a
+            // walk under a new line keeps its stride.
+            for (const auto &old : _animChannels) {
+                if (old.anim == &anim && !old.lipAnim && !lipAnim && !old.finished &&
+                    (old.properties.speed < 0.0f) == (properties.speed < 0.0f)) {
+                    channel.time = old.time;
+                    break;
+                }
+            }
+            _animChannels.clear();
+        } else {
+            // An overlay played again replaces its own earlier channel
+            // rather than stacking another copy on top of it.
+            _animChannels.erase(std::remove_if(_animChannels.begin(), _animChannels.end(),
+                                               [&anim](const AnimationChannel &old) { return old.anim == &anim; }),
+                                _animChannels.end());
         }
-        _animChannels.push_front(AnimationChannel(anim, lipAnim, properties));
+        _animChannels.push_front(std::move(channel));
         break;
+    }
 
     default:
         break;

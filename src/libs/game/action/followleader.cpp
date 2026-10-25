@@ -53,14 +53,20 @@ void FollowLeaderAction::execute(std::shared_ptr<Action> self, Object &actor, fl
 
     glm::vec3 destination(leader->position());
     float distance2 = creatureActor->getSquareDistanceTo(glm::vec2(destination));
-    bool run = distance2 > kDistanceWalk * kDistanceWalk;
+    float runFrom = _running ? kStopRunningDistance : kDistanceWalk;
+    bool run = distance2 > runFrom * runFrom;
+    _running = run;
     if (creatureActor->navigateTo(destination, run, kPartyFollowDistance, dt)) {
+        // Arrived: the follow goes on (Creature::updateIdleFollow) while the
+        // queue stays empty, as the retail party follow does.
+        creatureActor->setFollowingLeader(true);
         complete();
         return;
     }
     if (!creatureActor->navigationFailed()) {
         return;
     }
+    creatureActor->setFollowingLeader(false);
 
     // The leader cannot be reached (no route, a door this member cannot
     // open, or a blockage that outlasted the give-up time). The henchman

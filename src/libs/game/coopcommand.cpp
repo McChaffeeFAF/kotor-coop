@@ -32,6 +32,7 @@
 #include "reone/game/object/trigger.h"
 #include "reone/game/party.h"
 #include "reone/game/reputes.h"
+#include "reone/game/stealth.h"
 #include "reone/resource/dialog.h"
 #include "reone/resource/provider/dialogs.h"
 #include "reone/resource/provider/scripts.h"
@@ -163,7 +164,8 @@ net::CommandReject validateCoopCommand(
         return CommandReject::NotControlled;
     }
     auto module = game.module();
-    if (!module || !module->area() || game.movie() || !acceptsInput(game.currentScreen())) {
+    // A workbench's own talk on the host is one player's screen, not a scene: the others play on.
+    if (!module || !module->area() || game.movie() || (!acceptsInput(game.currentScreen()) && !coopPersonalConversation(game))) {
         return CommandReject::Busy;
     }
     auto &area = *module->area();
@@ -174,6 +176,12 @@ net::CommandReject validateCoopCommand(
     }
     if (!actor->isCommandable()) {
         // A script took the creature for a scene (SetCommandable FALSE).
+        return CommandReject::Busy;
+    }
+    if (coopScriptHoldsCreature(game, *actor)) {
+        // A script is moving the creature (a door's jump, a conversation it
+        // must start, an animation): as in single player, nothing the player
+        // does cuts it short. Input is taken again once the sequence is done.
         return CommandReject::Busy;
     }
     targets.actor = actor;
@@ -203,6 +211,26 @@ net::CommandReject validateCoopCommand(
 
     case CommandType::AutoCombat:
         return command.param == 0 || command.param == 1 ? CommandReject::None : CommandReject::PointInvalid;
+
+    case CommandType::Stealth: {
+        // A player toggles Stealth Mode for its own character; the host
+        // checks the rules (design note stealth). Leaving is always allowed.
+        if (command.param != 0 && command.param != 1) {
+            return CommandReject::PointInvalid;
+        }
+        if (command.param == 1 && !actor->isStealthed()) {
+            switch (game.stealthRefusal(*actor)) {
+            case stealth::Refusal::None:
+            case stealth::Refusal::NeedSolo: // the host's own leader only
+                return CommandReject::None;
+            case stealth::Refusal::InCombat:
+                return CommandReject::StealthInCombat;
+            default:
+                return CommandReject::StealthUnavailable;
+            }
+        }
+        return CommandReject::None;
+    }
 
     case CommandType::SetMine: {
         std::shared_ptr<Item> item;
@@ -419,6 +447,10 @@ void executeCoopCommand(Game &game, const net::Command &command, const CoopComma
 
     case CommandType::AutoCombat:
         game.setAutoCombat(*actor, command.param == 1);
+        break;
+
+    case CommandType::Stealth:
+        game.requestStealth(*actor, command.param == 1, Game::StealthAsk::NoPrompt);
         break;
 
     case CommandType::SetMine: {
@@ -761,6 +793,107 @@ CoopBench coopScriptBench(Game &game, const std::string &script) {
     }
     cache[key] = bench;
     return bench;
+}
+
+bool coopPersonalConversation(Game &game) {
+    // K1's Taris workbench talks once (a tutorial) before its OnUsed script opens the upgrade
+    // screen: that talk belongs to the player at the bench, like the screen after it.
+    auto placeable = std::dynamic_pointer_cast<Placeable>(game.conversationOwner());
+    return placeable && !placeable->getOnUsed().empty() && coopScriptBench(game, placeable->getOnUsed()) != CoopBench::None;
+}
+
+namespace {
+
+bool scriptStartsScene(Game &game, const std::string &script, int depth) {
+    static std::map<std::string, bool> cache;
+    auto key = boost::to_lower_copy(script);
+    if (key.empty() || depth > 3) {
+        return false;
+    }
+    auto cached = cache.find(key);
+    if (cached != cache.end()) {
+        return cached->second;
+    }
+    cache[key] = false; // a script that executes itself ends here
+    bool scene = false;
+    try {
+        if (auto program = game.services().resource.scripts.get(key)) {
+            auto &routines = game.routines();
+            std::string lastString;
+            for (const auto &instruction : program->instructions()) {
+                if (instruction.type == script::InstructionType::CONSTS) {
+                    lastString = instruction.strValue;
+                    continue;
+                }
+                if (instruction.type != script::InstructionType::ACTION || instruction.routine < 0 ||
+                    instruction.routine >= routines.getNumRoutines()) {
+                    continue;
+                }
+                const auto &name = routines.get(instruction.routine).name();
+                if (name == "ActionStartConversation" || name == "BeginConversation" || name == "PlayMovie") {
+                    scene = true;
+                    break;
+                }
+                // ExecuteScript(sScript, ...): sScript is pushed last, so a literal is the string just before it.
+                if (name == "ExecuteScript" && !lastString.empty() && scriptStartsScene(game, lastString, depth + 1)) {
+                    scene = true;
+                    break;
+                }
+            }
+        }
+    } catch (const std::exception &) {
+        scene = false;
+    }
+    cache[key] = scene;
+    return scene;
+}
+
+} // namespace
+
+bool coopScriptStartsScene(Game &game, const std::string &script) {
+    return scriptStartsScene(game, script, 0);
+}
+
+bool coopScriptNamesTag(Game &game, const std::string &script, const std::string &tag) {
+    static std::map<std::string, std::set<std::string>> cache;
+    auto key = boost::to_lower_copy(script);
+    auto want = boost::to_lower_copy(tag);
+    if (key.empty() || want.empty()) {
+        return false;
+    }
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        std::set<std::string> strings;
+        try {
+            if (auto program = game.services().resource.scripts.get(key)) {
+                for (const auto &instruction : program->instructions()) {
+                    if (instruction.type == script::InstructionType::CONSTS && !instruction.strValue.empty()) {
+                        strings.insert(boost::to_lower_copy(instruction.strValue));
+                    }
+                }
+            }
+        } catch (const std::exception &) {
+        }
+        it = cache.emplace(key, std::move(strings)).first;
+    }
+    return it->second.count(want) != 0;
+}
+
+bool coopScriptHoldsCreature(Game &game, const Creature &creature) {
+    if (game.areClicksBlocked()) {
+        return true; // NoClicksFor: no player clicks, the host's or a guest's
+    }
+    if (!creature.hasScriptSequence()) {
+        return false;
+    }
+    auto front = creature.getCurrentAction();
+    if (front && front->isScriptAction() && front->startTick()) {
+        auto limit = static_cast<uint64_t>(kCoopScriptHoldSeconds * static_cast<float>(game.tickRate()));
+        if (game.tickCount() > front->startTick() + limit) {
+            return false;
+        }
+    }
+    return true;
 }
 
 bool coopScriptChangesStory(Game &game, const std::string &script) {

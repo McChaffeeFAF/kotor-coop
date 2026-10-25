@@ -134,7 +134,7 @@ void Equipment::onGUILoaded() {
     // _controls.btnCharLeft->setVisible(false);
     // _controls.btnCharRight->setVisible(false);
     if (!isTSL()) {
-        addK1WeaponSetToggle();
+        addK1SecondSetSlots();
     } else if (_controls.BTN_SWAPWEAPONS) {
         // K2's "Swap Weapons" on equip_p was styled but never wired.
         _controls.BTN_SWAPWEAPONS->setOnClick([this]() {
@@ -189,7 +189,7 @@ void Equipment::onGUILoaded() {
                 slotDesc = _strings.getText(maybeStrRef->second);
             }
 
-            if (!isTSL() && _k1SecondSet && k1SetSlot(slot, true) != slot) {
+            if (slot == Slot::WeapL2 || slot == Slot::WeapR2) {
                 slotDesc += " (2)";
             }
             _controls.LBL_SLOTNAME->setTextMessage(slotDesc);
@@ -282,59 +282,62 @@ static int getInventorySlot(Equipment::Slot slot) {
     }
 }
 
-Equipment::Slot Equipment::k1SetSlot(Slot slot, bool secondSet) {
-    if (!secondSet) {
-        return slot;
-    }
-    switch (slot) {
-    case Slot::WeapL:
-        return Slot::WeapL2;
-    case Slot::WeapR:
-        return Slot::WeapR2;
-    default:
-        return slot;
-    }
-}
-
 int Equipment::inventorySlotFor(Slot slot) const {
-    return getInventorySlot(k1SetSlot(slot, !isTSL() && _k1SecondSet));
+    return getInventorySlot(slot);
 }
 
-void Equipment::addK1WeaponSetToggle() {
-    // K1 HUD parity (design note k1hud_parity_2): the K1 layout has no second-set
-    // slots. A K1-style button between the portrait buttons and Equip flips
-    // the weapon slots between set 1 (4/5) and set 2 (18/19); it changes
-    // what the screen edits, never what is in hand. K1 art and K1 text style.
-    auto style = _controls.BTN_EQUIP;
-    if (!style) {
+void Equipment::addK1SecondSetSlots() {
+    // K1's screen authors only the first weapon set. The second set gets its
+    // own pair of slots, "Set 2" left and right, in the gap under the portrait,
+    // built like the first set's slots (same art, same selection frame) with the
+    // "2" on each so the pair reads as the second loadout. They edit
+    // inventory slots 18 and 19 and never change what is in hand.
+    auto sourceButton = _controls.BTN_INV_WEAP_L;
+    auto sourceLabel = _controls.LBL_INV_WEAP_L;
+    if (!sourceButton || !sourceLabel) {
         return;
     }
-    Control::Extent extent = k1WeaponSetToggleExtent();
-    auto button = std::static_pointer_cast<Button>(std::shared_ptr<Control>(_gui->newControl(ControlType::Button, "BTN_K1WEAPONSET")));
-    button->setBorder(style->border());
-    button->setHilight(style->hilight());
-    button->setText(style->text());
-    button->setAuthoredExtent(extent);
-    button->setExtent(extent);
-    button->setOnClick([this]() {
-        _k1SecondSet = !_k1SecondSet;
-        refreshK1WeaponSetToggle();
-        updateEquipment();
-    });
-    _gui->addControlToFront(button, IGUI::ControlCoordinates::Authored);
-    _k1WeaponSet = std::move(button);
+    struct Spec {
+        Slot slot;
+        const char *tag;
+        Extent extent;
+    };
+    const Spec specs[] {
+        {Slot::WeapL2, "WEAP_L2", k1SecondSetExtent(Slot::WeapL2)},
+        {Slot::WeapR2, "WEAP_R2", k1SecondSetExtent(Slot::WeapR2)}};
+    for (const auto &spec : specs) {
+        auto label = std::static_pointer_cast<Label>(std::shared_ptr<Control>(_gui->newControl(ControlType::Label, std::string("LBL_INV_") + spec.tag)));
+        label->setBorder(sourceLabel->border());
+        label->setSelectable(false);
+        label->setSharpenBorderFillAlpha(true);
+        label->setAuthoredExtent(spec.extent);
+        label->setExtent(spec.extent);
+        _gui->addControlToFront(label, IGUI::ControlCoordinates::Authored);
+        _lblInv[spec.slot] = label;
 
-    Control::Extent iconExtent {extent.left + 2, extent.top + 2, extent.height - 4, extent.height - 4};
-    auto icon = std::static_pointer_cast<Label>(std::shared_ptr<Control>(_gui->newControl(ControlType::Label, "LBL_K1WEAPONSET")));
-    icon->setBorder(Control::Border());
-    icon->setBorderFill(kK1WeaponSetIcon);
-    icon->setSelectable(false);
-    icon->setSharpenBorderFillAlpha(true);
-    icon->setAuthoredExtent(iconExtent);
-    icon->setExtent(iconExtent);
-    _gui->addControlToFront(icon, IGUI::ControlCoordinates::Authored);
-    _k1WeaponSetIcon = std::move(icon);
-    refreshK1WeaponSetToggle();
+        auto button = std::static_pointer_cast<Button>(std::shared_ptr<Control>(_gui->newControl(ControlType::Button, std::string("BTN_INV_") + spec.tag)));
+        button->setBorder(sourceButton->border());
+        button->setHilight(sourceButton->hilight());
+        button->setAuthoredExtent(spec.extent);
+        button->setExtent(spec.extent);
+        _gui->addControlToFront(button, IGUI::ControlCoordinates::Authored);
+        _btnInv[spec.slot] = button;
+
+        // A "2" in the slot's corner, in the screen's own text style; added to
+        // the back of the child list, which draws last, so it lies over the slot art.
+        Extent markExtent {spec.extent.left + 9, spec.extent.top + 9, 16, 16};
+        auto mark = std::static_pointer_cast<Label>(std::shared_ptr<Control>(_gui->newControl(ControlType::Label, std::string("LBL_SET2_") + spec.tag)));
+        mark->setBorder(Control::Border());
+        if (_controls.BTN_EQUIP) {
+            mark->setText(_controls.BTN_EQUIP->text());
+        }
+        mark->setTextMessage("2");
+        mark->setSelectable(false);
+        mark->setAuthoredExtent(markExtent);
+        mark->setExtent(markExtent);
+        _gui->addControlToBack(mark, IGUI::ControlCoordinates::Authored);
+        _k1SecondSetMarks.push_back(std::move(mark));
+    }
 }
 
 void Equipment::swapWeaponSetsFromScreen() {
@@ -342,12 +345,6 @@ void Equipment::swapWeaponSetsFromScreen() {
     // what is in hand now.
     if (_onSwapWeapons && _onSwapWeapons()) {
         updateEquipment();
-    }
-}
-
-void Equipment::refreshK1WeaponSetToggle() {
-    if (_k1WeaponSet) {
-        _k1WeaponSet->setTextMessage(_k1SecondSet ? "  2" : "  1");
     }
 }
 
@@ -434,9 +431,8 @@ void Equipment::selectSlot(Slot slot) {
     updateK2LoadoutOverlayVisibility(noneSelected);
 
     if (!isTSL()) {
-        if (_k1WeaponSet) {
-            _k1WeaponSet->setVisible(noneSelected);
-            _k1WeaponSetIcon->setVisible(noneSelected);
+        for (auto &mark : _k1SecondSetMarks) {
+            mark->setVisible(noneSelected);
         }
         _controls.LBL_PORT_BORD->setVisible(noneSelected);
         _controls.LBL_PORTRAIT->setVisible(noneSelected);

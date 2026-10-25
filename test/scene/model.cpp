@@ -1295,6 +1295,107 @@ TEST(ModelSceneNode, removing_the_layers_leaves_the_base) {
     EXPECT_EQ("walk", f.node->animationChannels()[0].anim->name());
 }
 
+// alpha-0.4.5: Trask talks (end_trask01 E54) while he runs in and stops.
+// A talking creature plays its body clip and the talk clip as overlays; the
+// overlays of the earlier set used to pile up underneath, so the run he had
+// stopped went on looping, its footsteps with it, for the rest of the
+// conversation.
+namespace {
+
+struct TalkFixture {
+    GraphicsOptions graphicsOpt;
+    MockRenderPipelineFactory pipelineFactory;
+    TestGraphicsModule graphicsModule;
+    TestAudioModule audioModule;
+    TestResourceModule resourceModule;
+    std::unique_ptr<SceneGraph> scene;
+    std::shared_ptr<ModelNode> rootNode;
+    std::unique_ptr<Model> model;
+    std::shared_ptr<ModelSceneNode> node;
+    EventLog log;
+
+    TalkFixture() {
+        graphicsModule.init();
+        audioModule.init();
+        resourceModule.init();
+        scene = std::make_unique<SceneGraph>("test", pipelineFactory, graphicsOpt, graphicsModule.services(), audioModule.services(), resourceModule.services());
+        rootNode = std::make_shared<ModelNode>(0, "root_node", glm::vec3(0.0f), glm::quat(1.0f, 0.0f, 0.0f, 0.0f), true, nullptr);
+        std::vector<Animation::Event> steps {{0.25f, "snd_footstep"}, {0.75f, "snd_footstep"}};
+        std::vector<std::shared_ptr<Animation>> anims {
+            std::make_shared<Animation>("run", 1.0f, 0.0f, "root_node", nullptr, steps),
+            std::make_shared<Animation>("tlknorm", 2.0f, 0.0f, "root_node", nullptr, std::vector<Animation::Event>()),
+            std::make_shared<Animation>("talk", 1.0f, 0.0f, "root_node", nullptr, std::vector<Animation::Event>())};
+        model = std::make_unique<Model>("speaker", 0, rootNode, anims, "", 1.0f);
+        model->init();
+        node = scene->newModel(*model, ModelUsage::Creature);
+        node->init();
+        node->setAnimationEventListener(log);
+    }
+
+    // As Creature::updateModelAnimation plays a talking creature's state.
+    void talk(const std::string &body) {
+        node->playAnimation(body, nullptr, AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::newOverlaySet | AnimationFlags::propagate));
+        node->playAnimation("talk", nullptr, AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::propagate));
+    }
+
+    std::vector<std::string> channelNames() const {
+        std::vector<std::string> names;
+        for (const auto &channel : node->animationChannels()) {
+            names.push_back(channel.anim->name());
+        }
+        return names;
+    }
+};
+
+} // namespace
+
+TEST(ModelSceneNode, a_speaker_who_stops_running_stops_the_run_and_its_footsteps) {
+    TalkFixture f;
+    f.node->playAnimation("tlknorm", nullptr, AnimationProperties::fromFlags(AnimationFlags::loopBlend));
+    f.talk("tlknorm"); // the line starts
+    f.talk("run");     // he runs in, still talking
+    for (int i = 0; i < 8; ++i) {
+        f.node->update(0.1f);
+    }
+    EXPECT_EQ(2u, f.log.names.size()) << "two strides while running";
+    f.talk("tlknorm"); // he stops
+    f.talk("tlknorm"); // the next line
+    f.talk("tlknorm"); // and the next
+    EXPECT_EQ((std::vector<std::string> {"talk", "tlknorm"}), f.channelNames());
+    f.log.names.clear();
+    for (int i = 0; i < 60; ++i) {
+        f.node->update(0.1f);
+    }
+    EXPECT_TRUE(f.log.names.empty()) << "no footsteps from a run he is no longer playing";
+}
+
+TEST(ModelSceneNode, a_new_line_while_running_keeps_the_stride) {
+    TalkFixture f;
+    f.talk("run");
+    for (int i = 0; i < 4; ++i) {
+        f.node->update(0.1f);
+    }
+    f.talk("run"); // a new line, still running
+    ASSERT_EQ((std::vector<std::string> {"talk", "run"}), f.channelNames());
+    EXPECT_NEAR(0.4f, f.node->animationChannels()[1].time, 1e-4f) << "the run goes on from where it was";
+    f.log.names.clear();
+    for (int i = 0; i < 10; ++i) {
+        f.node->update(0.1f);
+    }
+    EXPECT_EQ(2u, f.log.names.size()) << "one loop, two strides: not one per line";
+}
+
+TEST(ModelSceneNode, an_overlay_played_again_replaces_its_own_channel) {
+    TalkFixture f;
+    for (int i = 0; i < 5; ++i) {
+        f.node->playAnimation("talk", nullptr, AnimationProperties::fromFlags(AnimationFlags::loopOverlay));
+        f.node->update(0.1f);
+    }
+    EXPECT_EQ((std::vector<std::string> {"talk"}), f.channelNames());
+    f.node->playAnimation("tlknorm", nullptr, AnimationProperties::fromFlags(AnimationFlags::loopOverlay));
+    EXPECT_EQ((std::vector<std::string> {"tlknorm", "talk"}), f.channelNames()) << "different overlays still run together";
+}
+
 TEST(ModelSceneNode, an_animation_played_backwards_runs_from_its_end_and_signals_events_in_reverse) {
     LayerFixture f;
     AnimationProperties properties;

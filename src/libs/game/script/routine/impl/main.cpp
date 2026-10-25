@@ -880,6 +880,13 @@ static Variable fabs(const std::vector<Variable> &args, const RoutineContext &ct
     return Variable::ofFloat(std::fabs(fValue));
 }
 
+// fmod is exact, so folding a huge angle into one turn first is portable and
+// keeps portable::sin and cos inside the range where they are accurate.
+static float foldAngle(float angle) {
+    constexpr double kTwoPi = 6.28318530717958647692;
+    return std::fabs(angle) > 1.0e6f ? static_cast<float>(std::fmod(static_cast<double>(angle), kTwoPi)) : angle;
+}
+
 static Variable cos(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto fValue = getFloat(args, 0);
@@ -887,7 +894,7 @@ static Variable cos(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(portable::cosf(fValue));
+    return Variable::ofFloat(portable::cosf(foldAngle(fValue)));
 }
 
 static Variable sin(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -897,7 +904,7 @@ static Variable sin(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(portable::sinf(fValue));
+    return Variable::ofFloat(portable::sinf(foldAngle(fValue)));
 }
 
 static Variable tan(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -907,7 +914,7 @@ static Variable tan(const std::vector<Variable> &args, const RoutineContext &ctx
     // Transform
 
     // Execute
-    return Variable::ofFloat(portable::sinf(fValue) / portable::cosf(fValue));
+    return Variable::ofFloat(portable::sinf(foldAngle(fValue)) / portable::cosf(foldAngle(fValue)));
 }
 
 static Variable acos(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -1177,7 +1184,7 @@ static Variable GetFirstObjectInArea(const std::vector<Variable> &args, const Ro
     SmallVector<uint32_t, 16> foundObjects;
     for (auto it = oArea->objects().rbegin(), end = oArea->objects().rend(); it != end; ++it) {
         const std::shared_ptr<Object> &object = *it;
-        if (!matchesObjectFilter(*object, nObjectFilter)) {
+        if (!matchesObjectFilter(*object, nObjectFilter) || isCameoObject(*object)) {
             continue;
         }
         foundObjects.push_back(object->id());
@@ -1712,6 +1719,9 @@ GetFirstObjectInShape(const std::vector<Variable> &args, const RoutineContext &c
     std::vector<std::pair<float, uint32_t>> ordered;
     ordered.reserve(area->objects().size());
     for (const std::shared_ptr<Object> &object : area->objects()) {
+        if (isCameoObject(*object)) {
+            continue;
+        }
         ordered.emplace_back(object->position().x, object->id());
     }
     std::sort(ordered.begin(), ordered.end());
@@ -2522,7 +2532,7 @@ static std::vector<std::shared_ptr<Creature>> collectFactionMembers(Faction fact
     }
     for (const auto &object : area->objects()) {
         auto creature = dyn_cast<Creature>(object);
-        if (!creature || creature->faction() != faction) {
+        if (!creature || creature->isCameo() || creature->faction() != faction) {
             continue;
         }
         if (pcOnly && creature != ctx.game.party().player() && !ctx.game.party().isMember(*creature)) {
@@ -2669,6 +2679,19 @@ static Variable GetIsPC(const std::vector<Variable> &args, const RoutineContext 
     // character stays a PC while a companion leads.
     auto &party = ctx.game.party();
     bool pc = creature && (creature == party.player() || creature == party.getLeader());
+    // Co-op host: to a door, trigger or placeable script a companion a guest
+    // controls is that player's character, as a companion the host switches
+    // to is (T3-M4 at tar02's Sith base). Creature scripts (the AI, perception,
+    // conversations) keep one PC, as in single player.
+    if (!pc && creature) {
+        auto *coop = ctx.game.coop();
+        if (coop && coop->isHost() && coop->isPlayerControlled(creature->id())) {
+            auto caller = ctx.execution.findArg(script::ArgKind::Caller);
+            auto self = caller ? ctx.game.getObjectById(caller->objectId) : nullptr;
+            auto type = self ? self->type() : ObjectType::Invalid;
+            pc = type == ObjectType::Door || type == ObjectType::Trigger || type == ObjectType::Placeable;
+        }
+    }
     return Variable::ofInt(static_cast<int>(pc));
 }
 
@@ -7573,6 +7596,12 @@ static Variable SetSoloMode(const std::vector<Variable> &args, const RoutineCont
 
     // Execute
     ctx.game.party().setSoloMode(activate);
+    if (!activate) {
+        // TLK 37892: leaving solo mode takes the leader out of Stealth Mode.
+        if (auto leader = ctx.game.party().getLeader()) {
+            ctx.game.endStealth(*leader);
+        }
+    }
     return Variable::ofNull();
 }
 
@@ -7760,7 +7789,8 @@ static Variable GetChemicalPieceValue(const std::vector<Variable> &args, const R
 }
 
 // K2: the Force points the power being cast cost its caster (the cost rule of
-// design note c03_stats). 0 outside a cast, and for a cast that costs nothing.
+// design note c03_stats), as recorded when the cast began. 0 outside a cast, and for a
+// cast that costs nothing.
 static Variable GetSpellForcePointCost(const std::vector<Variable> &args, const RoutineContext &ctx) {
     auto callerArg = ctx.execution.findArg(ArgKind::Caller);
     auto spellArg = ctx.execution.findArg(ArgKind::SpellId);
@@ -7772,7 +7802,9 @@ static Variable GetSpellForcePointCost(const std::vector<Variable> &args, const 
     if (!caller || !spell) {
         return Variable::ofInt(0);
     }
-    return Variable::ofInt(caller->forcePowerCost(*spell));
+    // The cost recorded as the cast began; a cast this session did not see
+    // begin (one loaded from a save) works it out again.
+    return Variable::ofInt(caller->recordedSpellForcePointCost(spell->type).value_or(caller->forcePowerCost(*spell)));
 }
 
 static Variable GetFeatAcquired(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -8041,11 +8073,11 @@ static Variable YavinHackDoorClose(const std::vector<Variable> &args, const Rout
 
 static Variable IsStealthed(const std::vector<Variable> &args, const RoutineContext &ctx) {
     auto oCreature = getObject(args, 0, ctx);
-    (void)oCreature;
 
-    // Execute
-    // intentionally stubbed: the engine has no stealth stance for a creature to be in; always FALSE
-    return Variable::ofInt(0);
+    // Execute: 1 while the creature is in Stealth Mode; 0 for anything that
+    // is not a creature (design note stealth).
+    auto creature = asCreature(oCreature);
+    return Variable::ofInt(creature && creature->isStealthed() ? 1 : 0);
 }
 
 static Variable IsMeditating(const std::vector<Variable> &args, const RoutineContext &ctx) {
@@ -8150,7 +8182,8 @@ static Variable SetKeepStealthInDialog(const std::vector<Variable> &args, const 
     // Load
     auto nStealthState = getInt(args, 0);
 
-    // Execute: kept on the module; the engine has no stealth stance for a conversation to drop.
+    // Execute: kept on the module, read when a conversation starts
+    // (Game::endStealthForConversation). Not saved, as the routine says.
     if (auto module = ctx.game.module()) {
         module->setScriptSetting("KeepStealthInDialog", nStealthState);
     }

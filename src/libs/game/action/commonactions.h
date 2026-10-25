@@ -19,6 +19,8 @@
 
 #include <glm/vec3.hpp>
 
+#include "reone/game/action/objectapproach.h"
+
 namespace reone {
 
 namespace game {
@@ -45,6 +47,19 @@ glm::vec3 doorApproachPoint(Game &game, const Door &door, const Object &actor);
 // stays set for the action). Returns true once there. When neither can be
 // reached, returns false with creature.navigationFailed() set.
 bool approachDoor(Game &game, Creature &creature, const Door &door, bool &useApproachPoint, float distance, float dt);
+
+// Where a creature walks to use an object (a container, a body, a use-on
+// placeable) that stands off the walkmesh, as the footprint of a placeable
+// does: the nearest walkable ground around it that the creature can walk to,
+// searched on rings out to a few metres. Returns the object's own position
+// when it stands on the walkmesh or nothing reachable lies near it.
+glm::vec3 objectUsePoint(Game &game, const Object &target, const Object &actor);
+
+// Walk a creature up to an object. When the object itself is off the walkmesh
+// the creature walks to its use point and counts as arrived within 0.5 m of
+// it. Returns true once there; when it cannot be reached, returns false with
+// creature.navigationFailed() set.
+bool approachObject(Game &game, Creature &creature, const Object &target, bool run, ObjectApproach &approach, float distance, float dt);
 
 // Move an actor to a door, unlock and open it. Returns true when this action is
 // complete (also when the door cannot be reached).

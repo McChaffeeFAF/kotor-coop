@@ -61,7 +61,11 @@ foreach ($pair in @(@("k1", "game"), @("k2", "k2game"))) {
 }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = Get-CleanName $env:USERNAME }
 if (-not $cfg["coop-name"]) { $cfg["coop-name"] = "Player" }
+# The KotOR look is the default HUD. The KotOR II look needs a KotOR II install
+# for its GUI resources, so without one the KotOR look is the only choice.
+$k2installed = [bool]($cfg["k2game"] -and (Test-Install $cfg["k2game"] $Games["k2"].Exe))
 if ($cfg["hud"] -notin @("k1", "k2")) { $cfg["hud"] = "k1" }
+if (-not $k2installed -and $cfg["hud"] -eq "k2") { $cfg["hud"] = "k1" }
 # First run: fullscreen windowed at the desktop resolution.
 if (-not $cfg.Contains("fullscreen") -and -not $cfg.Contains("borderless")) {
     $cfg["borderless"] = "1"; $cfg["fullscreen"] = "0"
@@ -70,11 +74,6 @@ if (-not $cfg["width"] -or -not $cfg["height"]) { $cfg["width"] = $desktop[0]; $
 $server = Get-DefaultServer $Root
 if ($server) { $cfg["coop-server"] = $server }
 Write-Config $Config $cfg
-# With a join-code service (official builds: make_tester_package.ps1 -Server)
-# players share a code. Without one, the default, they join by IP:port and the
-# host forwards its UDP port.
-$useCodes = [bool]$cfg["coop-server"]
-$hostPort = $DefaultCoopPort
 
 # The window.
 $form = New-Object System.Windows.Forms.Form
@@ -82,7 +81,7 @@ $form.Text = "KotOR Co-op (test build)"
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedDialog"
 $form.MaximizeBox = $false
-$form.ClientSize = New-Object System.Drawing.Size(560, $(if ($useCodes) { 366 } else { 382 }))
+$form.ClientSize = New-Object System.Drawing.Size(560, 366)
 $form.Font = New-Object System.Drawing.Font("Segoe UI", 9)
 $version = Join-Path $Root "VERSION.txt"
 if (Test-Path $version) { $form.Text += " - " + ((Get-Content $version | Select-Object -First 1) -replace '^(build|release) ', '') }
@@ -101,6 +100,7 @@ foreach ($pair in @(@("k1", "game"), @("k2", "k2game"))) {
     $label = Add-Control (New-Object System.Windows.Forms.Label) 14 $y 440 18
     $label.Font = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
     $label.Text = $Games[$which].Title
+    if ($which -eq "k2") { $label.Text += "  (optional)" }
     $path = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 19) 440 18
     $change = Add-Control (New-Object System.Windows.Forms.Button) 462 ($y + 6) 84 26
     $change.Text = "Change..."
@@ -130,7 +130,9 @@ $hudLabel.Text = "HUD:"
 $hudBox = Add-Control (New-Object System.Windows.Forms.ComboBox) 404 $y 142 22
 $hudBox.DropDownStyle = "DropDownList"
 [void]$hudBox.Items.AddRange(@("KotOR II look", "KotOR look"))
-$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k2") { 0 } else { 1 })
+$hudBox.SelectedIndex = $(if ($cfg["hud"] -eq "k1") { 1 } else { 0 })
+# The KotOR II look needs a KotOR II install; without one only the KotOR look works.
+if (-not $k2installed) { $hudBox.SelectedIndex = 1; $hudBox.Enabled = $false; $hudLabel.Text = "HUD:" }
 $y += 36
 
 $displayLabel = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 4) 150 18
@@ -155,15 +157,15 @@ $resBox.Enabled = $displayBox.SelectedIndex -ne 0
 $y += 40
 
 $hostButton = Add-Control (New-Object System.Windows.Forms.Button) 14 $y 532 40
-$hostButton.Text = $(if ($useCodes) { "Host a co-op game" } else { "Host a co-op game (UDP port $hostPort)" })
+$hostButton.Text = "Host a co-op game"
 $hostButton.Font = New-Object System.Drawing.Font("Segoe UI", 11, [System.Drawing.FontStyle]::Bold)
 $y += 50
 $codeLabel = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 8) 150 18
-$codeLabel.Text = $(if ($useCodes) { "Join code from your host:" } else { "Host's IP:port:" })
+$codeLabel.Text = "Join code from your host:"
 $codeBox = Add-Control (New-Object System.Windows.Forms.TextBox) 170 ($y + 4) 180 22
-if ($useCodes) { $codeBox.CharacterCasing = "Upper" }
+$codeBox.CharacterCasing = "Upper"
 $joinButton = Add-Control (New-Object System.Windows.Forms.Button) 364 $y 182 32
-$joinButton.Text = $(if ($useCodes) { "Join" } else { "Join by IP:port" })
+$joinButton.Text = "Join"
 $y += 44
 $soloButton = Add-Control (New-Object System.Windows.Forms.Button) 14 $y 170 30
 $soloButton.Text = "Play solo"
@@ -171,7 +173,7 @@ $reportButton = Add-Control (New-Object System.Windows.Forms.Button) 376 $y 170 
 $reportButton.Text = "Report a bug"
 $texgenButton = Add-Control (New-Object System.Windows.Forms.Button) 192 $y 176 30
 $texgenButton.Text = "Generate enhanced textures"
-$status = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 38) 532 $(if ($useCodes) { 34 } else { 50 })
+$status = Add-Control (New-Object System.Windows.Forms.Label) 14 ($y + 38) 532 34
 
 $TexgenExe = Join-Path $Root "texgen.exe"
 $TexgenOut = Join-Path $Root "enhanced_textures"
@@ -213,25 +215,33 @@ function Start-Texgen {
 }
 
 function Update-Rows {
-    $ready = $true
-    foreach ($which in @("k1", "k2")) {
-        $row = $rows[$which]
-        $p = $cfg[$row.Key]
-        if ($p -and (Test-Install $p $Games[$which].Exe)) {
-            $row.Path.Text = "$p  ($($sources[$which]))"
-            $row.Path.ForeColor = [System.Drawing.Color]::DarkGreen
-        } else {
-            $row.Path.Text = "Not found. Click Change... and pick the install folder."
-            $row.Path.ForeColor = [System.Drawing.Color]::Firebrick
-            $ready = $false
-        }
+    # KotOR is required; KotOR II is optional. Without it the engine plays K1
+    # with the K1 HUD (--hud k1, no --k2game) — fully supported.
+    $k1 = $rows["k1"]; $k2 = $rows["k2"]
+    $ready = $false
+    $p = $cfg[$k1.Key]
+    if ($p -and (Test-Install $p $Games["k1"].Exe)) {
+        $k1.Path.Text = "$p  ($($sources['k1']))"
+        $k1.Path.ForeColor = [System.Drawing.Color]::DarkGreen
+        $ready = $true
+    } else {
+        $k1.Path.Text = "Not found. Click Change... and pick the install folder."
+        $k1.Path.ForeColor = [System.Drawing.Color]::Firebrick
+    }
+    $p2 = $cfg[$k2.Key]
+    if ($p2 -and (Test-Install $p2 $Games["k2"].Exe)) {
+        $k2.Path.Text = "$p2  ($($sources['k2']))"
+        $k2.Path.ForeColor = [System.Drawing.Color]::DarkGreen
+    } else {
+        $k2.Path.Text = "None found. Optional: adds the KotOR II look and its feats, powers and classes."
+        $k2.Path.ForeColor = [System.Drawing.Color]::DimGray
     }
     foreach ($b in @($hostButton, $joinButton, $soloButton)) { $b.Enabled = $ready }
     # Surface Detail needs only KotOR 1's textures; texgen.exe ships beside engine.exe.
     $texgenButton.Enabled = ($null -eq $script:texgenProcess) -and (Test-Path $TexgenExe) -and
         [bool]($cfg["game"] -and (Test-Install $cfg["game"] $Games["k1"].Exe))
-    if (-not $ready) { $status.Text = "Both games are needed: this build plays from your own KotOR and KotOR II installs." }
-    elseif (-not $useCodes) { $status.Text = (Get-PortForwardHint $hostPort) + " The first time, allow engine.exe through Windows Firewall." }
+    if (-not $ready) { $status.Text = "KotOR (the first game) is needed: point at the folder with swkotor.exe." }
+    elseif (-not $cfg["coop-server"]) { $status.Text = "This build has no co-op service address: join by ip:port only." }
     else { $status.Text = "Ready. The first time, allow engine.exe through Windows Firewall or co-op can't connect." }
 }
 
@@ -252,12 +262,7 @@ function Start-Game([string]$Role, [string[]]$EngineArgs) {
 $hostButton.Add_Click({ Start-Game "host" @("--host") })
 $joinButton.Add_Click({
     $code = ($codeBox.Text -replace '[^A-Za-z0-9\-\.:]', '').Trim()
-    if ($useCodes) {
-        if (-not $code) { [System.Windows.Forms.MessageBox]::Show("Paste the join code your host sent (like K7QM-4TXR).", "Join code") | Out-Null; return }
-    } else {
-        $code = Resolve-JoinAddress $code $hostPort
-        if (-not $code) { [System.Windows.Forms.MessageBox]::Show("Type your host's IP:port (like 203.0.113.7:$hostPort).", "Join by IP:port") | Out-Null; return }
-    }
+    if (-not $code) { [System.Windows.Forms.MessageBox]::Show("Paste the join code your host sent (like K7QM-4TXR).", "Join code") | Out-Null; return }
     Start-Game "join" @("--join", $code)
 })
 $codeBox.Add_KeyDown({ if ($_.KeyCode -eq "Enter" -and $joinButton.Enabled) { $joinButton.PerformClick() } })
@@ -294,5 +299,5 @@ $texgenButton.Add_Click({
 $form.Add_FormClosing({ if ($script:texgenProcess -and -not $script:texgenProcess.HasExited) { try { $script:texgenProcess.Kill() } catch {} } })
 
 Update-Rows
-if ($env:KOTOR_LAUNCHER_SELFTEST) { $rows.Values | ForEach-Object { $_.Path.Text }; $status.Text; "host enabled: $($hostButton.Enabled)"; "co-op: $($hostButton.Text) | $($codeLabel.Text) | $($joinButton.Text)";"texgen button: $($texgenButton.Text) enabled=$($texgenButton.Enabled) exe=$(Test-Path $TexgenExe)"; "display: $($displayBox.SelectedItem) / $($resBox.SelectedItem) (desktop $desktopText; $($modes.Count) modes)"; return }
+if ($env:KOTOR_LAUNCHER_SELFTEST) { $rows.Values | ForEach-Object { $_.Path.Text }; $status.Text; "host enabled: $($hostButton.Enabled)"; "texgen button: $($texgenButton.Text) enabled=$($texgenButton.Enabled) exe=$(Test-Path $TexgenExe)"; "display: $($displayBox.SelectedItem) / $($resBox.SelectedItem) (desktop $desktopText; $($modes.Count) modes)"; return }
 [void]$form.ShowDialog()

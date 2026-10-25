@@ -70,6 +70,9 @@ public:
     void setShowCheckedFill(bool show);
     /** Copy the checked art (and whether it shows) from another toggle. */
     void copyCheckedFill(const ToggleButton &other);
+    /** Set the four fills a layout would author (BORDER, HILIGHT, SELECTED, HILIGHTSELECTED). */
+    void setCheckedFills(std::shared_ptr<graphics::Texture> off, std::shared_ptr<graphics::Texture> offHilight,
+                         std::shared_ptr<graphics::Texture> on, std::shared_ptr<graphics::Texture> onHilight);
 
 private:
     bool _on {false};

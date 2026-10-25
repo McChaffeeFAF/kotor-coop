@@ -29,6 +29,8 @@
 #include "reone/game/coopsession.h"
 
 #include "reone/game/d20/skills.h"
+#include "reone/game/stealth.h"
+#include "reone/game/visualeffects.h"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +39,7 @@
 #include "reone/audio/di/services.h"
 #include "reone/audio/mixer.h"
 #include "reone/game/action.h"
+#include "reone/game/action/followleader.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/usefeat.h"
@@ -1383,8 +1386,10 @@ void Creature::update(float dt) {
     updateModelAnimation();
     updateCombat(dt);
     updateCombatHandover(dt);
+    updateIdleFollow(dt);
     updateLightsaberSoundPositions();
     updateDecay(dt);
+    updateStealth();
 }
 
 // Body decay and body bags (engine design notes "Loot on death and body bags").
@@ -1593,7 +1598,9 @@ void Creature::updateModelAnimation() {
                   (getHeldPoseAnimation().empty() ? 0 : 1)));
     }
     if (talkAnim && anim) {
-        AnimationProperties bodyProperties = AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::propagate);
+        // The body clip starts a new overlay set: the clips of the last one
+        // (a run the speaker has since stopped, the last line's talk) go.
+        AnimationProperties bodyProperties = AnimationProperties::fromFlags(AnimationFlags::loopOverlay | AnimationFlags::newOverlaySet | AnimationFlags::propagate);
         // The gait still matches the ground speed under the talking overlay.
         if (_movementType == MovementType::Run) {
             bodyProperties.speed = gaitPlaybackRate(runSpeed(), anim->length(), _runSpeed);
@@ -1916,6 +1923,17 @@ void Creature::spendForcePoints(const Spell &spell) {
     }
 }
 
+void Creature::recordSpellForcePointCost(const Spell &spell) {
+    _recordedSpellCost = std::make_pair(spell.type, forcePowerCost(spell));
+}
+
+std::optional<int> Creature::recordedSpellForcePointCost(SpellType spell) const {
+    if (!_recordedSpellCost || _recordedSpellCost->first != spell) {
+        return std::nullopt;
+    }
+    return _recordedSpellCost->second;
+}
+
 bool Creature::addMultiClass(ClassType classType) {
     std::shared_ptr<CreatureClass> clazz;
     try {
@@ -2115,6 +2133,7 @@ void Creature::updateCombat(float dt) {
 
 void Creature::clearAllActions(bool force) {
     Object::clearAllActions(force);
+    _followingLeader = false;
     setMovementType(MovementType::None);
     // The area's path pool is fixed-size; a path abandoned here would never
     // be released and would eventually starve every creature of paths.
@@ -2514,6 +2533,9 @@ bool Creature::isSlotEquipped(int slot) const {
 }
 
 void Creature::setMovementType(MovementType type) {
+    if (type == MovementType::Run && stealthWalkOnly()) {
+        type = MovementType::Walk; // Stealth Mode: run disabled (TLK 1464)
+    }
     if (_movementType == type)
         return;
 
@@ -2552,6 +2574,9 @@ float Creature::getAttackRange() const {
 }
 
 bool Creature::isLevelUpPending() const {
+    if (_replicaLevelUp) {
+        return *_replicaLevelUp;
+    }
     return _xp >= getNeededXP();
 }
 
@@ -2664,8 +2689,9 @@ void Creature::updateCombatHandover(float dt) {
     if (_autoCombat) {
         _autoCombatIdle += dt;
     }
+    // Stealth Mode: party members do not enter combat on their own (TLK 248).
     if (_autoCombat && !_combatHandoverPending && !_dead && _actions.empty() &&
-        _autoCombatIdle >= kAutoCombatRetry && playerHand &&
+        _autoCombatIdle >= kAutoCombatRetry && playerHand && !_stealthMode &&
         (isInCombat() || seesLiveEnemy())) {
         _combatHandoverPending = true;
     }
@@ -2700,6 +2726,45 @@ void Creature::updateCombatHandover(float dt) {
     }
 }
 
+// The party follow between heartbeats (see setFollowingLeader).
+static constexpr float kIdleFollowCheckInterval = 0.2f;
+
+void Creature::updateIdleFollow(float dt) {
+    if (!_followingLeader) {
+        return;
+    }
+    if (!_actions.empty()) {
+        // Following again, or ordered to do something else.
+        if (_actions.front()->type() != ActionType::FollowLeader) {
+            _followingLeader = false;
+        }
+        return;
+    }
+    _followCheck += dt;
+    if (_followCheck < kIdleFollowCheckInterval) {
+        return;
+    }
+    _followCheck = 0.0f;
+    auto leader = _game.party().getLeader();
+    if (!leader || leader.get() == this || _dead || isTemporarilyDead() || !_game.party().isMember(*this) ||
+        coopPlayerControlled(*this)) {
+        _followingLeader = false;
+        return;
+    }
+    // A fight, a conversation, solo mode or a held creature: the scripts and
+    // the combat AI decide; the follow resumes when the heartbeat issues one.
+    if (!_commandable || isInCombat() || leader->isInCombat() || leader->isDead() || _game.isConversationActive() ||
+        _game.party().isSoloMode()) {
+        _followingLeader = false;
+        return;
+    }
+    glm::vec2 toLeader(glm::vec2(leader->position()) - glm::vec2(_position));
+    if (glm::dot(toLeader, toLeader) <= FollowLeaderAction::kResumeDistance * FollowLeaderAction::kResumeDistance) {
+        return;
+    }
+    addAction(_game.newAction<FollowLeaderAction>());
+}
+
 // Co-op idle engage: a client's character joins a fight it stands in.
 static constexpr float kIdleEngageDelay = 1.0f;
 static constexpr float kIdleEngageRange = 15.0f;
@@ -2719,7 +2784,7 @@ void Creature::updateIdleEngage(float dt) {
     // Auto-combat decides its rounds itself; Cancel Combat holds it back;
     // solo mode and stealth keep the party's other characters still.
     if (_autoCombat || isCombatHeld() || _combatHandoverPending || _game.party().isSoloMode() ||
-        hasEffect(EffectType::Invisibility) || hasEffect(EffectType::ImprovedInvisibility) ||
+        _stealthMode || hasEffect(EffectType::Invisibility) || hasEffect(EffectType::ImprovedInvisibility) ||
         _game.isConversationActive()) {
         return;
     }
@@ -2783,14 +2848,41 @@ void Creature::updateIdleEngage(float dt) {
 }
 
 void Creature::runAutoCombatRound() {
-    if (companion::usesBrain(_game, *this)) {
-        companion::runCompanionBrainRound(_game, *this);
+    // A player's hand (the host's leader, a co-op player's character) on
+    // auto-combat fights only while there is a fight: out of combat it stays
+    // under its player's control, with no follow and no wandering.
+    bool coopHand = coopPlayerControlled(*this);
+    bool playerHand = coopHand || _game.party().getLeader().get() == this;
+    if (playerHand && !isInCombat() && !seesLiveEnemy()) {
         return;
     }
-    uint32_t previous = _game.autoCombatScriptCaller();
-    _game.setAutoCombatScriptCaller(_id);
-    runEndRoundScript();
-    _game.setAutoCombatScriptCaller(previous);
+    std::vector<std::shared_ptr<Action>> before(_actions.begin(), _actions.end());
+    if (companion::usesBrain(_game, *this)) {
+        companion::runCompanionBrainRound(_game, *this);
+    } else {
+        uint32_t previous = _game.autoCombatScriptCaller();
+        _game.setAutoCombatScriptCaller(_id);
+        runEndRoundScript();
+        _game.setAutoCombatScriptCaller(previous);
+    }
+    if (!coopHand) {
+        return;
+    }
+    // The generic round script walks a companion after its leader when it has
+    // no target; a co-op player's character goes where its player sends it.
+    for (auto it = _actions.begin(); it != _actions.end();) {
+        auto action = *it;
+        auto type = action->type();
+        bool follow = type == ActionType::FollowLeader || type == ActionType::Follow || type == ActionType::FollowOwner ||
+                      type == ActionType::ForceFollowObject || type == ActionType::RandomWalk;
+        if (!follow || action->locked() || std::find(before.begin(), before.end(), action) != before.end()) {
+            ++it;
+            continue;
+        }
+        action->cancel(action, *this);
+        action->markCancelled();
+        it = _actions.erase(it);
+    }
 }
 
 void Creature::runEndRoundScript() {
@@ -2886,6 +2978,15 @@ void Creature::runEndDialogueScript() {
         return;
     }
     _game.scriptRunner().run(_onEndDialogue, _id);
+}
+
+void Creature::setReplicaLevelUp(bool due) {
+    // The level-up sound as the host's own XP change plays it, once a first state is in.
+    bool rising = _replicaLevelUp && !*_replicaLevelUp && due;
+    _replicaLevelUp = due;
+    if (rising) {
+        _game.notifyLevelUpPending(*this);
+    }
 }
 
 void Creature::giveXP(int amount) {
@@ -5413,7 +5514,9 @@ std::string Creature::getBodyModelName() const {
         column = "model";
 
         std::shared_ptr<Item> bodyItem(getEquippedItem(InventorySlots::body));
-        if (_presentation) {
+        if (_replicaBodyVariation >= 0) {
+            column += static_cast<char>('a' + _replicaBodyVariation);
+        } else if (_presentation) {
             column += static_cast<char>('a' + _presentation->bodyVariation);
         } else if (bodyItem) {
             std::string baseBodyVar(bodyItem->baseBodyVariation());
@@ -5444,7 +5547,9 @@ std::string Creature::getBodyTextureName() const {
     if (_modelType == Creature::ModelType::Character) {
         column = "tex";
 
-        if (_presentation) {
+        if (_replicaBodyVariation >= 0) {
+            column += static_cast<char>('a' + _replicaBodyVariation);
+        } else if (_presentation) {
             column += static_cast<char>('a' + _presentation->bodyVariation);
         } else if (bodyItem) {
             std::string baseBodyVar(bodyItem->baseBodyVariation());
@@ -5467,8 +5572,10 @@ std::string Creature::getBodyTextureName() const {
 
     if (_modelType == Creature::ModelType::Character) {
         bool texFound = false;
-        if (_presentation || bodyItem) {
-            auto variation = _presentation ? _presentation->textureVariation : bodyItem->textureVariation();
+        if (_replicaTextureVariation >= 0 || _presentation || bodyItem) {
+            auto variation = _replicaTextureVariation >= 0 ? _replicaTextureVariation
+                             : _presentation               ? _presentation->textureVariation
+                                                           : bodyItem->textureVariation();
             std::string tmp(str(boost::format("%s%02d") % texName % variation));
             std::shared_ptr<Texture> texture(_services.resource.textures.get(tmp, TextureUsage::MainTex));
             if (texture) {
@@ -5520,6 +5627,17 @@ void Creature::setHeadOverride(int headRow) {
         return;
     }
     _headOverride = headRow;
+    if (_sceneNode) {
+        updateModel();
+    }
+}
+
+void Creature::setReplicaBodyLook(int bodyVariation, int textureVariation) {
+    if (_replicaBodyVariation == bodyVariation && _replicaTextureVariation == textureVariation) {
+        return;
+    }
+    _replicaBodyVariation = bodyVariation;
+    _replicaTextureVariation = textureVariation;
     if (_sceneNode) {
         updateModel();
     }
@@ -5594,6 +5712,7 @@ void Creature::deserializeAll(
     // becomes truly dead only at -10 HP.
     gff.readBool(_isPC, "IsPC");
     gff.readInt(_assignedPuppet, "AssignedPup");
+    gff.readBool(_stealthMode, "StealthMode");
 
     // index into racialtypes.2da
     gff.readEnum(_race, "Race");
@@ -6013,6 +6132,83 @@ void Creature::deserializeOwnedItemsAndEquipment(
     if (_appearance != previousAppearance) {
         loadAppearanceProperties();
     }
+}
+
+// Stealth Mode (design note stealth)
+
+bool Creature::hasStealthUnitEquipped() const {
+    auto baseItems = _services.resource.twoDas.get("baseitems");
+    for (int slot : {InventorySlots::belt, InventorySlots::cArmour}) {
+        auto item = getEquippedItem(slot);
+        if (!item) {
+            continue;
+        }
+        int row = item->baseItemType();
+        std::string label = baseItems ? baseItems->getString(row, "label") : std::string();
+        int itemType = baseItems ? baseItems->getInt(row, "itemtype", -1) : -1;
+        if (stealth::isStealthUnitBaseItem(label, itemType)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Creature::stealthWalkOnly() const {
+    if (!_stealthMode) {
+        return false;
+    }
+    return !stealth::mayRun(true, k2feats::hasStealthRun([this](FeatType feat) { return hasEffectiveFeat(feat); }));
+}
+
+void Creature::setStealthMode(bool on) {
+    if (_stealthMode == on) {
+        return;
+    }
+    _stealthMode = on;
+    if (on && _movementType == MovementType::Run && stealthWalkOnly()) {
+        setMovementType(MovementType::Walk);
+    }
+    auto module = _game.module();
+    if (auto area = module ? module->area() : nullptr) {
+        area->forgetStealthChecks(_id);
+    }
+    updateStealth();
+    refreshVisibilityPerception();
+}
+
+void Creature::updateStealth() {
+    auto *coop = _game.coop();
+    bool client = coop && coop->isClient();
+    if (_stealthMode && !client && (_dead || !hasStealthUnitEquipped())) {
+        // The field needs its unit, and ends with the one wearing it.
+        _game.endStealth(*this);
+        return;
+    }
+    // The stealth field visual. A co-op client draws the host's (VfxBegin).
+    auto &presenter = _game.visualEffectPresenter();
+    bool want = _stealthMode && !client;
+    if (_stealthVisual && (!want || _stealthVisual->ended || _stealthVisualGeneration != presenter.clearCount())) {
+        _stealthVisual->ended = true;
+        _stealthVisual.reset();
+    }
+    if (!want || _stealthVisual) {
+        return;
+    }
+    auto desc = _services.game.visualEffects.get(stealth::kStealthFieldVisual).value_or(nullptr);
+    if (!desc) {
+        return;
+    }
+    auto request = std::make_shared<VisualEffectPresenter::Request>();
+    request->desc = desc;
+    request->targetId = _id;
+    request->location = _position;
+    request->facing = getFacing();
+    _stealthVisual = request;
+    _stealthVisualGeneration = presenter.clearCount();
+    if (coop) {
+        coop->onVisualEffectBegin(request);
+    }
+    presenter.begin(std::move(request));
 }
 
 } // namespace game

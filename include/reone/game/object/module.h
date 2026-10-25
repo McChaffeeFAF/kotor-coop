@@ -253,6 +253,7 @@ public:
     const ModuleInfo &info() const { return _info; }
     std::shared_ptr<Area> area() const { return _area; }
     Player &player() { return *_player; }
+    bool hasPlayer() const { return _player != nullptr; }
     bool isSaveGame() const { return _isSaveGame; }
     const std::vector<std::shared_ptr<Creature>> &limboCreatures() const { return _limboCreatures; }
     const SavedEventQueue &savedEventQueue() const { return _savedEventQueue; }

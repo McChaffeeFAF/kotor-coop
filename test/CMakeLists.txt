@@ -57,14 +57,18 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/script/nsscomp.cpp
     ${TESTS_SOURCE_DIR}/texgen/compress.cpp
     ${TESTS_SOURCE_DIR}/texgen/texgen.cpp
+    ${TESTS_SOURCE_DIR}/input/focus.cpp
     ${TESTS_SOURCE_DIR}/game/action.cpp
     ${TESTS_SOURCE_DIR}/game/charactermenu.cpp
     ${TESTS_SOURCE_DIR}/game/coopnet.cpp
+    ${TESTS_SOURCE_DIR}/game/cameo.cpp
+    ${TESTS_SOURCE_DIR}/game/coopcast.cpp
     ${TESTS_SOURCE_DIR}/game/cooploot.cpp
     ${TESTS_SOURCE_DIR}/game/coopprompts.cpp
     ${TESTS_SOURCE_DIR}/game/dedicated.cpp
     ${TESTS_SOURCE_DIR}/game/guestbenchscreen.cpp
     ${TESTS_SOURCE_DIR}/game/forkports.cpp
+    ${TESTS_SOURCE_DIR}/game/rulesports.cpp
     ${TESTS_SOURCE_DIR}/net/protocol.cpp
     ${TESTS_SOURCE_DIR}/net/roundtrip.cpp
     ${TESTS_SOURCE_DIR}/net/chatmessages.cpp
@@ -95,6 +99,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/equipmentoperation.cpp
     ${TESTS_SOURCE_DIR}/game/hudtags.cpp
     ${TESTS_SOURCE_DIR}/game/k1hud.cpp
+    ${TESTS_SOURCE_DIR}/game/stealth.cpp
     ${TESTS_SOURCE_DIR}/game/weaponsets.cpp
     ${TESTS_SOURCE_DIR}/game/effect.cpp
     ${TESTS_SOURCE_DIR}/game/visualeffects.cpp
@@ -109,6 +114,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/k2prestige.cpp
     ${TESTS_SOURCE_DIR}/game/guiscreens.cpp
     ${TESTS_SOURCE_DIR}/game/c04audio.cpp
+    ${TESTS_SOURCE_DIR}/game/startupsettings.cpp
     ${TESTS_SOURCE_DIR}/game/c08effects.cpp
     ${TESTS_SOURCE_DIR}/game/c09aicombat.cpp
     ${TESTS_SOURCE_DIR}/game/c11data.cpp
@@ -129,6 +135,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/coopminigame.cpp
     ${TESTS_SOURCE_DIR}/game/coopchat.cpp
     ${TESTS_SOURCE_DIR}/game/coopchatui.cpp
+    ${TESTS_SOURCE_DIR}/game/coopjoinqueue.cpp
     ${TESTS_SOURCE_DIR}/game/minigamesession.cpp
     ${TESTS_SOURCE_DIR}/game/padinput.cpp
     ${TESTS_SOURCE_DIR}/game/modulename.cpp

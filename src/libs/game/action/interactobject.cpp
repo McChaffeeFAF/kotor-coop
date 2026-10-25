@@ -17,6 +17,8 @@
 
 #include "reone/game/action/interactobject.h"
 
+#include "commonactions.h"
+
 #include "reone/game/game.h"
 #include "reone/game/object/creature.h"
 #include "reone/game/object/placeable.h"
@@ -37,7 +39,7 @@ void InteractObjectAction::execute(std::shared_ptr<Action> self, Object &actor, 
     }
     if (auto *creature = dyn_cast<Creature>(&actor)) {
         float useDistance = creature->creaturePersonalSpace() + kUseReach;
-        if (!creature->navigateTo(_placeable->position(), false, useDistance, dt)) {
+        if (!approachObject(_game, *creature, *_placeable, false, _approach, useDistance, dt)) {
             if (!creature->navigationFailed()) {
                 return;
             }

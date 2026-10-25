@@ -143,12 +143,13 @@ std::unique_ptr<Options> OptionsParser::parse() {
         ("coop-name", value<std::string>()->default_value(""), "co-op player name")                                            //
         ("coop-slot", value<std::string>()->default_value(""), "co-op client: the companion tag to ask for; empty for any")    //
         ("coop-host-only-transitions", value<bool>()->default_value(false)->implicit_value(true), "co-op host: only the host's exit moves the party (no ready check)") //
+        ("coop-host-only-scenes", value<bool>()->default_value(true)->implicit_value(true), "co-op host: only the host's character starts scripted conversations and cutscenes (a guest entering their trigger does not)") //
         ("coop-host-only-trading", value<bool>()->default_value(false)->implicit_value(true), "co-op host: only the host may open Story Mode stores") //
         ("coop-no-pause", value<bool>()->default_value(false)->implicit_value(true), "co-op host: nobody can pause (fully real-time)") //
         ("coop-pause-cooldown", value<float>()->default_value(0.0f), "co-op host: seconds a player waits between pauses") //
         ("coop-enemy-scaling", value<float>()->default_value(1.0f), "co-op host: enemy HP/damage scaling per extra player; 1 is the design curve, 0 off") //
         ("dev", value<bool>()->default_value(options->game.developer), "enable developer mode")                                 //
-        ("smart-companions", value<bool>()->default_value(false)->implicit_value(true), "Smarter companions: an engine-side brain fights for AI-controlled party members on the generic combat scripts (and for the player under auto-combat)") //
+        ("smart-companions", value<bool>()->default_value(true)->implicit_value(true), "Smarter companions (on by default; --smart-companions=0 turns them off): an engine-side brain fights for AI-controlled party members on the generic combat scripts (and for the player under auto-combat)") //
         ("autocombat", value<bool>()->default_value(false)->implicit_value(true), "the player character starts with auto-combat on (the AI fights for it; any input overrides)") //
         ("width", value<int>()->default_value(options->graphics.width), "render width")                                         //
         ("height", value<int>()->default_value(options->graphics.height), "render height")                                      //
@@ -396,6 +397,7 @@ std::unique_ptr<Options> OptionsParser::parse() {
     options->coop.name = vars["coop-name"].as<std::string>();
     options->coop.slot = vars["coop-slot"].as<std::string>();
     options->coop.hostOnlyTransitions = vars["coop-host-only-transitions"].as<bool>();
+    options->coop.hostOnlyScenes = vars["coop-host-only-scenes"].as<bool>();
     options->coop.hostOnlyTrading = vars["coop-host-only-trading"].as<bool>();
     options->coop.noPause = vars["coop-no-pause"].as<bool>();
     options->coop.pauseCooldown = vars["coop-pause-cooldown"].as<float>();

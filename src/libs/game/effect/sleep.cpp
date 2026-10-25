@@ -17,6 +17,7 @@
 
 #include "reone/game/effect/sleep.h"
 
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -32,6 +33,7 @@ bool SleepEffect::onApply(Object &object, const EffectInstance &instance) {
     if (creature->hasEffectImmunity(
             ImmunityType::Sleep,
             creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::Sleep);
         return false;
     }
     creature->enterHeldPose();

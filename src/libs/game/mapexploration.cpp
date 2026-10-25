@@ -17,6 +17,9 @@
 
 #include "reone/game/mapexploration.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace reone {
 
 namespace game {
@@ -70,6 +73,38 @@ bool MapExploration::unpack(int columns, int rows, const std::vector<uint32_t> &
     }
     for (size_t i = 0; i < _cells.size(); ++i) {
         _cells[i] = (words[i / 32] >> (i % 32)) & 1u;
+    }
+    return true;
+}
+
+std::vector<uint8_t> MapExploration::bytes() const {
+    std::vector<uint8_t> result((_cells.size() + 7) / 8, 0);
+    for (size_t i = 0; i < _cells.size(); ++i) {
+        if (_cells[i]) {
+            result[i / 8] |= static_cast<uint8_t>(1u << (i % 8));
+        }
+    }
+    return result;
+}
+
+bool MapExploration::setBytes(int columns, int rows, const std::vector<uint8_t> &bytes) {
+    if (columns != _columns || rows != _rows || bytes.size() * 8 < _cells.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < _cells.size(); ++i) {
+        _cells[i] = (bytes[i / 8] >> (i % 8)) & 1u;
+    }
+    return true;
+}
+
+bool MapExploration::mergeBytes(int columns, int rows, const std::vector<uint8_t> &bytes) {
+    if (columns != _columns || rows != _rows || bytes.size() * 8 < _cells.size()) {
+        return false;
+    }
+    for (size_t i = 0; i < _cells.size(); ++i) {
+        if ((bytes[i / 8] >> (i % 8)) & 1u) {
+            _cells[i] = true;
+        }
     }
     return true;
 }

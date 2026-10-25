@@ -17,6 +17,8 @@
 
 #include "reone/game/action/opencontainer.h"
 
+#include "commonactions.h"
+
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
 #include "reone/game/object/creature.h"
@@ -56,7 +58,7 @@ void OpenContainerAction::execute(std::shared_ptr<Action> self, Object &actor, f
     }
 
     auto &creatureActor = cast<Creature>(actor);
-    bool reached = creatureActor.navigateTo(_object->position(), true, kDefaultMaxObjectDistance, dt);
+    bool reached = approachObject(_game, creatureActor, *_object, true, _approach, kDefaultMaxObjectDistance, dt);
     if (reached) {
         openAt(actor);
         complete();

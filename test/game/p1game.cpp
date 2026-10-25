@@ -186,3 +186,34 @@ TEST(P1GameMapFog, PackedGridRoundTrips) {
     // A grid of another size is refused.
     EXPECT_FALSE(restored.unpack(40, 20, words));
 }
+
+TEST(P1GameMapFog, SharedGridBytesAggregateAndApply) {
+    // The host's grid is the union of what each player's character revealed;
+    // a client applies it exactly (replace), never adds cells of its own.
+    MapExploration host;
+    host.reset(89, 44);
+    host.reveal(glm::vec2(0.2f, 0.2f), MapExploration::kPartyRevealRadius); // the host's character
+    host.reveal(glm::vec2(0.8f, 0.7f), MapExploration::kPartyRevealRadius); // a guest's character
+    auto bytes = host.bytes();
+    EXPECT_EQ((89u * 44u + 7u) / 8u, bytes.size());
+
+    MapExploration client;
+    client.reset(89, 44);
+    client.reveal(glm::vec2(0.5f, 0.5f), 2); // local-only cells vanish when the host's grid arrives
+    ASSERT_TRUE(client.setBytes(89, 44, bytes));
+    EXPECT_EQ(host.exploredCount(), client.exploredCount());
+    EXPECT_EQ(bytes, client.bytes());
+    EXPECT_FALSE(client.isExplored(44, 22));
+
+    // merge is a union; a wrong size or short buffer changes nothing.
+    MapExploration other;
+    other.reset(89, 44);
+    other.reveal(glm::vec2(0.5f, 0.5f), 1);
+    ASSERT_TRUE(client.mergeBytes(89, 44, other.bytes()));
+    EXPECT_EQ(host.exploredCount() + other.exploredCount(), client.exploredCount());
+    int before = client.exploredCount();
+    EXPECT_FALSE(client.setBytes(40, 20, bytes));
+    EXPECT_FALSE(client.setBytes(89, 44, std::vector<uint8_t>(10, 0xff)));
+    EXPECT_FALSE(client.mergeBytes(89, 44, std::vector<uint8_t>(10, 0xff)));
+    EXPECT_EQ(before, client.exploredCount());
+}

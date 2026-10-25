@@ -243,8 +243,13 @@ void Trigger::addTenant(const std::shared_ptr<Object> &object) {
     _tenants.insert(object);
     syncDebugVisual();
     uint32_t entering = object ? object->id() : script::kObjectInvalid;
+    bool held = false;
     if (auto *coop = _game.coop()) {
-        entering = coop->scriptActor(entering); // a player's creature counts as the PC
+        // Host-only scenes: a guest's creature does not start this trigger's
+        // conversation or cutscene; it starts when the host's character arrives.
+        held = coop->hostHoldsScene(entering, _onEnter);
+        // a player's creature counts as the PC (a held scene's script does not run: no need to read it)
+        entering = held ? coop->scriptActor(entering) : coop->scriptActor(entering, _onEnter);
     }
     // Kept before a trap goes off, so its script reads the victim.
     setLastEntered(entering);
@@ -256,7 +261,7 @@ void Trigger::addTenant(const std::shared_ptr<Object> &object) {
             fireTrap(object->id());
         }
     }
-    if (_onEnter.empty()) {
+    if (_onEnter.empty() || held) {
         return;
     }
 
@@ -272,7 +277,10 @@ void Trigger::runClickScript(uint32_t clickerId) {
         return;
     }
     if (auto *coop = _game.coop()) {
-        clickerId = coop->scriptActor(clickerId); // a player's creature counts as the PC
+        if (coop->hostHoldsScene(clickerId, _onClick)) {
+            return; // host-only scenes: the host's character starts it
+        }
+        clickerId = coop->scriptActor(clickerId, _onClick); // a player's creature counts as the PC
     }
     setLastEntered(clickerId);
     _game.scriptRunner().run(

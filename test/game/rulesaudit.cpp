@@ -17,7 +17,7 @@
 
 // Audit of the d20 rules layer against the public KotOR / d20 rules: saving
 // throws, the damage pipeline, effect stacking and lifetimes. Every test uses
-// synthetic tables and values written out in the test. docs/combat_rules_audit.md
+// synthetic tables and values written out in the test. docs/dev/combat_rules_audit.md
 // lists, rule by rule, what was already right, what this audit fixed and what
 // it added.
 

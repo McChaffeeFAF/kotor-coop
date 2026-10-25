@@ -15,10 +15,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// NWScript routines implemented in tranche 4 (docs/routines_missing.md): the
+// NWScript routines implemented in tranche 4 (docs/dev/routines_missing.md): the
 // remaining string, message, creature, party, item and placeable routines.
 // Where the public documentation is silent the chosen behaviour is stated in
-// the test and in docs/routines_missing.md.
+// the test and in docs/dev/routines_missing.md.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

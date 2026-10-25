@@ -21,6 +21,9 @@
 #include "reone/game/action/switchweapons.h"
 
 #include "reone/game/coopsession.h"
+#include "reone/game/gui/confirmpopup.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/strings.h"
 #include "reone/graphics/preset.h"
 #include "reone/resource/provider/textures.h"
 
@@ -35,6 +38,8 @@
 #include "reone/system/logutil.h"
 
 #include <algorithm>
+
+#include <boost/format.hpp>
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -72,6 +77,12 @@ void Game::loadUserSettings() {
         _userSettings.load(_options.game.configurationPath.parent_path() / UserSettings::kFilename);
     }
     applyUserSettings(false);
+    // What the player's settings (or the built-in defaults) put in force at
+    // startup, in the log: the same values the options screens show.
+    info(str(boost::format("Settings: smart companions %d, bloom %d, ambient occlusion %d, anti-aliasing %d, volumes music %d voice %d sound %d movie %d") %
+             (_options.game.smartCompanions ? 1 : 0) % (_options.graphics.bloom ? 1 : 0) % (_options.graphics.gtao ? 1 : 0) %
+             static_cast<int>(graphics::antiAliasing(_options.graphics)) % _options.audio.musicVolume % _options.audio.voiceVolume %
+             _options.audio.soundVolume % _options.audio.movieVolume));
 }
 
 void Game::applyUserSettings(bool save) {
@@ -92,6 +103,7 @@ void Game::applyUserSettings(bool save) {
     _options.graphics.shadows = s.getBool("optgraphics.CB_SHADOWS", launch.shadows);
     _options.graphics.vsync = s.getBool("optgraphicsadv.CB_VSYNC", launch.vsync);
     _options.game.smartCompanions = s.getBool(kSmartCompanionsSetting, launch.smartCompanions);
+    _options.game.cameos = s.getBool(kCameosSettingName, true);
 
     // Enhanced preset features (Options > Graphics > Advanced); unset keys
     // keep the launch values, so with no settings the look is unchanged.
@@ -198,6 +210,25 @@ void Game::toggleSoloModeAsKey() {
     if (_coop && _coop->isClient()) {
         return; // co-op: the party's follow mode is the host's
     }
+    auto leader = _party.getLeader();
+    if (_party.isSoloMode() && leader && leader->isStealthed()) {
+        // TLK 37892: "Turning off Solo Mode will take you out of Stealth Mode. Do you wish to turn off Solo Mode?"
+        if (!_confirmPopup) {
+            _confirmPopup = tryLoadGUI<ConfirmPopup>();
+        }
+        if (_confirmPopup && !_confirmPopup->isVisible()) {
+            uint32_t id = leader->id();
+            _confirmPopup->showConfirm(
+                _services.resource.strings.getText(stealth::kStrRefSoloOffEndsStealth),
+                [this, id]() {
+                    _party.setSoloMode(false);
+                    if (auto again = getObjectById<Creature>(id)) {
+                        endStealth(*again);
+                    }
+                });
+        }
+        return;
+    }
     _party.setSoloMode(!_party.isSoloMode());
 }
 
@@ -288,6 +319,9 @@ bool Game::dispatchKeyAction(KeyAction action) {
             leader->cancelLastQueuedAction();
         }
         return true;
+    case KeyAction::Stealth:
+        toggleStealthAsKey();
+        return true;
     case KeyAction::CoopPing:
         if (!_coop) {
             return false;
@@ -295,7 +329,7 @@ bool Game::dispatchKeyAction(KeyAction action) {
         pingAtCursor();
         return true;
     default:
-        // Bound but not acted on yet (Quickload, Stealth): design note p1_ui.
+        // Bound but not acted on yet (Quickload): design note p1_ui.
         return false;
     }
 }

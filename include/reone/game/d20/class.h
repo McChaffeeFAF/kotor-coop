@@ -17,6 +17,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "reone/resource/format/2dareader.h"
 
 #include "../types.h"
@@ -119,6 +121,12 @@ public:
      */
     const std::vector<SkillType> &recommendedSkills() const { return _recommendedSkills; }
 
+    /**
+     * @return the class's primary ability (classes.2da primaryabil: STR, DEX,
+     *         CON, INT, WIS or CHA), or none when the column is blank or missing
+     */
+    std::optional<Ability> primaryAbility() const { return _primaryAbility; }
+
 private:
     ClassType _type;
     std::string _name;
@@ -133,6 +141,7 @@ private:
     std::vector<SkillType> _recommendedSkills;
     int _forceDie {0};
     bool _spellCaster {false};
+    std::optional<Ability> _primaryAbility;
     std::unordered_map<int, SavingThrows> _savingThrowsByLevel;
     std::unordered_map<int, int> _featGainsByLevel;
     std::unordered_map<int, int> _powerGainsByLevel;

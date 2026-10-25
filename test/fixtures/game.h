@@ -199,6 +199,7 @@ class TestGameModule : boost::noncopyable {
 public:
     static std::pair<std::string, std::string> scheduledTransition(const Game &game);
     static void loadAreaBehaviourFlags(Area &area, const resource::generated::ARE &are);
+    static void loadAreaFlagsFromGit(Area &area, const resource::Gff &gff);
     static void configurePazaak(
         Game &game,
         bool guiLoadSucceeds,
@@ -213,6 +214,8 @@ public:
     static void raiseTimingDiscontinuity(Game &game);
     /** One simulation tick passes, as far as tickCount() tells (co-op snapshots carry it). */
     static void advanceTick(Game &game);
+    /** As Game::tick does between its start and its conversation step. */
+    static void setConversationStepPending(Game &game, bool pending);
     static void initConsole(Game &game);
     static void setActiveModule(Game &game, bool active);
     static void setActiveModuleArea(Game &game, std::shared_ptr<Area> area);
@@ -264,6 +267,8 @@ public:
     static void setOnNotice(Creature &creature, std::string script);
     static void setOnUserDefined(Object &object, std::string script);
     static void setDead(Object &object, bool dead);
+    /** Put an item in a slot with no item rules (no baseitems table in a test). */
+    static void equipForTest(Creature &creature, int slot, const std::shared_ptr<Item> &item);
     static void updatePerception(Area &area);
     static void checkTriggers(Area &area, const std::shared_ptr<Object> &object);
     static void publishPartyRuntimeState(

@@ -17,6 +17,7 @@
 
 #include "reone/game/effect/droidstun.h"
 
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -35,6 +36,7 @@ bool DroidStunEffect::onApply(Object &object, const EffectInstance &instance) {
     if (creature->hasEffectImmunity(
             ImmunityType::Stun,
             creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::Stun);
         return false;
     }
     creature->enterHeldPose();

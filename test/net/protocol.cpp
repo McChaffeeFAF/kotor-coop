@@ -47,6 +47,8 @@ EntityState sampleEntity() {
     s.doorTransition = 0;
     s.flags = kFlagVisible | kFlagSelectable;
     s.attackTarget = 7;
+    s.faction = 1; // Hostile_1
+    s.progress = kProgressLevelUp;
     return s;
 }
 
@@ -68,6 +70,7 @@ Snapshot sampleSnapshot() {
     snapshot.world.conversation.speaker = "end_trask";
     snapshot.world.conversation.replies = {90, 92};
     snapshot.world.conversation.entryEnded = true;
+    snapshot.world.conversation.placeableCamera = 22;
     snapshot.world.party = {{-1, 3}, {0, 9}};
     snapshot.world.leader = 3;
     snapshot.world.movieName = "01a";
@@ -322,6 +325,8 @@ TEST(NetProtocol, snapshot_round_trips_every_field) {
     EXPECT_EQ(b.animSpeed, a.animSpeed);
     EXPECT_EQ(b.armor, a.armor);
     EXPECT_EQ(b.headgear, a.headgear);
+    EXPECT_EQ(b.faction, a.faction);
+    EXPECT_EQ(b.progress, a.progress);
     EXPECT_EQ(kFieldPosition, out.entities[1].fields);
     EXPECT_EQ(10.0f, out.entities[1].state.position.x);
     EXPECT_EQ(kFieldRemoved, out.entities[2].fields);
@@ -503,6 +508,14 @@ TEST(NetProtocol, snapshot_rejects_invalid_fields) {
     auto badDoor = snapshot;
     badDoor.entities[0].state.doorState = 9;
     EXPECT_FALSE(decode(encode(badDoor), out));
+
+    auto badFaction = snapshot;
+    badFaction.entities[0].state.faction = static_cast<uint8_t>(kMaxFactions);
+    EXPECT_FALSE(decode(encode(badFaction), out));
+    auto noFaction = snapshot;
+    noFaction.entities[0].state.faction = kNoFaction;
+    EXPECT_TRUE(decode(encode(noFaction), out));
+    EXPECT_EQ(kNoFaction, out.entities[0].state.faction);
 
     auto badFade = snapshot;
     badFade.world.fadeOpacity = 2.0f;
@@ -739,6 +752,17 @@ TEST(NetProtocol, diff_names_each_changed_field_and_ignores_noise) {
     auto retarget = base;
     retarget.attackTarget = 8;
     EXPECT_EQ(kFieldTarget, diffEntity(base, retarget));
+
+    // ChangeToStandardFaction on the host: only the faction travels.
+    auto turned_hostile = base;
+    turned_hostile.faction = 3;
+    EXPECT_EQ(kFieldFaction, diffEntity(base, turned_hostile));
+    EXPECT_EQ(kFieldFaction, exactDiffEntity(base, turned_hostile));
+    EntityState merged = base;
+    mergeEntity(merged, turned_hostile, kFieldFaction);
+    EXPECT_EQ(3, merged.faction);
+    mergeEntity(merged, base, kFieldPosition);
+    EXPECT_EQ(3, merged.faction) << "a delta without the faction keeps it";
 }
 
 TEST(NetProtocol, merge_copies_only_the_masked_fields) {
@@ -992,4 +1016,20 @@ TEST(NetTransport, socket_host_drains_a_flood_within_its_per_poll_budget) {
     EXPECT_EQ(1u, refused);
     EXPECT_EQ(kMaxClientMessageBytes + 1000, refusedBytes);
     EXPECT_LE(largestPoll, 512u);
+}
+
+TEST(NetEntityDiff, a_look_change_is_its_own_field) {
+    EntityState base;
+    base.id = 1;
+    EntityState named = base;
+    named.look.playerName = "John";
+    EXPECT_EQ(kFieldLook, diffEntity(base, named));
+    EXPECT_EQ(kFieldLook, exactDiffEntity(base, named));
+    EntityState equipped = named;
+    equipped.look.slots.push_back({9, "g_i_implant01"});
+    EXPECT_EQ(kFieldLook, diffEntity(named, equipped));
+    EntityState merged = base;
+    mergeEntity(merged, equipped, kFieldLook);
+    EXPECT_EQ(equipped.look, merged.look);
+    EXPECT_EQ(0, diffEntity(equipped, merged));
 }

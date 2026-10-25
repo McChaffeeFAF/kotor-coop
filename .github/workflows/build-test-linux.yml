@@ -1,15 +1,28 @@
 name: Build and run tests on Linux
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    container:
-      image: "ubuntu:25.10"
+  build-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/build-linux
+
+      # Installs the apt packages, builds SDL3 and GameNetworkingSockets from
+      # source (Ubuntu 24.04 packages neither), configures with the toolkit,
+      # launcher and other upstream tools off, builds the tests and runs them.
+      # The tests use synthetic data only: no game files, display or network.
+      - name: Build and run the unit tests
+        shell: bash
+        run: tools/cloud/linux_test.sh

@@ -17,6 +17,7 @@
 
 #include "reone/game/effect/paralyze.h"
 
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -32,6 +33,7 @@ bool ParalyzeEffect::onApply(Object &object, const EffectInstance &instance) {
     if (creature->hasEffectImmunity(
             ImmunityType::Paralysis,
             creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::Paralysis);
         return false;
     }
     creature->enterHeldPose();

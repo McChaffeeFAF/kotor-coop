@@ -3,6 +3,7 @@
 #include "reone/game/coopreplication.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include <boost/algorithm/string.hpp>
 
@@ -60,6 +61,24 @@ void syncSlot(Game &game, Creature &creature, int slot, const std::string &want)
 
 } // namespace
 
+static const scene::ModelSceneNode::AnimationChannel *replicatedChannel(const scene::ModelSceneNode &model) {
+    // The one clip a client plays is the body's. Layers ride on top of it
+    // (the talk layer, a scripted overlay gesture) and an overlay set is the
+    // body clip under the head's talk clip: sending the front channel gave
+    // the client the head alone, and a talking creature stood in its bind
+    // pose (alpha-0.4.5 Trask in Story Mode).
+    const auto &channels = model.animationChannels();
+    auto base = model.baseAnimationChannel();
+    if (!base) {
+        return nullptr;
+    }
+    const auto *channel = &base->get();
+    if (channel->properties.flags & scene::AnimationFlags::overlay) {
+        channel = &channels.back();
+    }
+    return channel->anim ? channel : nullptr;
+}
+
 bool CoopReplication::isReplicated(const Object &object) {
     switch (object.type()) {
     case ObjectType::Creature:
@@ -81,9 +100,8 @@ EntityState CoopReplication::capture(const Object &object, const std::string &ke
     s.position = {object.position().x, object.position().y, object.position().z};
     s.facing = dequantizeFacing(quantizeFacing(object.getFacing()));
     if (auto model = modelOf(object)) {
-        const auto &channels = model->animationChannels();
-        if (!channels.empty() && channels.front().anim) {
-            const auto &channel = channels.front();
+        if (const auto *body = replicatedChannel(*model)) {
+            const auto &channel = *body;
             s.anim = channel.anim->name();
             s.animTime = std::max(0.0f, channel.time);
             s.animFlags = static_cast<uint16_t>(channel.properties.flags & 0xffff);
@@ -113,8 +131,25 @@ EntityState CoopReplication::capture(const Object &object, const std::string &ke
         if (creature.isInConversation()) {
             flags |= kFlagInConversation;
         }
+        if (creature.isStealthed()) {
+            flags |= kFlagStealthed;
+        }
+        if (creature.autoCombat()) {
+            flags |= kFlagAutoCombat;
+        }
         if (auto target = creature.getAttackTarget()) {
             s.attackTarget = target->id();
+        }
+        // The HUD's level-up icon: a client computes nothing from its own copy.
+        if (creature.isLevelUpPending()) {
+            s.progress |= kProgressLevelUp;
+        }
+        // The faction the host's reputation rules use: a guest's client runs
+        // no scripts, so ChangeToStandardFaction and friends reach it here.
+        // Party members and Free Mode guests are the player faction.
+        {
+            int faction = static_cast<int>(creature.reputationFaction());
+            s.faction = faction >= 0 && faction < static_cast<int>(kMaxFactions) ? static_cast<uint8_t>(faction) : kNoFaction;
         }
         break;
     }
@@ -159,6 +194,13 @@ void CoopReplication::apply(Game &game, Object &object, const EntityState &state
     }
     if (fields & kFieldFlags) {
         object.setVisible((state.flags & kFlagVisible) != 0);
+        if (object.type() == ObjectType::Creature) {
+            // The host's word on Stealth Mode: the HUD toggle and walking.
+            // The shimmer arrives as the host's VfxBegin.
+            static_cast<Creature &>(object).setReplicaStealthMode((state.flags & kFlagStealthed) != 0);
+            // And on auto-combat: the player's HUD toggle shows it lit.
+            static_cast<Creature &>(object).setAutoCombat((state.flags & kFlagAutoCombat) != 0);
+        }
     }
     if (fields & kFieldVitals) {
         object._currentHitPoints = state.hp;
@@ -173,12 +215,41 @@ void CoopReplication::apply(Game &game, Object &object, const EntityState &state
             placeable->setLocked(state.locked);
         }
     }
+    if ((fields & kFieldFaction) && object.type() == ObjectType::Creature) {
+        auto &creature = static_cast<Creature &>(object);
+        creature.setFaction(state.faction == kNoFaction ? Faction::Invalid : static_cast<Faction>(state.faction));
+    }
+    if ((fields & kFieldProgress) && object.type() == ObjectType::Creature) {
+        // The host's word on a level being due: the client's copy of a
+        // creature has its own template XP and classes, not the host's.
+        static_cast<Creature &>(object).setReplicaLevelUp((state.progress & kProgressLevelUp) != 0);
+    }
     if ((fields & kFieldWeapons) && object.type() == ObjectType::Creature) {
         auto &creature = static_cast<Creature &>(object);
         syncSlot(game, creature, InventorySlots::body, state.armor);
         syncSlot(game, creature, InventorySlots::rightWeapon, state.rightWeapon);
         syncSlot(game, creature, InventorySlots::leftWeapon, state.leftWeapon);
         syncSlot(game, creature, InventorySlots::head, state.headgear);
+    }
+    if ((fields & (kFieldLook | kFieldWeapons)) && object.type() == ObjectType::Creature && state.look.bodyVariation >= 0) {
+        // A stand-in: the whole look the host built (head, the other
+        // equipment slots, the body model and texture), in the same order.
+        auto &creature = static_cast<Creature &>(object);
+        const auto &look = state.look;
+        for (int slot : {InventorySlots::hands, InventorySlots::leftArm, InventorySlots::rightArm, InventorySlots::implant,
+                         InventorySlots::belt, InventorySlots::rightWeapon2, InventorySlots::leftWeapon2}) {
+            std::string want;
+            for (const auto &entry : look.slots) {
+                if (entry.slot == slot) {
+                    want = entry.item;
+                }
+            }
+            syncSlot(game, creature, slot, want);
+        }
+        if (look.headRow >= 0 && creature.headRow() != look.headRow) {
+            creature.setHeadOverride(look.headRow);
+        }
+        creature.setReplicaBodyLook(look.bodyVariation, look.textureVariation);
     }
     if ((fields & kFieldDoor) && object.type() == ObjectType::Door) {
         auto &door = static_cast<Door &>(object);
@@ -214,6 +285,41 @@ void CoopReplication::apply(Game &game, Object &object, const EntityState &state
     if (auto model = modelOf(object)) {
         model->setPickable(object.isSelectable());
     }
+}
+
+bool CoopReplication::playingAnimation(const Object &object, std::string &name, float &time) {
+    auto model = modelOf(object);
+    if (!model) {
+        return false;
+    }
+    const auto *channel = replicatedChannel(*model);
+    if (!channel) {
+        // No base clip: whatever plays on top (an overlay set the host sent alone).
+        for (const auto &candidate : model->animationChannels()) {
+            if (candidate.anim) {
+                channel = &candidate;
+                break;
+            }
+        }
+    }
+    if (!channel) {
+        return false;
+    }
+    name = channel->anim->name();
+    time = channel->time;
+    return true;
+}
+
+bool CoopReplication::animationDue(const EntityState &sent, const EntityState &current, uint32_t tick, float tickSeconds,
+                                   bool clientHasNoBase) {
+    if (current.anim.empty()) {
+        return false;
+    }
+    if (clientHasNoBase) {
+        return true;
+    }
+    float expected = sent.animTime + static_cast<float>(tick - sent.animSentTick) * tickSeconds * sent.animSpeed;
+    return std::fabs(current.animTime - expected) > kAnimResync;
 }
 
 void CoopReplication::presentTransform(Object &object, const Vec3 &position, float facing) {

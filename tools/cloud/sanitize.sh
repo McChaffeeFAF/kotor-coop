@@ -28,6 +28,10 @@ export LD_LIBRARY_PATH="$SDL3_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 LINKER=""
 command -v ld.lld >/dev/null && LINKER="-DCMAKE_EXE_LINKER_FLAGS=-fuse-ld=lld"
 
+# Clang + lld links the full ASan tests binary here; GCC + lld fails with
+# "R_X86_64_PC32 out of range" against libasan.so. Prefer clang; override with CC/CXX.
+if command -v clang++ >/dev/null; then export CC="${CC:-clang}" CXX="${CXX:-clang++}"; fi
+
 cmake -S "$ROOT" -B "$BUILD_DIR" -G Ninja $LINKER -DCMAKE_BUILD_TYPE=RelWithDebInfo \
     -DCMAKE_CXX_FLAGS_RELWITHDEBINFO="-O1 ${SAN_G:--g}" \
     -DBUILD_LAUNCHER=OFF -DBUILD_TOOLKIT=OFF -DBUILD_DATAMINER=OFF \

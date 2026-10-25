@@ -5,7 +5,7 @@ A routine is "missing" when its function body throws RoutineNotImplementedExcept
 (the engine logs "Routine not implemented" and returns a default). The inventory is
 read from the sources only: src/libs/game/script/routine/impl/*.cpp.
 
-    tools/cloud/routine_inventory.py            # write docs/routines_missing.md
+    tools/cloud/routine_inventory.py            # write docs/dev/routines_missing.md
     tools/cloud/routine_inventory.py --check    # exit 1 if the doc is out of date
 """
 import re
@@ -14,7 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 IMPL = ROOT / "src/libs/game/script/routine/impl"
-DOC = ROOT / "docs/routines_missing.md"
+DOC = ROOT / "docs/dev/routines_missing.md"
 
 REGISTRATION = re.compile(r'insert\(\s*(\d+)\s*,\s*"(\w+)"\s*,\s*(R_\w+)\s*,\s*\{([^}]*)\}\s*,\s*&(\w+)\s*\)')
 REGISTER_FUNC = re.compile(r'void Routines::register(\w+?)(Kotor|Tsl)Routines\(\)\s*\{')

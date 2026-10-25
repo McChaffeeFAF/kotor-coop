@@ -48,6 +48,7 @@ const std::map<std::string, std::string> &UserSettings::builtinDefaults() {
         {"graphics.antialiasing", "2"},
         {"optgameplay.CB_DISABLEMOVE", "1"},
         {"optgameplay.CB_LEVELUP", "0"},
+        {"optgameplay.CB_CAMEOS", "1"},
         {"optgameplay.CB_SMARTCOMPANIONS", "1"},
         {"optgraphicsadv.CB_AMBIENTOCC", "1"},
         {"optgraphicsadv.CB_AUTOEXPOSURE", "1"},

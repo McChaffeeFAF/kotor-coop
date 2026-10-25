@@ -44,7 +44,7 @@ sources in `src/libs/<lib>/`, tests in `test/<lib>/`.
 - `combat.cpp`, `attack.cpp`, `d20/`: combat rounds, attack rolls, feats, spells
   (Force powers) and classes.
 - `script/routine/impl/`: the NWScript routines the engine implements
-  ([routines_missing.md](routines_missing.md) lists the ones still missing).
+  ([routines_missing.md](dev/routines_missing.md) lists the ones still missing).
 - `gui/`: the game's screens (HUD, main menu, conversation, character, inventory,
   options, workbench, ...).
 - `savegame.cpp`, `savedgame.cpp`, `savedruntime.cpp`: reading and writing the game's

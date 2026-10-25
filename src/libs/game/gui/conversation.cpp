@@ -441,7 +441,8 @@ void Conversation::cleanupForModuleTransition() {
 void Conversation::loadEntry(int index, bool start) {
     auto generation = _generation;
     auto dialog = _dialog; // retain nodes across callbacks, including conditions
-    debug("Load entry " + std::to_string(index), LogChannel::Conversation);
+    debug(str(boost::format("Cutscene: tick %u load entry %d of %s") % _game.tickCount() % index % _dialog->resRef),
+          LogChannel::Conversation);
     _currentEntry = &_dialog->getEntry(index);
     // A placeable camera cut lasts for the entry whose script asked for it.
     _placeableCamera.reset();
@@ -475,15 +476,41 @@ void Conversation::loadEntry(int index, bool start) {
         return;
     }
 
-    // Conversation is a one-liner if there is exactly one empty reply that has no entries
+    // A conversation is a one-liner when it opens on an entry with one reply
+    // that leads to no entry; the reply's text and condition play no part
+    // (upstream #356). Only cinematic conversations qualify, and computer
+    // ones in KotOR; TSL computer conversations and other types never do.
+    // An entry with no replies at all keeps being a full conversation.
     bool oneLiner = false;
-    if (start && _replies.size() == 1ll) {
-        const Dialog::EntryReply &reply = *_replies[0];
-        oneLiner = reply.text.empty() && reply.entries.empty();
+    if (start) {
+        const auto type = _dialog->conversationType;
+        const bool typeAllows = type == ConversationType::Cinematic ||
+                                (type == ConversationType::Computer && !_game.isTSL());
+        const auto &links = _currentEntry->replies;
+        const int replyIndex = links.size() == 1 ? links.front().index : -1;
+        if (typeAllows && replyIndex >= 0 && replyIndex < static_cast<int>(_dialog->replies.size())) {
+            const Dialog::EntryReply &reply = _dialog->getReply(replyIndex);
+            if (reply.entries.empty()) {
+                oneLiner = true;
+                if (_replies.empty()) {
+                    // Its condition failed; the reply's action still runs.
+                    _replies.push_back(&reply);
+                }
+            }
+        }
     }
+    // A node with nothing to show passes straight on, unless its script has
+    // queued a pause: then it is held like any entry (and ends at once on
+    // the resume). tar08_davik081 E14 pauses, fades out and moves the party
+    // behind the black before Davik resumes; passing it on let E15's fade-in
+    // and the jumps play in view.
+    _heldEmptyEntry = false;
     if (!oneLiner && isNonPresentationalEntry()) {
-        pickReply(0);
-        return;
+        if (!_game.conversationPauseQueued()) {
+            pickReply(0);
+            return;
+        }
+        _heldEmptyEntry = true;
     }
 
     scheduleEndOfEntry();
@@ -561,13 +588,19 @@ static std::string getCameraAnimationName(int ordinal) {
 
 void Conversation::scheduleEndOfEntry() {
     float duration = kDefaultEntryDuration;
+    _entryTimedByAnimation = false;
+    _skipRequested = false;
+    _entryLoadTick = _game.tickCount();
 
     if (_cameraModel && usesCameraAnimation(_currentEntry) && (_currentEntry->waitFlags & Dialog::WaitFlags::waitAnimFinish)) {
+        _entryTimedByAnimation = true;
         std::string animName(getCameraAnimationName(_currentEntry->cameraAnimation));
         std::shared_ptr<Animation> animation(_cameraModel->getAnimation(animName));
         if (animation) {
             duration = animation->length();
         }
+    } else if (_heldEmptyEntry) {
+        duration = 0.0f;
     } else if (_currentEntry->delay != -1) {
         duration = static_cast<float>(_currentEntry->delay);
     } else if (_currentVoice) {
@@ -577,6 +610,11 @@ void Conversation::scheduleEndOfEntry() {
     _entryEnded = false;
     _entryDuration = duration;
     _endEntryTimer.reset(duration);
+    _entryEndDeferred = _game.conversationStepPending();
+    debug(str(boost::format("Cutscene: tick %u entry duration %.3f (delay %d, voice %.3f)%s") % _game.tickCount() %
+              duration % _currentEntry->delay % (_currentVoice ? _currentVoice->duration() : 0.0f) %
+              (_entryEndDeferred ? " deferred" : "")),
+          LogChannel::Conversation);
 }
 
 void Conversation::loadReplies() {
@@ -689,6 +727,7 @@ bool Conversation::handleMouseButtonDown(const input::MouseButtonEvent &event) {
     }
     if (event.button == input::MouseButton::Left && !_entryEnded && isSkippableEntry()) {
         _endEntryTimer.reset(0);
+        _skipRequested = true;
         return true;
     }
     return false;
@@ -716,6 +755,11 @@ void Conversation::endCurrentEntry() {
     }
     auto generation = _generation;
     _entryEnded = true;
+    debug(str(boost::format("Cutscene: tick %u entry ended") % _game.tickCount()), LogChannel::Conversation);
+    if (_game.cutsceneAuditEnabled() && _entryLoadTick == _game.tickCount() && !_skipRequested && !(_autoSkip && _autoSkip->enabled)) {
+        info(str(boost::format("Cutscene audit: tick %u entry %d of %s ended on its start tick") % _game.tickCount() %
+                 currentEntryIndex() % _dialog->resRef));
+    }
 
     // Stop voice over, if any
     if (_currentVoice) {
@@ -813,7 +857,8 @@ int Conversation::currentEntryIndex() const {
     return static_cast<int>(_currentEntry - _dialog->entries.data());
 }
 
-void Conversation::showReplicaEntry(int entry, const std::vector<int> &replies, bool entryEnded) {
+void Conversation::showReplicaEntry(int entry, const std::vector<int> &replies, bool entryEnded,
+                                    std::optional<int> placeableCamera) {
     if (!_replica || !_dialog || entry < 0 || entry >= static_cast<int>(_dialog->entries.size())) {
         return;
     }
@@ -824,6 +869,7 @@ void Conversation::showReplicaEntry(int entry, const std::vector<int> &replies, 
         _entryEnded = false;
         setMessage(_game.substituteCustomTokens(_currentEntry->text));
     }
+    _placeableCamera = placeableCamera;
     _replies.clear();
     for (int index : replies) {
         if (index >= 0 && index < static_cast<int>(_dialog->replies.size())) {
@@ -892,13 +938,28 @@ void Conversation::updateSimulation(float dt) {
         }
         return;
     }
+    if (_entryEndDeferred) {
+        // Started earlier in this tick: the entry has existed for no time yet,
+        // and its participants' queued actions have not run. Retail content
+        // relies on this: a Delay 0 entry whose script queues
+        // ActionPauseConversation must be held, not ended, by it.
+        _entryEndDeferred = false;
+        return;
+    }
     if (!_entryEnded) {
         _endEntryTimer.update(dt);
         if (_currentVoice) {
             _voiceElapsed += dt;
         }
         bool voiceDone = _currentVoice && _voiceElapsed >= _currentVoice->duration();
-        if (!_paused && (_endEntryTimer.elapsed() || voiceDone)) {
+        // A voiced line plays out: the entry lasts its Delay or its voice,
+        // whichever is longer (Delay 0 on a voiced entry means no extra
+        // time, not a cut line). A camera-animation entry keeps its own
+        // timing, and a click skips either way.
+        bool due = _entryTimedByAnimation || _skipRequested
+                       ? (_endEntryTimer.elapsed() || voiceDone)
+                       : (_endEntryTimer.elapsed() && (!_currentVoice || voiceDone));
+        if (!_paused && due) {
             endCurrentEntry();
         }
     }
@@ -947,10 +1008,12 @@ CameraType Conversation::getCamera(int &cameraId) const {
 }
 
 void Conversation::pause() {
+    debug(str(boost::format("Cutscene: tick %u pause") % _game.tickCount()), LogChannel::Conversation);
     _paused = true;
 }
 
 void Conversation::resume() {
+    debug(str(boost::format("Cutscene: tick %u resume") % _game.tickCount()), LogChannel::Conversation);
     _paused = false;
 }
 

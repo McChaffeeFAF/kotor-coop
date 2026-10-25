@@ -130,6 +130,9 @@ void CastSpellAtObjectAction::execute(std::shared_ptr<Action> self, Object &acto
     }
     if (!_forcePaid) {
         _forcePaid = true;
+        // The cost is recorded before it is paid, as the charge stands; an
+        // item or cheat cast records it too.
+        caster.recordSpellForcePointCost(*_spell);
         if (paysForcePoints()) {
             caster.spendForcePoints(*_spell);
         }

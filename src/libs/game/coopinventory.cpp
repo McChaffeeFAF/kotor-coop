@@ -15,6 +15,7 @@
 #include <boost/algorithm/string.hpp>
 
 #include "reone/game/action/opencontainer.h"
+#include "reone/game/coopcommand.h"
 #include "reone/game/coopprogress.h"
 #include "reone/game/d20/attributes.h"
 #include "reone/game/d20/spells.h"
@@ -81,7 +82,7 @@ CommandReject CoopSession::hostCompanionCommand(HostClient &client, const Comman
     if (!actor || !actor->isRuntimeLive() || actor->isDead() || !(guest || party.isMember(*actor)) || !owner) {
         return CommandReject::ActorUnavailable;
     }
-    if (_game.movie() || _game.currentScreen() == Game::Screen::Conversation) {
+    if (_game.movie() || (_game.currentScreen() == Game::Screen::Conversation && !coopPersonalConversation(_game))) {
         return CommandReject::Busy;
     }
     if (command.type == CommandType::Equip) {
@@ -410,48 +411,43 @@ bool CoopSession::clientLevelUp(const CreatureAttributes &before, const Creature
 
 // Live-session fixes (alpha 0.2.1 playtest)
 
-uint32_t CoopSession::scriptActor(uint32_t objectId) const {
+uint32_t CoopSession::scriptActor(uint32_t objectId, const std::string &script) const {
     if (!isHost() || !isPlayerControlled(objectId)) {
         return objectId;
+    }
+    // A script that names this creature's tag is about the creature itself:
+    // tar02's Sith base trigger opens for GetTag(GetEnteringObject()) "t3m4",
+    // the Endar Spire's doors compare with GetObjectByTag("end_trask").
+    if (!script.empty()) {
+        if (auto creature = _game.getObjectById<Creature>(objectId); creature && coopScriptNamesTag(_game, script, creature->tag())) {
+            return objectId;
+        }
     }
     auto pc = _game.party().player();
     return pc ? pc->id() : objectId;
 }
 
-void CoopSession::clientSteer(float dt) {
-    // A client's movement keys (WASD, or the mouse-look walk): the host
-    // walks the player's creature, point by point, as a stream of MoveTo
-    // commands; letting go stops it. The client never moves it itself.
-    auto module = _game.module();
-    uint32_t controlled = controlledHostId();
-    auto actor = controlled ? localObjectForHost(controlled) : nullptr;
-    float facing = 0.0f;
-    bool walk = false;
-    bool moving = module && actor && _game.currentScreen() == Game::Screen::InGame && !_world.paused &&
-                  module->player().requestedMove(facing, walk);
-    if (!moving) {
-        if (_steering) {
-            _steering = false;
-            _steerTimer = 0.0f;
-            Command stop;
-            stop.type = CommandType::Cancel;
-            submitCommand(stop);
+bool CoopSession::hostHoldsScene(uint32_t objectId, const std::string &script) const {
+    // A dedicated host has no character of its own: its story driver starts scenes as before.
+    if (!isHost() || !_config.hostOnlyScenes || _config.dedicated || script.empty() || !isPlayerControlled(objectId)) {
+        return false;
+    }
+    if (!coopScriptStartsScene(_game, script)) {
+        return false;
+    }
+    // Only what a player starts by its own input waits for the host: a
+    // script that moved the creature here (a door's jump, a scripted walk)
+    // runs the scene as it would in single player.
+    if (auto creature = _game.getObjectById<Creature>(objectId)) {
+        uint64_t now = _game.tickCount();
+        uint64_t window = static_cast<uint64_t>(std::max(1, _game.tickRate()));
+        if (creature->scriptDrivenSince(now > window ? now - window : 1)) {
+            debug("Co-op: a script moved " + creature->tag() + " into " + script + "; its scene runs");
+            return false;
         }
-        return;
     }
-    _steerTimer -= dt;
-    if (_steering && _steerTimer > 0.0f) {
-        return;
-    }
-    _steering = true;
-    _steerTimer = 0.15f; // about 7 commands a second, under the host's limit
-    glm::vec2 dir(-portable::sinf(facing), portable::cosf(facing));
-    Command move;
-    move.type = CommandType::MoveTo;
-    move.point = {actor->position().x + dir.x * 3.0f, actor->position().y + dir.y * 3.0f, actor->position().z};
-    move.run = !walk;
-    submitCommand(move);
-    ++_steerCommands;
+    debug("Co-op: a player's creature walked into " + script + "; its scene waits for the host's character");
+    return true;
 }
 
 bool CoopSession::clientContextAction(const ContextAction &action, const std::shared_ptr<Object> &target) {

@@ -21,6 +21,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/coopchatui.h
     ${GAME_INCLUDE_DIR}/coopcommand.h
     ${GAME_INCLUDE_DIR}/coopflow.h
+    ${GAME_INCLUDE_DIR}/coopjoinqueue.h
     ${GAME_INCLUDE_DIR}/dedicated.h
     ${GAME_INCLUDE_DIR}/dedicatedgame.h
     ${GAME_INCLUDE_DIR}/cooploot.h
@@ -28,6 +29,9 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/coopprompts.h
     ${GAME_INCLUDE_DIR}/coopreplication.h
     ${GAME_INCLUDE_DIR}/coopsession.h
+    ${GAME_INCLUDE_DIR}/autolevel.h
+    ${GAME_INCLUDE_DIR}/cameo.h
+    ${GAME_INCLUDE_DIR}/coopcast.h
     ${GAME_INCLUDE_DIR}/coopprogress.h
     ${GAME_INCLUDE_DIR}/coopstandin.h
     ${GAME_INCLUDE_DIR}/menupresentation.h
@@ -59,6 +63,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/action/movetolocation.h
     ${GAME_INCLUDE_DIR}/action/movetoobject.h
     ${GAME_INCLUDE_DIR}/action/movetopoint.h
+    ${GAME_INCLUDE_DIR}/action/objectapproach.h
     ${GAME_INCLUDE_DIR}/action/opencontainer.h
     ${GAME_INCLUDE_DIR}/action/opendoor.h
     ${GAME_INCLUDE_DIR}/action/rest.h
@@ -348,8 +353,10 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/gui/statussummary.h
     ${GAME_INCLUDE_DIR}/journal.h
     ${GAME_INCLUDE_DIR}/statussummary.h
+    ${GAME_INCLUDE_DIR}/stealth.h
     ${GAME_INCLUDE_DIR}/location.h
     ${GAME_INCLUDE_DIR}/messagebus.h
+    ${GAME_INCLUDE_DIR}/combatfeedback.h
     ${GAME_INCLUDE_DIR}/messagelog.h
     ${GAME_INCLUDE_DIR}/minigame.h
     ${GAME_INCLUDE_DIR}/minigameview.h
@@ -613,7 +620,10 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/gui/galaxymap.cpp
     ${GAME_SOURCE_DIR}/gui/hud.cpp
     ${GAME_SOURCE_DIR}/gui/hudchat.cpp
+    ${GAME_SOURCE_DIR}/gui/hudcoop.cpp
     ${GAME_SOURCE_DIR}/gui/k1hudcontrols.cpp
+    ${GAME_SOURCE_DIR}/stealth.cpp
+    ${GAME_SOURCE_DIR}/stealthgame.cpp
     ${GAME_SOURCE_DIR}/stringtokens.cpp
     ${GAME_SOURCE_DIR}/gui/ingame/abilities.cpp
     ${GAME_SOURCE_DIR}/gui/ingame/character.cpp
@@ -640,6 +650,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/journal.cpp
     ${GAME_SOURCE_DIR}/statussummary.cpp
     ${GAME_SOURCE_DIR}/messagebus.cpp
+    ${GAME_SOURCE_DIR}/combatfeedback.cpp
     ${GAME_SOURCE_DIR}/messagelog.cpp
     ${GAME_SOURCE_DIR}/minigame.cpp
     ${GAME_SOURCE_DIR}/minigameview.cpp
@@ -721,12 +732,19 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/coopreplication.cpp
     ${GAME_SOURCE_DIR}/coopsession.cpp
     ${GAME_SOURCE_DIR}/coopfree.cpp
+    ${GAME_SOURCE_DIR}/coopscene.cpp
+    ${GAME_SOURCE_DIR}/coopmap.cpp
+    ${GAME_SOURCE_DIR}/coopjoinqueue.cpp
     ${GAME_SOURCE_DIR}/coopbench.cpp
     ${GAME_SOURCE_DIR}/coopminigame.cpp
     ${GAME_SOURCE_DIR}/coopmg.cpp
     ${GAME_SOURCE_DIR}/coopinventory.cpp
+    ${GAME_SOURCE_DIR}/autolevel.cpp
+    ${GAME_SOURCE_DIR}/cameo.cpp
+    ${GAME_SOURCE_DIR}/coopcast.cpp
     ${GAME_SOURCE_DIR}/coopprogress.cpp
-    ${GAME_SOURCE_DIR}/coopstandin.cpp)
+    ${GAME_SOURCE_DIR}/coopstandin.cpp
+    ${GAME_SOURCE_DIR}/coopcontrol.cpp)
 
 add_library(game STATIC ${GAME_HEADERS} ${GAME_SOURCES} ${CLANG_FORMAT_PATH})
 set_target_properties(game PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}$<$<CONFIG:Debug>:/debug>/lib)

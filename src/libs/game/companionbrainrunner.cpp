@@ -385,7 +385,7 @@ void runCompanionBrainRound(Game &game, Creature &creature) {
     CompanionView view;
     fillActor(view.self, creature, spells);
     view.forcePoints = creature.currentForce();
-    view.stealthed = creature.hasEffect(EffectType::Invisibility) ||
+    view.stealthed = creature.isStealthed() || creature.hasEffect(EffectType::Invisibility) ||
                      creature.hasEffect(EffectType::ImprovedInvisibility);
     int style = game.party().aiStyle();
     view.hold = game.party().isSoloMode() || style == kPartyStyleDefensive;

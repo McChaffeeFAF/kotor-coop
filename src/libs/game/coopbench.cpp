@@ -163,6 +163,18 @@ CommandReject CoopSession::hostBenchCommand(HostClient &client, const Command &c
         client.benchOpen = 0;
         return CommandReject::BenchClosed;
     }
+    if (command.param > 0 && command.type != CommandType::BenchCraft && isStandInItem(static_cast<uint32_t>(command.param))) {
+        // A stand-in's gear is its own and goes with it: never upgraded, stripped or broken down.
+        return CommandReject::ItemUnavailable;
+    }
+    if (!free && (command.type == CommandType::BenchUpgrade || command.type == CommandType::BenchRemove) && command.param > 0) {
+        // Story Mode shares the inventory, not what another player wears now.
+        std::string wearer;
+        if (hostOtherPlayerWears(&client, static_cast<uint32_t>(command.param), wearer)) {
+            info("Co-op: " + client.name + " may not change an item " + wearer + " has equipped");
+            return CommandReject::ItemEquippedByPlayer;
+        }
+    }
     GuestBench bench(_game, _game.services(), client.benchKind, std::move(context));
     // A number in a command's text: digits only, so nothing else is read as one.
     auto number = [](const std::string &text, uint32_t &value) {
@@ -211,6 +223,45 @@ CommandReject CoopSession::hostBenchCommand(HostClient &client, const Command &c
         }
     }
     return CommandReject::None;
+}
+
+bool CoopSession::hostOtherPlayerWears(const HostClient *client, uint32_t itemId, std::string &wearer) const {
+    if (!isHost() || itemId == 0) {
+        return false;
+    }
+    auto wears = [itemId](const Creature &creature) {
+        for (const auto &[slot, item] : creature.equipment()) {
+            if (item && item->id() == itemId) {
+                return true;
+            }
+        }
+        return false;
+    };
+    uint32_t own = client ? hostControlledId(*client) : 0;
+    if (client && !_config.dedicated) {
+        // The host plays its party's leader.
+        auto leader = _game.party().getLeader();
+        if (leader && leader->id() != own && !isPlayerControlled(leader->id()) && wears(*leader)) {
+            wearer = _config.playerName.empty() ? std::string("the host") : _config.playerName;
+            return true;
+        }
+    }
+    for (const auto &[connection, other] : _clients) {
+        if (&other == client || !other.welcomed) {
+            continue;
+        }
+        uint32_t id = hostControlledId(other);
+        auto creature = id && id != own ? _game.getObjectById<Creature>(id) : nullptr;
+        if (creature && wears(*creature)) {
+            wearer = other.name;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool CoopSession::hostItemWornByGuest(uint32_t itemId, std::string &wearer) const {
+    return isHost() && !freeMode() && hostOtherPlayerWears(nullptr, itemId, wearer);
 }
 
 void CoopSession::clientHandleBench(const BenchView &view) {

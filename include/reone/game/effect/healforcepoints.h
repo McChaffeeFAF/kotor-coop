@@ -31,6 +31,8 @@ public:
     }
 
     void applyTo(Object &object) override;
+    /** Restores the points and, in TSL, tells the healed creature's player. */
+    bool onApply(Object &object, const EffectInstance &instance) override;
 
 private:
     int _heal;

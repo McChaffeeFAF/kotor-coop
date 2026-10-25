@@ -17,6 +17,10 @@
 
 #include "reone/game/effect/healforcepoints.h"
 
+#include <algorithm>
+
+#include "reone/game/combatfeedback.h"
+#include "reone/game/game.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -29,6 +33,18 @@ void HealForcePointsEffect::applyTo(Object &object) {
         return;
     }
     creature->setCurrentForcePoints(creature->currentForce() + _heal);
+}
+
+bool HealForcePointsEffect::onApply(Object &object, const EffectInstance &) {
+    auto *creature = dyn_cast<Creature>(&object);
+    const int before = creature ? creature->currentForce() : 0;
+    applyTo(object);
+    // TSL tells the player controlling the healed creature; KotOR shows no
+    // line for the effect.
+    if (creature && object.game().isTSL()) {
+        addForceHealingFeedback(object.game(), *creature, std::max(0, creature->currentForce() - before));
+    }
+    return true;
 }
 
 } // namespace game

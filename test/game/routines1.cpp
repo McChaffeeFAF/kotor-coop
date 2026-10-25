@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// NWScript routines implemented in tranche 1 (docs/routines_missing.md): math,
+// NWScript routines implemented in tranche 1 (docs/dev/routines_missing.md): math,
 // strings, vectors, unit conversion, location distance, lock and item queries.
 // Each runs against K1 and K2, which register the same indices.
 

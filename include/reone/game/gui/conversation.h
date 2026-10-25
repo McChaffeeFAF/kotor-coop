@@ -112,7 +112,13 @@ public:
 
     void startReplica(const std::shared_ptr<resource::Dialog> &dialog, const std::shared_ptr<Object> &owner);
     /** Show entry `entry` with the host's reply list; entryEnded shows the replies. */
-    void showReplicaEntry(int entry, const std::vector<int> &replies, bool entryEnded);
+    /**
+     * Co-op client: show the host's entry. The host's placeable camera cut
+     * (SetDialogPlaceableCamera) is mirrored too, so a cut that hides a
+     * scripted move hides it on every screen.
+     */
+    void showReplicaEntry(int entry, const std::vector<int> &replies, bool entryEnded,
+                          std::optional<int> placeableCamera = std::nullopt);
     void endReplica();
     bool isReplica() const { return _replica; }
     /** The dialog entry shown, -1 for none. */
@@ -196,6 +202,17 @@ private:
     // the clip length instead of asking the mixer, which runs on wall time.
     float _voiceElapsed {0.0f};
     float _entryDuration {0.0f};
+    // The entry started inside a tick before that tick's conversation step:
+    // its first timer update and end check wait for the next tick, after its
+    // script's queued actions (ActionPauseConversation) have run once.
+    bool _entryEndDeferred {false};
+    // The entry's end follows its camera animation, not its voice.
+    bool _entryTimedByAnimation {false};
+    // An empty node held by a pause its script queued: no time of its own.
+    bool _heldEmptyEntry {false};
+    // A click asked to skip this entry (it ends whatever its voice).
+    bool _skipRequested {false};
+    uint64_t _entryLoadTick {0};
     std::vector<const resource::Dialog::EntryReply *> _replies;
     bool _autoPickFirstReply {false};
     AutoSkip *_autoSkip {nullptr};

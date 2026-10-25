@@ -31,6 +31,8 @@ public:
     }
 
     void applyTo(Object &object) override;
+    /** Heals and tells the healed creature and the creator how much was restored. */
+    bool onApply(Object &object, const EffectInstance &instance) override;
 
 private:
     int _damageToHeal;

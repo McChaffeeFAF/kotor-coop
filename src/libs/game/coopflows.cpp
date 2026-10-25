@@ -29,6 +29,9 @@
 #include "reone/game/object/trigger.h"
 #include "reone/game/party.h"
 #include "reone/game/reputes.h"
+#include "reone/game/stealth.h"
+#include "reone/resource/di/services.h"
+#include "reone/resource/strings.h"
 #include "reone/script/types.h"
 #include "reone/system/logutil.h"
 
@@ -1046,7 +1049,13 @@ void CoopSession::clientShowRejection(const CommandResult &result) {
     }
     switch (result.reason) {
     case CommandReject::HostLeadsConversation:
-        showNotice(NoticeKind::Refusal, "The host leads conversations");
+        showNotice(NoticeKind::Refusal, "Only the host can start this conversation");
+        break;
+    case CommandReject::StealthUnavailable:
+        showNotice(NoticeKind::Refusal, _game.services().resource.strings.getText(stealth::kStrRefRequirements));
+        break;
+    case CommandReject::StealthInCombat:
+        showNotice(NoticeKind::Refusal, _game.services().resource.strings.getText(stealth::kStrRefInCombat));
         break;
     case CommandReject::StoreUnavailable:
         showNotice(NoticeKind::Refusal,

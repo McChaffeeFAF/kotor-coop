@@ -110,6 +110,7 @@ private:
     std::string hostText();
     std::string connectingText();
 
+    std::pair<std::string, std::function<void()>> nameTagsButton();
     void host(const std::string &mode = std::string());
     void openEntry();
     void closeEntry();

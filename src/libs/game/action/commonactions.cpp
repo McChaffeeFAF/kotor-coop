@@ -16,13 +16,19 @@
  */
 
 #include "commonactions.h"
+
+#include "reone/game/coopsession.h"
 #include "reone/system/portablemath.h"
 #include "reone/game/pathfinder.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/module.h"
+#include "reone/game/game.h"
+#include "reone/system/logutil.h"
 
 #include <algorithm>
+#include <optional>
 
+#include <glm/gtc/constants.hpp>
 #include <glm/gtx/norm.hpp>
 
 #include "reone/game/action.h"
@@ -114,6 +120,61 @@ bool approachDoor(Game &game, Creature &creature, const Door &door, bool &useApp
     return creature.navigateTo(doorApproachPoint(game, door, creature), true, std::min(distance, 0.5f), dt);
 }
 
+glm::vec3 objectUsePoint(Game &game, const Object &target, const Object &actor) {
+    const glm::vec3 center(target.position());
+    auto module = game.module();
+    auto area = module ? module->area() : nullptr;
+    if (!area) {
+        return center;
+    }
+    const Pathfinder &pf = area->pathfinder();
+    if (isOnWalkmesh(pf.uni, center)) {
+        return center;
+    }
+    // Rings of candidates, nearest ring first; within a ring the one nearest
+    // the actor, so the walk comes from the side the actor is on.
+    constexpr float kStep = 0.5f;
+    constexpr float kRadius = 3.0f;
+    constexpr int kDirections = 16;
+    for (float radius = kStep; radius <= kRadius; radius += kStep) {
+        std::optional<glm::vec3> best;
+        float bestDistance = 0.0f;
+        for (int i = 0; i < kDirections; ++i) {
+            float angle = i * glm::two_pi<float>() / kDirections;
+            glm::vec3 candidate(center.x + radius * portable::sinf(angle), center.y + radius * portable::cosf(angle), center.z);
+            auto height = walkmeshElevationAt(pf.uni, glm::vec2(candidate), center.z);
+            if (!height) {
+                continue;
+            }
+            candidate.z = *height;
+            if (!pathExists(pf, actor.position(), candidate)) {
+                continue;
+            }
+            float distance = glm::distance2(glm::vec2(candidate), glm::vec2(actor.position()));
+            if (!best || distance < bestDistance) {
+                best = candidate;
+                bestDistance = distance;
+            }
+        }
+        if (best) {
+            return *best;
+        }
+    }
+    return center;
+}
+
+bool approachObject(Game &game, Creature &creature, const Object &target, bool run, ObjectApproach &approach, float distance, float dt) {
+    if (!approach.decided) {
+        approach.decided = true;
+        approach.point = objectUsePoint(game, target, creature);
+        approach.snapped = glm::distance2(glm::vec2(approach.point), glm::vec2(target.position())) > 0.0001f;
+    }
+    if (approach.snapped) {
+        return creature.navigateTo(approach.point, run, std::min(distance, 0.5f), dt);
+    }
+    return creature.navigateTo(target.position(), run, distance, dt);
+}
+
 int securityRoll(const Creature &creature, bool &tookTwenty) {
     tookTwenty = !creature.isInCombat();
     return tookTwenty ? 20 : randomInt(1, 20);
@@ -181,6 +242,12 @@ bool unlockPlaceable(Placeable &placeable, Object &actor, float distance, float 
     if (auto *creature = dyn_cast<Creature>(&actor)) {
         bool reached = creature->navigateTo(placeable.position(), true, distance, dt);
         if (!reached) {
+            // A container no walk can reach drops the order, as a door does,
+            // rather than holding the queue for good: done, still locked.
+            if (creature->navigationFailed()) {
+                creature->setMovementType(Creature::MovementType::None);
+                return true;
+            }
             return false;
         }
         creature->face(placeable);
@@ -207,6 +274,11 @@ bool unlockPlaceable(Placeable &placeable, Object &actor, float distance, float 
 
 void jumpToPositionFacing(Object &actor, const glm::vec3 &position,
                           float facing, Game &game) {
+    debug(str(boost::format("Cutscene: tick %u jump %s to (%.2f, %.2f)") % game.tickCount() % actor.tag() %
+              position.x % position.y),
+          LogChannel::Conversation);
+    glm::vec3 from = actor.position();
+    game.noteScriptedJump(actor, from, position);
     actor.setPosition(position);
     actor.setFacing(facing);
     actor.snapPresentation();
@@ -229,6 +301,12 @@ void jumpToPositionFacing(Object &actor, const glm::vec3 &position,
         if (leader->id() == actor.id()) {
             area->onPartyLeaderMoved(roomBefore != roomAfter);
         }
+    }
+
+    // Co-op Free Mode: guests travel with the party's scripted jumps in a
+    // shared scene (docs/guest_scenes.md).
+    if (auto *coop = game.coop()) {
+        coop->onScriptedJump(actor, from, position);
     }
 }
 

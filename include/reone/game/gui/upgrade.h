@@ -60,6 +60,8 @@ public:
     void refresh();
     const std::vector<std::shared_ptr<Item>> &items() const { return _items; }
     std::shared_ptr<Item> selectedItem() const;
+    /** Redraw the description (a note from the host's bench changed). */
+    void redescribe() { describeSelection(); }
 
 private:
     UpgradeGUI &_host;
@@ -244,7 +246,7 @@ public:
     void leaveGuest();
     bool guest() const { return _guest; }
     GuestBenchScreen *guestScreen() const;
-    /** The host's reason for the last refused request, for the description lists, or "". */
+    /** The host's reason for the last refused request (a guest's) or item (Story Mode co-op host), for the description lists, or "". */
     std::string guestNote() const;
 
     Page page() const { return _page; }
@@ -266,6 +268,8 @@ private:
     uint32_t _guestItem {0};
     int _guestComponents {0};
     int _guestChemicals {0};
+    // Co-op host, Story Mode: why the item last picked was refused (a guest wears it).
+    std::string _hostNote;
     std::unique_ptr<UpgradeItemsPanel> _itemsPanel;
     std::unique_ptr<UpgradeSlotsPanel> _slotsPanel;
     std::unique_ptr<CraftingPanel> _craftingPanel;

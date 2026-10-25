@@ -119,9 +119,21 @@ std::string StringTokens::value(const StringTokenRow &row,
         return subject.quarterDay >= 0 && subject.quarterDay < 4 ? text(row.strRefs[subject.quarterDay]) : std::string();
     case 25: // the key bound to a keymap.2da action
         return subject.keyName ? subject.keyName(row.defaultStrRef, row.strRefs[0]) : std::string();
+    case 26: { // a mouse-button name, picked by the row's default
+        // Right, Left, right, left (the rows R_CAPMouseButton 0,
+        // L_CAPMouseButton 1, R_MouseButton 2, L_MouseButton 3).
+        static constexpr int kK1[] {48483, 48482, 48485, 48484};
+        static constexpr int kTSL[] {48726, 48725, 48728, 48727};
+        if (row.defaultStrRef < 0 || row.defaultStrRef > 3) {
+            return text(0);
+        }
+        return text((subject.tsl ? kTSL : kK1)[row.defaultStrRef]);
+    }
+    case 27: // TSL's bounty on the player (BountyValue)
+        return subject.bounty ? std::to_string(*subject.bounty) : std::string(kUnrecognizedToken);
     default:
         // Highlight markers carry no text on PC; the button codes are Xbox
-        // font glyphs and the mouse-button names are not used by K1 text.
+        // font glyphs.
         return "";
     }
 }

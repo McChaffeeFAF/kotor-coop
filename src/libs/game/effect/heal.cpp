@@ -16,7 +16,11 @@
  */
 
 #include "reone/game/effect/heal.h"
-#include "reone/game/object.h"
+
+#include <algorithm>
+
+#include "reone/game/combatfeedback.h"
+#include "reone/game/object/creature.h"
 
 namespace reone {
 
@@ -24,6 +28,18 @@ namespace game {
 
 void HealEffect::applyTo(Object &object) {
     object.heal(_damageToHeal);
+}
+
+bool HealEffect::onApply(Object &object, const EffectInstance &instance) {
+    const int before = object.currentHitPoints();
+    applyTo(object);
+    // The line names the hit points restored, not those asked for.
+    const int healed = std::max(0, object.currentHitPoints() - before);
+    if (const auto *creature = dyn_cast<Creature>(&object)) {
+        auto creator = instance.boundCreator();
+        addHitPointHealingFeedback(object.game(), creator.get(), *creature, healed);
+    }
+    return true;
 }
 
 } // namespace game

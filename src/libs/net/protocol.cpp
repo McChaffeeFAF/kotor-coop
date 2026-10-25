@@ -75,11 +75,11 @@ bool validSlotStatus(uint8_t value) {
 
 bool validCommandType(uint8_t value) {
     return value >= static_cast<uint8_t>(CommandType::MoveTo) &&
-           value <= static_cast<uint8_t>(CommandType::MiniGameQuit);
+           value <= static_cast<uint8_t>(CommandType::Stealth);
 }
 
 bool validCommandReject(uint8_t value) {
-    return value <= static_cast<uint8_t>(CommandReject::MiniGameBusy);
+    return value <= static_cast<uint8_t>(CommandReject::ItemEquippedByPlayer);
 }
 
 bool validEventKind(uint8_t value) {
@@ -134,6 +134,25 @@ void writeEntity(ByteWriter &w, const EntityRecord &record) {
     }
     if (f & kFieldTarget) {
         w.u32(s.attackTarget);
+    }
+    if (f & kFieldFaction) {
+        w.u8(s.faction);
+    }
+    if (f & kFieldLook) {
+        const auto &look = s.look;
+        w.str(look.playerName);
+        w.u8(look.colour);
+        w.i16(look.headRow);
+        w.i16(look.bodyVariation);
+        w.i16(look.textureVariation);
+        w.u8(static_cast<uint8_t>(std::min(look.slots.size(), kMaxLookSlots)));
+        for (size_t i = 0; i < look.slots.size() && i < kMaxLookSlots; ++i) {
+            w.u8(look.slots[i].slot);
+            w.str(look.slots[i].item);
+        }
+    }
+    if (f & kFieldProgress) {
+        w.u8(s.progress);
     }
 }
 
@@ -196,12 +215,45 @@ bool readEntity(ByteReader &r, EntityRecord &record) {
     }
     if (f & kFieldFlags) {
         s.flags = r.u8();
-        if (s.flags > 0x3f) {
-            r.fail();
-        }
+        // Every bit is a flag since protocol 11 (kFlagAutoCombat is bit 7).
     }
     if (f & kFieldTarget) {
         s.attackTarget = r.u32();
+    }
+    if (f & kFieldFaction) {
+        s.faction = r.u8();
+        if (s.faction >= kMaxFactions && s.faction != kNoFaction) {
+            r.fail();
+        }
+    }
+    if (f & kFieldLook) {
+        auto &look = s.look;
+        look = EntityLook();
+        look.playerName = r.str();
+        look.colour = r.u8();
+        look.headRow = r.i16();
+        look.bodyVariation = r.i16();
+        look.textureVariation = r.i16();
+        uint8_t count = r.u8();
+        if (count > kMaxLookSlots) {
+            r.fail();
+            return false;
+        }
+        for (uint8_t i = 0; i < count && r.ok(); ++i) {
+            LookSlot slot;
+            slot.slot = r.u8();
+            slot.item = r.str();
+            look.slots.push_back(std::move(slot));
+        }
+        if (look.headRow < -1 || look.bodyVariation < -1 || look.bodyVariation > 25 || look.textureVariation < -1 || look.textureVariation > 255) {
+            r.fail();
+        }
+    }
+    if (f & kFieldProgress) {
+        s.progress = r.u8();
+        if ((s.progress & ~kProgressLevelUp) != 0) {
+            r.fail();
+        }
     }
     return r.ok();
 }
@@ -236,6 +288,7 @@ void writeWorld(ByteWriter &w, uint16_t fields, const WorldState &s) {
             w.i32(reply);
         }
         w.boolean(c.entryEnded);
+        w.i32(c.placeableCamera);
     }
     if (fields & kWorldParty) {
         w.u8(static_cast<uint8_t>(s.party.size()));
@@ -293,6 +346,7 @@ bool readWorld(ByteReader &r, uint16_t &fields, WorldState &s) {
             c.replies.push_back(r.i32());
         }
         c.entryEnded = r.boolean();
+        c.placeableCamera = r.i32();
     }
     if (fields & kWorldParty) {
         uint8_t count = r.u8();
@@ -350,6 +404,7 @@ bool isClientMessage(MessageType type) {
     case MessageType::MiniGameControl:
     case MessageType::ChatSend:
     case MessageType::PingSend:
+    case MessageType::Steer:
         return true;
     default:
         return false;
@@ -380,6 +435,8 @@ bool isHostMessage(MessageType type) {
     case MessageType::MiniGameState:
     case MessageType::ChatMessage:
     case MessageType::PingMarker:
+    case MessageType::ReputationTable:
+    case MessageType::MapState:
         return true;
     default:
         return false;
@@ -394,7 +451,9 @@ std::optional<MessageType> peekType(const std::vector<uint8_t> &bytes) {
     bool completeness = value >= static_cast<uint8_t>(MessageType::SharedInventory) &&
                         value <= static_cast<uint8_t>(MessageType::MiniGameState);
     bool chat = value >= static_cast<uint8_t>(MessageType::ChatSend) && value <= static_cast<uint8_t>(MessageType::PingMarker);
-    if (!completeness && !chat && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
+    bool factions = value == static_cast<uint8_t>(MessageType::ReputationTable);
+    bool control = value == static_cast<uint8_t>(MessageType::Steer) || value == static_cast<uint8_t>(MessageType::MapState);
+    if (!completeness && !chat && !factions && !control && (value < static_cast<uint8_t>(MessageType::Hello) || value > static_cast<uint8_t>(MessageType::Events))) {
         return std::nullopt;
     }
     return static_cast<MessageType>(value);
@@ -460,6 +519,12 @@ const char *messageTypeName(MessageType type) {
         return "ping_send";
     case MessageType::PingMarker:
         return "ping_marker";
+    case MessageType::ReputationTable:
+        return "reputation_table";
+    case MessageType::Steer:
+        return "steer";
+    case MessageType::MapState:
+        return "map_state";
     }
     return "unknown";
 }
@@ -574,6 +639,8 @@ const char *commandTypeName(CommandType type) {
         return "bench_close";
     case CommandType::MiniGameQuit:
         return "minigame_quit";
+    case CommandType::Stealth:
+        return "stealth";
     }
     return "unknown";
 }
@@ -660,6 +727,12 @@ const char *commandRejectName(CommandReject reason) {
         return "not_your_minigame";
     case CommandReject::MiniGameBusy:
         return "minigame_busy";
+    case CommandReject::StealthUnavailable:
+        return "stealth_unavailable";
+    case CommandReject::StealthInCombat:
+        return "stealth_in_combat";
+    case CommandReject::ItemEquippedByPlayer:
+        return "item_equipped_by_player";
     }
     return "unknown";
 }
@@ -1254,6 +1327,15 @@ uint16_t diffEntity(const EntityState &prev, const EntityState &cur) {
     if (prev.attackTarget != cur.attackTarget) {
         mask |= kFieldTarget;
     }
+    if (prev.faction != cur.faction) {
+        mask |= kFieldFaction;
+    }
+    if (prev.look != cur.look) {
+        mask |= kFieldLook;
+    }
+    if (prev.progress != cur.progress) {
+        mask |= kFieldProgress;
+    }
     return mask;
 }
 
@@ -1304,6 +1386,15 @@ void mergeEntity(EntityState &dst, const EntityState &src, uint16_t mask) {
     if (mask & kFieldTarget) {
         dst.attackTarget = src.attackTarget;
     }
+    if (mask & kFieldFaction) {
+        dst.faction = src.faction;
+    }
+    if (mask & kFieldLook) {
+        dst.look = src.look;
+    }
+    if (mask & kFieldProgress) {
+        dst.progress = src.progress;
+    }
 }
 
 uint16_t exactDiffEntity(const EntityState &prev, const EntityState &cur) {
@@ -1339,6 +1430,15 @@ uint16_t exactDiffEntity(const EntityState &prev, const EntityState &cur) {
     }
     if (prev.attackTarget != cur.attackTarget) {
         mask |= kFieldTarget;
+    }
+    if (prev.faction != cur.faction) {
+        mask |= kFieldFaction;
+    }
+    if (prev.look != cur.look) {
+        mask |= kFieldLook;
+    }
+    if (prev.progress != cur.progress) {
+        mask |= kFieldProgress;
     }
     return mask;
 }
@@ -1952,6 +2052,38 @@ bool decode(const std::vector<uint8_t> &bytes, MiniGameControl &out) {
     return true;
 }
 
+std::vector<uint8_t> encode(const Steer &m) {
+    auto w = begin(MessageType::Steer);
+    w.u32(m.seq);
+    w.u32(m.actor);
+    w.boolean(m.moving);
+    w.f32(m.facing);
+    w.boolean(m.run);
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, Steer &out) {
+    if (bytes.size() > kMaxClientMessageBytes) {
+        return false;
+    }
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::Steer)) {
+        return false;
+    }
+    out = Steer();
+    out.seq = r.u32();
+    out.actor = r.u32();
+    out.moving = r.boolean();
+    out.facing = r.f32();
+    out.run = r.boolean();
+    // f32() has already failed the reader on a non-finite value. A facing is
+    // an angle; anything far outside a few turns is junk.
+    if (!finish(r) || std::fabs(out.facing) > 64.0f) {
+        return false;
+    }
+    return true;
+}
+
 std::vector<uint8_t> encode(const MiniGameState &m) {
     auto w = begin(MessageType::MiniGameState);
     w.boolean(m.active);
@@ -2110,6 +2242,42 @@ bool decode(const std::vector<uint8_t> &bytes, GuestRoster &out) {
             return false;
         }
         out.entries.push_back(std::move(entry));
+    }
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const ReputationTable &m) {
+    auto w = begin(MessageType::ReputationTable);
+    size_t count = std::min(m.values.size(), kMaxFactions);
+    w.u8(static_cast<uint8_t>(count));
+    for (size_t source = 0; source < count; ++source) {
+        for (size_t target = 0; target < count; ++target) {
+            const auto &row = m.values[source];
+            w.u8(target < row.size() ? std::min<uint8_t>(row[target], 100) : 50);
+        }
+    }
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, ReputationTable &out) {
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::ReputationTable)) {
+        return false;
+    }
+    out = ReputationTable();
+    size_t count = r.u8();
+    if (!r.ok() || count > kMaxFactions) {
+        return false;
+    }
+    out.values.assign(count, std::vector<uint8_t>(count, 0));
+    for (size_t source = 0; source < count; ++source) {
+        for (size_t target = 0; target < count; ++target) {
+            uint8_t value = r.u8();
+            if (!r.ok() || value > 100) {
+                return false;
+            }
+            out.values[source][target] = value;
+        }
     }
     return finish(r);
 }
@@ -2276,6 +2444,57 @@ bool decode(const std::vector<uint8_t> &bytes, PingMarker &out) {
         !validUtf8(out.name) || !validText(out.targetName) || !validUtf8(out.targetName) || !validCoordinate(out.position) ||
         !(out.seconds > 0.0f) || out.seconds > kMaxPingSeconds) {
         return false;
+    }
+    return finish(r);
+}
+
+std::vector<uint8_t> encode(const MapState &m) {
+    auto w = begin(MessageType::MapState);
+    w.str(m.area);
+    w.u16(m.columns);
+    w.u16(m.rows);
+    size_t bytes = (static_cast<size_t>(m.columns) * m.rows + 7) / 8;
+    for (size_t i = 0; i < bytes; ++i) {
+        w.u8(i < m.cells.size() ? m.cells[i] : 0);
+    }
+    size_t notes = std::min(m.notes.size(), kMaxMapNotes);
+    w.u8(static_cast<uint8_t>(notes));
+    for (size_t i = 0; i < notes; ++i) {
+        w.str(m.notes[i]);
+    }
+    return w.take();
+}
+
+bool decode(const std::vector<uint8_t> &bytes, MapState &out) {
+    ByteReader r(bytes, kMaxStringBytes);
+    if (!expect(r, MessageType::MapState)) {
+        return false;
+    }
+    out = MapState();
+    out.area = r.str();
+    out.columns = r.u16();
+    out.rows = r.u16();
+    if (!r.ok() || !validText(out.area) || out.columns > kMaxMapColumns || out.rows > kMaxMapRows) {
+        return false;
+    }
+    size_t count = (static_cast<size_t>(out.columns) * out.rows + 7) / 8;
+    out.cells.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        out.cells.push_back(r.u8());
+        if (!r.ok()) {
+            return false;
+        }
+    }
+    size_t notes = r.u8();
+    if (!r.ok() || notes > kMaxMapNotes) {
+        return false;
+    }
+    for (size_t i = 0; i < notes; ++i) {
+        auto tag = r.str();
+        if (!r.ok() || !validText(tag)) {
+            return false;
+        }
+        out.notes.push_back(std::move(tag));
     }
     return finish(r);
 }

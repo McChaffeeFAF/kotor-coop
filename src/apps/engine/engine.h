@@ -26,6 +26,7 @@
 #include "reone/graphics/window.h"
 #include "reone/gui/di/module.h"
 #include "reone/input/event.h"
+#include "reone/input/focus.h"
 #include "reone/movie/di/module.h"
 #include "reone/resource/di/module.h"
 #include "reone/scene/di/module.h"
@@ -105,6 +106,7 @@ private:
     int _scriptPauseFrames {0};
     std::optional<CaptureRequest> _captureRequest;
     bool _scriptQuitRequested {false};
+    bool _harnessFocusLost {false}; // the harness's "focus lost": a headless run honours the focus gate
 
     std::unique_ptr<ControlChannel> _channel;
     std::optional<ControlReply> _pendingReply; // reply held until pause/capture completes
@@ -113,6 +115,7 @@ private:
 
     bool _showCursor {true};
     bool _relativeMouseMode {false};
+    input::FocusTracker _focus;
 
     // Dedicated host (--dedicated, docs/dedicated_host.md)
     std::unique_ptr<game::DedicatedGameBackend> _dedicatedBackend;
@@ -133,6 +136,9 @@ private:
     void captureFrame(const std::filesystem::path &path);
     std::filesystem::path numberedCapturePath(const CaptureRequest &request) const;
 
+    void onFocusChanged(bool gained);
+    void syncPointer(bool force);
+    std::string focusReport() const;
     void showCursor(bool show);
     void setRelativeMouseMode(bool relative);
 

@@ -15,7 +15,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-// NWScript routines implemented in tranche 3 (docs/routines_missing.md): saving
+// NWScript routines implemented in tranche 3 (docs/dev/routines_missing.md): saving
 // throw, armour class and challenge rating queries, nearest-to-location
 // searches, encounter difficulty, transition targets and area fog.
 

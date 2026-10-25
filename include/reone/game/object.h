@@ -268,6 +268,15 @@ public:
     };
 
     void addAction(std::shared_ptr<Action> action);
+    /**
+     * A script is driving this object: an action a script queued (a move, a
+     * jump, a door, an animation, a conversation, a wait) is still to run.
+     * Fights, follows and walks queued by scripts do not count.
+     */
+    bool hasScriptSequence() const;
+    /** hasScriptSequence, or a script's action ran on this object at or after the tick. */
+    bool scriptDrivenSince(uint64_t tick) const;
+    static bool isScriptSequenceType(ActionType type);
     void addActionOnTop(std::shared_ptr<Action> action);
     /** Keymap ClearOneAction: drop the newest queued user action. True if one went. */
     bool cancelLastQueuedAction();
@@ -388,6 +397,7 @@ public:
     // END Scripts
 
 protected:
+    void markScriptAction(Action &action) const;
     friend class Game;
     friend class CoopReplication;
     friend class ModuleSnapshotBuilder;
@@ -425,6 +435,7 @@ protected:
     bool _plot {false};
     bool _commandable {true};
     bool _interruptable {false};
+    uint64_t _scriptActionTick {0}; // runtime: the last tick a script's sequence action ran (0: never)
     int16_t _hitPoints {0};
     int16_t _maxHitPoints {0};
     int16_t _currentHitPoints {0};

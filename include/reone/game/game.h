@@ -69,6 +69,7 @@
 #include "hudpresentation.h"
 #include "journal.h"
 #include "coopchatui.h"
+#include "cameo.h"
 #include "keymap.h"
 #include "padinput.h"
 #include "location.h"
@@ -97,6 +98,7 @@
 #include "savegame.h"
 #include "script/runner.h"
 #include "statussummary.h"
+#include "stealth.h"
 #include "storesession.h"
 #include "swooprace.h"
 #include "talent.h"
@@ -248,6 +250,30 @@ public:
      * tickSeconds(), whatever the frame rate.
      */
     uint64_t tickCount() const { return _tickCount; }
+    /**
+     * A tick is running and has not reached its conversation step yet: the
+     * world (actions, delayed commands, combat) is being stepped. A dialog
+     * entry that starts now has not had its participants' queued actions run
+     * once, so its end waits for the next tick (design note cutscene_timing).
+     */
+    bool conversationStepPending() const { return _conversationStepPending; }
+
+    /**
+     * Cutscene audit (console `cutsceneaudit on`): presentation-only checks a
+     * harness can grep for in engine.log. A scripted jump during a
+     * conversation is reported when the frame after it shows the mover with
+     * the same shot and no fade (design note cutscene_timing, "Sweep").
+     */
+    bool cutsceneAuditEnabled() const { return _cutsceneAudit.enabled; }
+    /** Some object in the area has an ActionPauseConversation queued. */
+    bool conversationPauseQueued() const;
+    void noteScriptedJump(const Object &actor, const glm::vec3 &from, const glm::vec3 &to);
+    /** A frame the audit wants captured (a visible jump), once. */
+    std::optional<std::string> takeAuditCapture() {
+        auto path = std::move(_cutsceneAudit.pendingCapture);
+        _cutsceneAudit.pendingCapture.reset();
+        return path;
+    }
     int tickRate() const { return _simClock.tickRate(); }
     float tickSeconds() const { return _simClock.stepSeconds(); }
     void setTickRate(int tickRate) { _simClock.setTickRate(tickRate); }
@@ -273,6 +299,8 @@ public:
      */
     void setCoopSession(std::shared_ptr<CoopSession> session);
     CoopSession *coop() const { return _coop.get(); }
+    /** Shepard cameos (cameo.h). */
+    CameoDirector &cameos() { return _cameos; }
     /** The co-op chat line the player types into, for the HUD to draw. */
     const CoopChatInput &chatInput() const { return _chatInput; }
 
@@ -523,6 +551,8 @@ public:
     void closeStore();
     /** The player's settings (options panels, bindings); see usersettings.h. */
     UserSettings &userSettings() { return _userSettings; }
+    /** Co-op name tags and guest portraits on the HUD (Co-op menu toggle, default on). */
+    bool coopNameTags() const { return _userSettings.getBool("coop.nametags", true); }
     Keymap &keymap() { return _keymap; }
     PadBindings &padBindings() { return _padBindings; }
     PadInput &padInput() { return _padInput; }
@@ -757,6 +787,9 @@ public:
         return _screen == Screen::Conversation;
     }
 
+    /** The object whose conversation owns the screen now, or null (none running, or its owner is gone). */
+    std::shared_ptr<Object> conversationOwner() const;
+
     std::shared_ptr<movie::IMovie> movie() const {
         return _movie;
     }
@@ -772,10 +805,24 @@ public:
     resource::CursorType cursorType() const {
         return _pointer->type();
     }
+    /** Where the pointer the game draws is, from the last mouse motion it saw. */
+    glm::ivec2 cursorPosition() const { return _cursorPosition; }
 
-    bool relativeMouseMode() const {
-        return _relativeMouseMode;
-    }
+    /**
+     * Whether the mouse should be captured now: what the game asked for
+     * (mouse-look, first person, turret), but only on a screen that uses it
+     * and never over a pop-up or a movie, which need a pointer.
+     */
+    bool relativeMouseMode() const;
+
+    bool isPopupVisible() const;
+
+    /**
+     * Lets go of held input after the window lost focus: delivers the given
+     * releases past any pop-up (a release belongs to whatever saw the press)
+     * (mouse capture itself is the caller's: it follows focus).
+     */
+    void releaseHeldInput(const std::vector<input::Event> &releases);
 
     // Module loading
 
@@ -877,9 +924,34 @@ public:
     /** The PartyActive key (and the HUD solo toggle); a co-op client cannot. */
     void toggleSoloModeAsKey();
 
+    // Stealth Mode (design note stealth; stealthgame.cpp)
+
+    /** How a request treats the solo-mode requirement of the host's leader. */
+    enum class StealthAsk {
+        Prompt,    // ask the player (TLK 37890), as the key and the HUD toggle
+        AssumeYes, // turn solo mode on as if the player said yes (harness)
+        NoPrompt   // scripts and co-op guests: no solo requirement
+    };
+    /** Why this creature may not enter Stealth Mode now (Refusal::None: it may). */
+    stealth::Refusal stealthRefusal(const Creature &creature) const;
+    /** Enter or leave Stealth Mode; feedback for the players. True when the mode is as asked. */
+    bool requestStealth(Creature &creature, bool on, StealthAsk ask);
+    /** Combat, a conversation, a lost unit or death: the mode ends, with its feedback line. */
+    void endStealth(Creature &creature);
+    /** The Stealth key and the HUD stealth toggle (a co-op client asks the host). */
+    void toggleStealthAsKey();
+    /** TLK 1464/1465 (37253 with K2's Stealth Run) for a players' character. */
+    void stealthFeedback(const Creature &creature, bool on);
+    /** A non-computer conversation starts: participants leave Stealth Mode unless SetKeepStealthInDialog. */
+    void endStealthForConversation();
+
     // While a leader's auto-combat round is being decided, the generic AI
     // scripts must see it as a follower: they skip party member 0.
     uint32_t autoCombatScriptCaller() const { return _autoCombatScriptCaller; }
+    /** A script routine is running: actions queued now are a script's (Action::isScriptAction). */
+    bool inScriptRoutine() const { return _scriptRoutineDepth > 0; }
+    void enterScriptRoutine() { ++_scriptRoutineDepth; }
+    void leaveScriptRoutine() { --_scriptRoutineDepth; }
     void setAutoCombatScriptCaller(uint32_t id) { _autoCombatScriptCaller = id; }
 
     // End the semantic lifetime of this exact object and every runtime object
@@ -1224,6 +1296,8 @@ public:
     void setCustomToken(int token, std::string value);
     std::string substituteCustomTokens(std::string str) const;
     std::string substituteCustomToken(std::string str, int token, std::string value) const;
+    /** Resolves \p str with \p tokens standing in for (or added to) the custom tokens, all at once. */
+    std::string substituteCustomTokens(std::string str, const std::map<int, std::string> &tokens) const;
 
     void setGlobalBoolean(const std::string &name, bool value);
     void setGlobalLocation(const std::string &name, const std::shared_ptr<Location> &location);
@@ -1345,6 +1419,7 @@ public:
 
 private:
     uint32_t _autoCombatScriptCaller {script::kObjectInvalid};
+    int _scriptRoutineDepth {0};
     bool _scriptVideoEffect {false};
     void setVideoEffectRow(int row);
     GlobalFade::ArrivalTicket _fadeArrival;
@@ -1394,6 +1469,32 @@ private:
     uint64_t _frameCount {0};
     FixedStepClock _simClock;
     uint64_t _tickCount {0};
+    bool _conversationStepPending {false};
+
+    struct CutsceneAudit {
+        struct Jump {
+            uint64_t tick {0};
+            std::string tag;
+            glm::vec3 from {0.0f};
+            glm::vec3 to {0.0f};
+        };
+        bool enabled {false};
+        std::string captureDir;
+        std::optional<std::string> pendingCapture;
+        std::vector<Jump> pending;
+        bool havePose {false};
+        int cameraType {-1};
+        int cameraId {0};
+        glm::vec3 eye {0.0f};
+        glm::vec3 forward {0.0f};
+        int jumps {0};
+        int hiddenByCut {0};
+        int hiddenByFade {0};
+        int offscreen {0};
+        int visible {0};
+    } _cutsceneAudit;
+
+    void auditCutsceneFrame();
     bool _tickGate {false};
     uint64_t _tickAllowance {0};
     // A harness wait measured in ticks (step, stepidle, untiltick). Checked
@@ -1489,6 +1590,9 @@ private:
         bool smartCompanions {false};
         graphics::GraphicsOptions graphics; // Enhanced preset settings at launch
     } _launchOptions;
+
+    // Shepard cameos (cameo.h): the area's stage props, kept in step each few ticks.
+    CameoDirector _cameos;
 
     void loadUserSettings();
     /** Keys the in-game keymap dispatches itself (design note p1_ui, "Key bindings"). */
@@ -1740,6 +1844,7 @@ private:
     void beginTickWait(std::string label, uint64_t untilTick, std::function<bool()> done);
     void updateCameraType();
     void updateCamera(float dt);
+    void registerCutsceneAuditCommand();
     void updateSceneGraph(float dt);
     void updateVisualEffects(float dt);
     void updateImGui(float dt);
@@ -1948,10 +2053,12 @@ private:
     void consoleMoveTo(const ConsoleArgs &tokens);
     void consoleMoveToObject(const ConsoleArgs &tokens);
     void consoleClick(const ConsoleArgs &tokens);
+    void consoleTargetMenu(const ConsoleArgs &tokens);
     void consoleClearActions(const ConsoleArgs &tokens);
     void consoleCancelCombat(const ConsoleArgs &tokens);
     void consoleInstantDoors(const ConsoleArgs &tokens);
     void consoleAutoCombat(const ConsoleArgs &tokens);
+    void consoleStealth(const ConsoleArgs &tokens);
     void consoleWaitIdle(const ConsoleArgs &tokens);
     void consoleIdleStatus(const ConsoleArgs &tokens);
     void consoleCloseScreen(const ConsoleArgs &tokens);

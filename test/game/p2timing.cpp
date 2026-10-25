@@ -52,10 +52,11 @@ RoundTicks measureRound(Game &game, const CombatRound &round) {
     RoundTicks result;
     for (int tick = 1; tick <= 200 && result.finished < 0; ++tick) {
         game.combat().update(kTick);
-        if (result.secondAction < 0 && round.state == CombatRound::SecondAction) {
+        const auto &owner = round.actions.front();
+        if (result.secondAction < 0 && owner.state == CombatRound::SecondAction) {
             result.secondAction = tick;
         }
-        if (round.state == CombatRound::Finished) {
+        if (owner.state == CombatRound::Finished) {
             result.finished = tick;
         }
     }
@@ -84,6 +85,9 @@ TEST(P2Timing, combat_round_is_ninety_ticks_with_the_reply_at_forty_five) {
 
     EXPECT_EQ(45, ticks.secondAction);
     EXPECT_EQ(90, ticks.finished);
+    // The reply's side started in step with the attack and ends with it.
+    ASSERT_EQ(2u, round.actions.size());
+    EXPECT_EQ(CombatRound::Finished, round.actions[1].state);
 }
 
 TEST(P2Timing, lone_combat_round_is_ninety_ticks) {

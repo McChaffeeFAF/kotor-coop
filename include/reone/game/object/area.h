@@ -18,6 +18,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 
 #include "reone/game/areamusic.h"
 #include "reone/game/mapexploration.h"
@@ -355,6 +356,16 @@ public:
     uint32_t lastTrapDetected(uint32_t creatureId) const;
     void setLastTrapDetected(uint32_t creatureId, uint32_t trapId) { _lastTrapDetected[creatureId] = trapId; }
 
+    /**
+     * Stealth Mode (design note stealth): drop every observer's check
+     * against this creature, so the next perception pass checks afresh.
+     */
+    void forgetStealthChecks(uint32_t targetId);
+    /** Whether a hostile observer has noticed a stealthed creature (its last check passed). */
+    bool hasDetectedStealthed(uint32_t observerId, uint32_t targetId) const;
+    /** Observers whose notice of the party has cost the stealth XP pool in this area. */
+    const std::set<uint32_t> &stealthXPDetectors() const { return _stealthXPDetectors; }
+
     // END Perception
 
     // Object Selection
@@ -448,6 +459,24 @@ private:
     Timer _perceptionTimer;
     float _trapDetectAge {0.0f};
     std::map<uint32_t, uint32_t> _lastTrapDetected;
+    // Stealth Mode: each hostile observer's check against each stealthed
+    // creature, the creature's own roll, and the clock they run on.
+    struct StealthWatch {
+        bool eligible {false}; // in sight (range and line of sight) at the last pass
+        bool detected {false};
+        float nextCheck {0.0f};
+    };
+    struct StealthRoll {
+        int roll {0};
+        float expires {0.0f};
+    };
+    std::map<std::pair<uint32_t, uint32_t>, StealthWatch> _stealthWatches; // (observer, target)
+    std::map<uint32_t, StealthRoll> _stealthRolls;
+    std::set<uint32_t> _stealthXPDetectors;
+    float _stealthClock {0.0f};
+    /** A hostile observer's check against a stealthed target; true when it notices. */
+    bool runStealthCheck(const Creature &observer, const Creature &target, StealthWatch &watch, bool eligible);
+    void noteNoticedByHostile(const Creature &observer, const Creature &target);
     std::shared_ptr<Object> _hilightedObject;
     std::shared_ptr<Object> _selectedObject;
     bool _forceSelection {false};
@@ -586,6 +615,7 @@ private:
         const SerializedIdentityContext &identityContext);
 
     void loadProperties(const resource::generated::GIT &git);
+    void loadFlagsFromGit(const resource::Gff &gff);
     void updateCombatMusic(float dt);
     void loadCreatures(const resource::Gff &gff, const SerializedIdentityContext &identityContext);
     void loadDoors(const resource::Gff &gff, const SerializedIdentityContext &identityContext);

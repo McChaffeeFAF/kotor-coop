@@ -131,6 +131,8 @@ public:
      * and area reloads keep it.
      */
     void openContainer(uint32_t opener);
+    /** Seconds until a broken-open container opens for the leader; negative when none is pending. */
+    float brokenOpenSeconds() const { return _brokenOpenSeconds; }
 
     /**
      * PlayAnimation on a placeable: open, close, activate, deactivate and the
@@ -260,6 +262,9 @@ private:
     void playStateAnimation();
     /** Go to a looping state, through its transition animation if any. */
     void changeAnimationState(int state, const char *transition);
+
+    /** Seconds until a container that was broken open opens for the leader; negative when none is pending. */
+    float _brokenOpenSeconds {-1.0f};
 
     std::string _transitionAnimation; /**< playing once; then the state loops */
 

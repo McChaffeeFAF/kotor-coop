@@ -598,6 +598,7 @@ ModuleObjectIdContext ModuleSnapshotBuilder::buildObjectIdContext(
     addObject(area);
     for (const auto &object : area._objects) {
         if (!object || area._objectsToDestroy.count(object->id()) != 0) continue;
+        if (isCameoObject(*object)) continue; // an ambient cameo is never saved
         if (object->type() == ObjectType::Creature &&
             _game._party.isRetainedRuntimeRepresentation(
                 *static_cast<const Creature *>(object.get()))) continue;
@@ -1208,6 +1209,12 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::writeCreature(
     put(*result, Gff::Field::newByte("BodyVariation", creature._bodyVariation));
     put(*result, Gff::Field::newByte("TextureVar", creature._textureVar));
     put(*result, Gff::Field::newByte("PartyInteract", creature._partyInteract));
+    // Stealth Mode, as the creature's StealthMode byte; written only while on.
+    if (creature._stealthMode) {
+        put(*result, Gff::Field::newByte("StealthMode", 1));
+    } else {
+        removeSaveField(*result, "StealthMode");
+    }
     put(*result, Gff::Field::newByte(
         "CreatnScrptFird", creature._spawnScriptFired));
     put(*result, Gff::Field::newByte(
@@ -1634,7 +1641,6 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildAre(const Area &area) const {
         result = emptyRecord(std::numeric_limits<uint32_t>::max());
     }
     put(*result, Gff::Field::newCExoString("Tag", area._tag));
-    put(*result, Gff::Field::newByte("Unescapable", area._unescapable));
     put(*result, Gff::Field::newByte("StealthXPEnabled", area._stealthXPEnabled));
     put(*result, Gff::Field::newDword("StealthXPMax", static_cast<uint32_t>(std::max(0, area._maxStealthXP))));
     put(*result, Gff::Field::newDword("StealthXPCurrent", static_cast<uint32_t>(std::max(0, area._currentStealthXP))));
@@ -1668,6 +1674,7 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildGit(
     lists["CameraList"] = {};
     for (const auto &object : area._objects) {
         if (!object || area._objectsToDestroy.count(object->id()) != 0) continue;
+        if (isCameoObject(*object)) continue; // an ambient cameo is never saved
         if (object->type() == ObjectType::Creature &&
             _game._party.isRetainedRuntimeRepresentation(
                 *static_cast<const Creature *>(object.get()))) continue;
@@ -1745,6 +1752,13 @@ std::shared_ptr<Gff> ModuleSnapshotBuilder::buildGit(
     put(*props, Gff::Field::newInt("AmbientSndNight", music.ambientNight().row));
     put(*props, Gff::Field::newInt("AmbientSndDayVol", music.ambientDayVolume()));
     put(*props, Gff::Field::newInt("AmbientSndNitVol", music.ambientNightVolume()));
+    // The area flags, where the game keeps them. (Saves of older builds kept
+    // Unescapable in the ARE; Area::loadGIT still reads that when the GIT has none.)
+    put(*props, Gff::Field::newByte("Unescapable", area._unescapable));
+    if (_game.isTSL()) {
+        put(*props, Gff::Field::newByte("DisableTransit", _game.module() && _game.module()->scriptSetting("DisableTransit") != 0));
+    }
+    put(*props, Gff::Field::newByte("RestrictMode", _game.module() && _game.module()->hasPlayer() && _game.module()->player().isRestrictMode()));
     put(*result, Gff::Field::newStruct("AreaProperties", std::move(props)));
 
     // The explored map grid, as retail saves it (design note p1_game).

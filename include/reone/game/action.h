@@ -72,10 +72,20 @@ public:
     ActionType type() const { return _type; }
 
     bool isUserAction() const { return _userAction; }
+    /** Queued by a script routine (a story script driving the creature), not by a player or the engine's AI. */
+    bool isScriptAction() const { return _scriptAction; }
     bool isCompleted() const { return _completed; }
     bool isCancelled() const { return _cancelled; }
 
     void setUserAction(bool val) { _userAction = val; }
+    void setScriptAction(bool val) { _scriptAction = val; }
+    /** The tick this action first ran at the front of its queue, 0 before then. */
+    uint64_t startTick() const { return _startTick; }
+    void noteStarted(uint64_t tick) {
+        if (!_startTick) {
+            _startTick = tick;
+        }
+    }
     void markCancelled() { _cancelled = true; }
 
     void attachSavedAction(SavedActionRecord record) {
@@ -109,6 +119,8 @@ protected:
     ActionType _type;
 
     bool _userAction {false};
+    bool _scriptAction {false};
+    uint64_t _startTick {0};
     bool _completed {false};
     bool _cancelled {false};
     bool _locked {false};

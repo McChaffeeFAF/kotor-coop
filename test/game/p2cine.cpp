@@ -68,6 +68,14 @@ public:
         gui.applyFacing();
     }
 
+    // What onEntryEnded does when the reply list shows: the player character
+    // becomes the speaker, addressing the entry's speaker.
+    static void showReplies(DialogGUI &gui) {
+        auto entrySpeaker = gui._currentSpeaker.resolve();
+        gui.setSpeakerAndListener(gui.conversationPC(), entrySpeaker);
+    }
+    static void finish(DialogGUI &gui) { gui.onFinish(); }
+
     static std::shared_ptr<Object> speaker(DialogGUI &gui) { return gui._currentSpeaker.resolve(); }
     static std::shared_ptr<Object> listener(DialogGUI &gui) { return gui._currentListener.resolve(); }
 
@@ -357,6 +365,35 @@ TEST_F(P2CineDialogTest, an_empty_listener_is_the_player_then_whoever_spoke_last
     EXPECT_EQ(P2CineTestAccess::listener(*_gui), player);
 }
 
+// alpha-0.4.5: Trask went on talking after end_trask01 (talk clips over his
+// walk and run while he followed). The reply list makes the player the
+// speaker without stopping the entry's speaker.
+TEST_F(P2CineDialogTest, a_speaker_stops_talking_when_another_speaks_after_a_reply_and_when_it_ends) {
+    auto player = addPlayer(glm::vec3(0.0f, -3.0f, 0.0f));
+    auto trask = addCreature("end_trask", glm::vec3(0.0f));
+    auto carth = addCreature("carth", glm::vec3(2.0f, 0.0f, 0.0f));
+    auto dialog = std::make_shared<Dialog>();
+    dialog->entries.resize(3);
+    dialog->entries[0].speaker = "end_trask";
+    dialog->entries[1].speaker = "carth";
+    dialog->entries[2].speaker = "end_trask";
+    P2CineTestAccess::begin(*_gui, dialog, trask);
+
+    P2CineTestAccess::show(*_gui, dialog->entries[0]);
+    EXPECT_TRUE(trask->isTalking());
+    P2CineTestAccess::showReplies(*_gui);
+    P2CineTestAccess::show(*_gui, dialog->entries[1]);
+    EXPECT_TRUE(carth->isTalking());
+    EXPECT_FALSE(trask->isTalking()) << "Carth speaks after a reply: Trask stops";
+
+    P2CineTestAccess::show(*_gui, dialog->entries[2]);
+    EXPECT_FALSE(carth->isTalking());
+    P2CineTestAccess::showReplies(*_gui);
+    P2CineTestAccess::finish(*_gui);
+    EXPECT_FALSE(trask->isTalking()) << "the conversation ended on a reply: Trask stops";
+    EXPECT_FALSE(player->isTalking());
+}
+
 TEST_F(P2CineDialogTest, npcs_talking_to_each_other_do_not_turn_the_player) {
     // The player faces +y; Trask at the origin faces +y; Carth two metres
     // east of Trask faces west, towards him.
@@ -402,3 +439,29 @@ TEST_F(P2CineDialogTest, orientation_and_head_follow_locks) {
 }
 
 } // namespace
+
+// --- Sweep: the dialog camera avoids closed doors and placeables -------------
+
+TEST(P2CineObstruction, a_door_leaf_between_speaker_and_eye_blocks_the_shot) {
+    graphics::AABB leaf(glm::vec3(0.9f, -1.0f, 0.0f), glm::vec3(1.1f, 1.0f, 2.5f));
+    EXPECT_TRUE(DialogCamera::lineEntersBox(glm::vec3(0.0f, 0.0f, 1.6f), glm::vec3(2.0f, 0.0f, 1.7f), leaf));
+}
+
+TEST(P2CineObstruction, a_box_beyond_the_eye_or_beside_the_line_does_not_block) {
+    graphics::AABB beyond(glm::vec3(3.0f, -1.0f, 0.0f), glm::vec3(3.2f, 1.0f, 2.5f));
+    graphics::AABB beside(glm::vec3(0.9f, 2.0f, 0.0f), glm::vec3(1.1f, 3.0f, 2.5f));
+    glm::vec3 speaker(0.0f, 0.0f, 1.6f), eye(2.0f, 0.0f, 1.7f);
+    EXPECT_FALSE(DialogCamera::lineEntersBox(speaker, eye, beyond));
+    EXPECT_FALSE(DialogCamera::lineEntersBox(speaker, eye, beside));
+}
+
+TEST(P2CineObstruction, a_box_around_the_speaker_does_not_block) {
+    // A speaker seated in a chair placeable, or standing in a console's bounds.
+    graphics::AABB chair(glm::vec3(-0.5f, -0.5f, 0.0f), glm::vec3(0.5f, 0.5f, 2.0f));
+    EXPECT_FALSE(DialogCamera::lineEntersBox(glm::vec3(0.0f, 0.0f, 1.2f), glm::vec3(2.0f, 0.0f, 1.7f), chair));
+}
+
+TEST(P2CineObstruction, a_low_box_under_a_head_height_line_does_not_block) {
+    graphics::AABB footlocker(glm::vec3(0.8f, -0.4f, 0.0f), glm::vec3(1.2f, 0.4f, 0.6f));
+    EXPECT_FALSE(DialogCamera::lineEntersBox(glm::vec3(0.0f, 0.0f, 1.6f), glm::vec3(2.0f, 0.0f, 1.7f), footlocker));
+}

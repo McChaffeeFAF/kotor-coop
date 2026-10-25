@@ -26,8 +26,11 @@
 #include "reone/game/action/pauseconversation.h"
 #include "reone/game/action/resumeconversation.h"
 #include "reone/game/console.h"
+#include "reone/input/event.h"
 #include "reone/game/game.h"
 #include "reone/game/gui/conversation.h"
+#include "reone/game/object/area.h"
+#include "reone/game/object/creature.h"
 #include "reone/resource/dialog.h"
 
 using namespace reone;
@@ -182,6 +185,19 @@ std::shared_ptr<Dialog> makeOneLinerDialog(std::string entryScript, std::string 
     return dialog;
 }
 
+// The one-liner shape under test: the start entry has \p replyLinks links to
+// the same terminal reply (0 gives an entry with no replies at all).
+std::shared_ptr<Dialog> makeShapedDialog(ConversationType type, std::string replyText, size_t replyLinks = 1) {
+    auto dialog = makeOneLinerDialog("", "");
+    dialog->resRef = "shaped_test";
+    dialog->conversationType = type;
+    dialog->replies[0].text = std::move(replyText);
+    if (replyLinks == 0) {
+        dialog->entries[0].replies.clear();
+    }
+    return dialog;
+}
+
 std::shared_ptr<AudioClip> makeOneSecondClip() {
     auto clip = std::make_shared<AudioClip>();
     AudioClip::Frame frame;
@@ -206,7 +222,7 @@ protected:
         _conversation->start(makeDialog(delay), nullptr);
     }
 
-    void startVoiced() {
+    void startVoiced(int delay = -1, bool skippable = false) {
         auto clip = makeOneSecondClip();
         auto source = std::make_shared<AudioSource>(clip);
 
@@ -217,7 +233,9 @@ protected:
         EXPECT_CALL(static_cast<audio::MockAudioMixer &>(_engine.services().audio.mixer), play(_, AudioType::Voice, _, _, _))
             .WillOnce(Return(source));
 
-        _conversation->start(makeDialog(-1, true), nullptr);
+        auto dialog = makeDialog(delay, true);
+        dialog->skippable = skippable;
+        _conversation->start(dialog, nullptr);
     }
 
     void attachConversation(Game::Screen screen) {
@@ -752,4 +770,247 @@ TEST_F(ConversationTest, bark_consumes_hold_even_when_script_lock_rejects_reveal
     EXPECT_FLOAT_EQ(1, fade.opacity());
 }
 
+// --- the one-liner shape (upstream #356) ---------------------------------
+
+TEST_F(ConversationTest, one_liner_reply_text_does_not_matter) {
+    _conversation->start(makeShapedDialog(ConversationType::Cinematic, "Goodbye."), nullptr);
+    EXPECT_EQ(1, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, one_liner_reply_whose_condition_fails_still_runs_its_action) {
+    auto &scripts = _engine.resourceModule().scripts();
+    EXPECT_CALL(scripts, get("one_reply")).WillOnce(Return(nullptr));
+    EXPECT_CALL(scripts, get("never")).WillRepeatedly(Return(nullptr));
+    auto dialog = makeOneLinerDialog("", "one_reply");
+    dialog->entries[0].replies[0].active = "never"; // the link's condition script
+    _conversation->start(dialog, nullptr);
+    EXPECT_EQ(1, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, computer_conversation_is_a_one_liner_in_k1) {
+    _conversation->start(makeShapedDialog(ConversationType::Computer, ""), nullptr);
+    EXPECT_EQ(1, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, other_conversation_types_are_never_one_liners) {
+    _conversation->start(makeShapedDialog(static_cast<ConversationType>(2), ""), nullptr);
+    EXPECT_EQ(0, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, entry_with_no_replies_is_not_a_one_liner_yet) {
+    _conversation->start(makeShapedDialog(ConversationType::Cinematic, "", 0), nullptr);
+    EXPECT_EQ(0, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, entry_with_a_reply_leading_on_is_not_a_one_liner) {
+    auto dialog = makeShapedDialog(ConversationType::Cinematic, "");
+    dialog->entries.resize(2);
+    dialog->entries[1].text = "next";
+    Dialog::EntryReplyLink onward;
+    onward.index = 1;
+    dialog->replies[0].entries.push_back(onward);
+    _conversation->start(dialog, nullptr);
+    EXPECT_EQ(0, _conversation->barkCount());
+}
+
+TEST_F(ConversationTest, one_liner_still_awards_its_journal_entries) {
+    auto dialog = makeOneLinerDialog("", "");
+    dialog->entries[0].quest = "entry_quest";
+    dialog->entries[0].questEntry = 10;
+    dialog->replies[0].quest = "reply_quest";
+    dialog->replies[0].questEntry = 20;
+    _conversation->start(dialog, nullptr);
+    EXPECT_EQ(1, _conversation->barkCount());
+    EXPECT_EQ(10, _game->journal().getEntryState("entry_quest"));
+    EXPECT_EQ(20, _game->journal().getEntryState("reply_quest"));
+}
+
+TEST_F(ConversationTest, sole_reply_that_resolves_to_nothing_is_taken_when_the_entry_ends) {
+    auto dialog = makeDialog();
+    dialog->entries[0].replies.resize(1);
+    dialog->entries[0].replies[0].index = 0;
+    dialog->replies[0].text = "";
+    dialog->replies[0].entries.clear();
+    auto &scripts = _engine.resourceModule().scripts();
+    dialog->replies[0].script = "auto_reply";
+    EXPECT_CALL(scripts, get("auto_reply")).WillOnce(Return(nullptr));
+    dialog->conversationType = static_cast<ConversationType>(2); // not a one-liner: opens normally
+    _conversation->start(dialog, nullptr);
+    _conversation->updateSimulation(10.0f);
+}
+
+TEST(ConversationTslShape, computer_conversation_is_not_a_one_liner_in_tsl) {
+    TestEngine engine;
+    StubConsole console;
+    engine.init();
+    Game game(GameID::TSL, std::filesystem::path {}, engine.options(), engine.services(), console);
+    game.initLocalServices();
+    TestConversation conversation(game, engine.services());
+    conversation.start(makeShapedDialog(ConversationType::Computer, ""), nullptr);
+    EXPECT_EQ(0, conversation.barkCount());
+    TestConversation cinematic(game, engine.services());
+    cinematic.start(makeShapedDialog(ConversationType::Cinematic, ""), nullptr);
+    EXPECT_EQ(1, cinematic.barkCount());
+}
+
+
 } // namespace
+
+void reone::game::TestGameModule::setConversationStepPending(Game &game, bool pending) {
+    game._conversationStepPending = pending;
+}
+
+namespace {
+
+constexpr float kTickSeconds = 1.0f / 30.0f;
+
+} // namespace
+
+// Cutscene ordering (design note cutscene_timing). end_trask01 entry 54 has
+// Delay 0 and a script that queues ActionPauseConversation on Trask; the
+// conversation starts from Trask's action, inside the tick's world step.
+
+TEST_F(ConversationTest, an_entry_started_in_the_world_step_does_not_end_in_that_tick) {
+    TestGameModule::setConversationStepPending(*_game, true);
+    startSilent(0);
+    TestGameModule::setConversationStepPending(*_game, false);
+
+    _conversation->updateSimulation(kTickSeconds); // the same tick's conversation step
+    EXPECT_EQ("first", _conversation->currentText());
+    EXPECT_EQ(0, _conversation->entryEndCount());
+
+    _conversation->updateSimulation(kTickSeconds); // the next tick
+    EXPECT_EQ("second", _conversation->currentText());
+    EXPECT_EQ(1, _conversation->entryEndCount());
+}
+
+TEST_F(ConversationTest, a_pause_queued_by_a_delay_0_entry_holds_that_entry) {
+    TestGameModule::setConversationStepPending(*_game, true);
+    startSilent(0);
+    TestGameModule::setConversationStepPending(*_game, false);
+    _conversation->updateSimulation(kTickSeconds);
+
+    // Next tick: the speaker's queued ActionPauseConversation runs in the
+    // world step, before the conversation step looks at the timer.
+    _conversation->pause();
+    for (int i = 0; i < 60; ++i) {
+        _conversation->updateSimulation(kTickSeconds);
+    }
+    EXPECT_EQ("first", _conversation->currentText());
+    EXPECT_EQ(0, _conversation->entryEndCount());
+
+    _conversation->resume(); // ActionResumeConversation once the speaker arrives
+    _conversation->updateSimulation(kTickSeconds);
+    EXPECT_EQ("second", _conversation->currentText());
+    EXPECT_EQ(1, _conversation->entryEndCount());
+}
+
+TEST_F(ConversationTest, an_entry_started_between_ticks_keeps_its_timing) {
+    // Started by a click or a console command: the next tick's world step
+    // runs before its conversation step, so nothing is deferred.
+    startSilent(0);
+    _conversation->updateSimulation(kTickSeconds);
+    EXPECT_EQ("second", _conversation->currentText());
+}
+
+TEST_F(ConversationTest, the_deferred_tick_does_not_count_towards_the_entry_s_delay) {
+    TestGameModule::setConversationStepPending(*_game, true);
+    startSilent(1);
+    TestGameModule::setConversationStepPending(*_game, false);
+
+    _conversation->updateSimulation(0.5f); // deferred: the entry has existed for no time
+    _conversation->updateSimulation(0.6f);
+    EXPECT_EQ("first", _conversation->currentText());
+    _conversation->updateSimulation(0.4f);
+    EXPECT_EQ("second", _conversation->currentText());
+    EXPECT_EQ(1, _conversation->entryEndCount());
+}
+
+TEST_F(ConversationTest, a_replica_mirrors_the_host_s_placeable_camera_cut) {
+    auto dialog = makeDialog();
+    dialog->entries[0].cameraAngle = 6;
+    dialog->entries[0].cameraId = 20;
+    _conversation->startReplica(dialog, nullptr);
+    _conversation->showReplicaEntry(0, {0}, false);
+    int cameraId = 0;
+    ASSERT_EQ(CameraType::Static, _conversation->getCamera(cameraId));
+    EXPECT_EQ(20, cameraId);
+
+    // k_pend_ud_cut10 on the host: the cut hides the player's jump.
+    _conversation->showReplicaEntry(0, {0}, false, 22);
+    ASSERT_EQ(CameraType::Static, _conversation->getCamera(cameraId));
+    EXPECT_EQ(22, cameraId);
+
+    // The next entry's own camera, as on the host.
+    _conversation->showReplicaEntry(1, {1}, false);
+    EXPECT_EQ(CameraType::Dialog, _conversation->getCamera(cameraId));
+}
+
+// A voiced entry plays its line out: Delay 0 is no extra time, not a cut
+// line (K1: 40 auto-advancing voiced entries with Delay 0, e.g. danm13
+// bastila E9). The entry lasts the longer of its Delay and its voice.
+
+TEST_F(ConversationTest, a_voiced_delay_0_entry_lasts_its_voice) {
+    startVoiced(0);
+    _conversation->updateSimulation(0.5f);
+    EXPECT_EQ("first", _conversation->currentText());
+    _conversation->updateSimulation(0.5f);
+    EXPECT_EQ("second", _conversation->currentText());
+    EXPECT_EQ(1, _conversation->entryEndCount());
+}
+
+TEST_F(ConversationTest, a_delay_longer_than_the_voice_holds_the_entry) {
+    startVoiced(2);
+    _conversation->updateSimulation(1.5f);
+    EXPECT_EQ("first", _conversation->currentText());
+    _conversation->updateSimulation(0.5f);
+    EXPECT_EQ("second", _conversation->currentText());
+}
+
+TEST_F(ConversationTest, a_click_still_skips_a_voiced_entry) {
+    startVoiced(0, /*skippable=*/true);
+    _conversation->handle(input::Event::newMouseButtonDown(
+        input::MouseButtonEvent(input::MouseButton::Left, true, 1, 0, 0)));
+    _conversation->updateSimulation(kTickSeconds);
+    EXPECT_EQ("second", _conversation->currentText());
+}
+
+// An empty node whose script queues a pause is held, not passed straight on
+// (tar08_davik081 E14: pause, fade out, move the party, resume).
+
+namespace {
+
+std::shared_ptr<Dialog> makeEmptyFirstEntryDialog() {
+    auto dialog = makeDialog(-1);
+    dialog->entries[0].text.clear();
+    dialog->entries[0].cameraId = 0; // as a loaded DLG node without a camera
+    return dialog;
+}
+
+} // namespace
+
+TEST_F(ConversationTest, an_empty_entry_with_nothing_queued_passes_straight_on) {
+    auto area = _game->newArea();
+    TestGameModule::setActiveModuleArea(*_game, area);
+    _conversation->start(makeEmptyFirstEntryDialog(), nullptr);
+    EXPECT_EQ("second", _conversation->currentText());
+}
+
+TEST_F(ConversationTest, an_empty_entry_whose_script_queued_a_pause_is_held_until_the_resume) {
+    auto area = _game->newArea();
+    TestGameModule::setActiveModuleArea(*_game, area);
+    auto owner = _game->newCreature();
+    area->add(owner);
+    owner->addAction(_game->newAction<PauseConversationAction>()); // as the node's script does
+    _conversation->start(makeEmptyFirstEntryDialog(), nullptr);
+    EXPECT_EQ("", _conversation->currentText());
+
+    _conversation->pause(); // the owner's queued pause runs in the next world step
+    _conversation->updateSimulation(kTickSeconds);
+    _conversation->updateSimulation(1.0f);
+    EXPECT_EQ("", _conversation->currentText());
+
+    _conversation->resume();
+    _conversation->updateSimulation(kTickSeconds);
+    EXPECT_EQ("second", _conversation->currentText()); // no time of its own after the resume
+}

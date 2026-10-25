@@ -1,6 +1,6 @@
 # Co-op
 
-How co-op works, for developers. For players, the README's "Playing" section covers
+How co-op works, for developers. For players, the README's "Host and join by IP" section covers
 hosting and joining.
 
 ## The model: host-authoritative
@@ -84,7 +84,7 @@ skills, ready check, pause, containers, equipment, level-up, stores, offers, Paz
 conversation replies, workbench and minigame commands). The host answers with a
 `CommandResult` that is either accepted or one `CommandReject` reason.
 
-[protocol_coverage.md](protocol_coverage.md) lists how every message, command and
+[protocol_coverage.md](dev/protocol_coverage.md) lists how every message, command and
 refusal is round-trip tested and fuzzed.
 
 ## What guests can and cannot do

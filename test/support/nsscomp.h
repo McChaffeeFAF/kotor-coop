@@ -20,7 +20,7 @@
 /**
  * A small NWScript (.nss) to NCS compiler for tests. It is NOT part of the engine
  * and is never built into the game or its package: it exists so unit tests can run
- * real script logic without game files (docs/testing_scripts.md).
+ * real script logic without game files (docs/dev/testing_scripts.md).
  *
  * The language subset: int, float, string, object, vector, location (and the
  * opaque effect, event and talent types); globals and locals with initialisers;

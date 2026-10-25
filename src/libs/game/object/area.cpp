@@ -71,6 +71,9 @@
 #include "reone/scene/types.h"
 #include "reone/system/logutil.h"
 #include "reone/system/randomutil.h"
+#include "reone/game/combatfeedback.h"
+#include "reone/game/messagelog.h"
+#include "reone/game/stealth.h"
 
 using namespace reone::audio;
 using namespace reone::gui;
@@ -230,11 +233,24 @@ void Area::loadExploredMap(const Gff &git) {
 
 void Area::revealAroundParty() {
     // Every party member uncovers the cells around it each tick.
+    // In co-op the map is shared: the host also reveals around every
+    // player's character, and a client reveals nothing (it draws the host's).
+    auto coop = _game.coop();
+    if (coop && coop->isClient()) {
+        return;
+    }
     auto &party = _game.party();
     for (int i = 0; i < party.getSize(); ++i) {
         auto member = party.getMember(i);
         if (member) {
             _mapExploration.reveal(worldToMapPoint(glm::vec2(member->position())), MapExploration::kPartyRevealRadius);
+        }
+    }
+    if (coop) {
+        for (const auto &marker : coop->mapMarkers()) {
+            if (marker.player && marker.object && !marker.object->isDead()) {
+                _mapExploration.reveal(worldToMapPoint(glm::vec2(marker.object->position())), MapExploration::kPartyRevealRadius);
+            }
         }
     }
 }
@@ -377,7 +393,7 @@ glm::vec2 Area::worldToMapPoint(const glm::vec2 &world) const {
 
 void Area::loadStealthXP(const resource::generated::ARE &are) {
     _stealthXPEnabled = are.StealthXPEnabled;
-    _stealthXPDecrement = are.StealthXPLoss; // TODO: loss = decrement?
+    _stealthXPDecrement = are.StealthXPLoss; // the decrement each detection costs (Get/SetStealthXPDecrement)
     _maxStealthXP = are.StealthXPMax;
     // An ARE carries no current pool, so the area starts with the full one.
     _currentStealthXP = _maxStealthXP;
@@ -444,6 +460,7 @@ void Area::loadGIT(
     const SerializedIdentityContext &identityContext) {
     _game.reserveSavedObjectIds(gff, identityContext, SerializedGraphRoot::AreaGit);
     loadProperties(git);
+    loadFlagsFromGit(gff);
     loadCreatures(gff, identityContext);
     loadDoors(gff, identityContext);
     loadPlaceables(gff, identityContext);
@@ -454,6 +471,30 @@ void Area::loadGIT(
     loadEncounters(gff, identityContext);
     loadStores(gff, identityContext);
     loadItems(gff, identityContext);
+}
+
+void Area::loadFlagsFromGit(const resource::Gff &gff) {
+    // The area flags as the game stores them, in the GIT's AreaProperties. A
+    // save from an older build has none there and keeps the ARE's Unescapable.
+    auto properties = gff.findStruct("AreaProperties");
+    if (!properties) {
+        return;
+    }
+    properties->readBool(_unescapable, "Unescapable");
+    auto module = _game.module();
+    if (!module) {
+        return;
+    }
+    bool restrict = false;
+    if (properties->readBool(restrict, "RestrictMode")) {
+        if (module->hasPlayer()) {
+            module->player().setRestrictMode(restrict);
+        }
+    }
+    bool disableTransit = false;
+    if (_game.isTSL() && properties->readBool(disableTransit, "DisableTransit")) {
+        module->setScriptSetting("DisableTransit", disableTransit ? 1 : 0);
+    }
 }
 
 void Area::loadProperties(const resource::generated::GIT &git) {
@@ -1612,6 +1653,9 @@ bool Area::moveCreature(const std::shared_ptr<Creature> &creature, const glm::ve
     glm::vec3 origin(creature->position());
     origin.z += 0.1f;
 
+    if (run && creature->stealthWalkOnly()) {
+        run = false; // Stealth Mode: run disabled (TLK 1464)
+    }
     float speed = run ? creature->runSpeed() : creature->walkSpeed();
     float speedDt = speed * dt;
 
@@ -2303,6 +2347,9 @@ std::shared_ptr<Object> Area::getNearestObject(const glm::vec3 &origin, int nth,
     std::vector<std::pair<std::shared_ptr<Object>, float>> candidates;
 
     for (auto &object : _objects) {
+        if (isCameoObject(*object)) {
+            continue; // a stage prop: scripts never find it
+        }
         if (predicate(object)) {
             candidates.push_back(std::make_pair(object, object->getSquareDistanceTo(origin)));
         }
@@ -2394,6 +2441,9 @@ static bool matchesPerception(const Creature &creature, const Object *target,
 }
 
 bool Area::matchesCriterias(const Creature &creature, const SearchCriteriaList &criterias, std::shared_ptr<Object> target) const {
+    if (creature.isCameo()) {
+        return false; // a stage prop: no script search finds it
+    }
     if (target && target->type() != ObjectType::Creature) {
         // Reputation and Perception checks need a creature to look from
         return false;
@@ -2469,6 +2519,7 @@ uint32_t Area::lastTrapDetected(uint32_t creatureId) const {
 }
 
 void Area::updatePerception(float dt) {
+    _stealthClock += dt;
     _perceptionTimer.update(dt);
     if (_perceptionTimer.elapsed()) {
         doUpdatePerception();
@@ -2528,6 +2579,9 @@ void Area::updatePerceptionPair(
     if (!observer || !target || observer == target || observer->isDead()) {
         return;
     }
+    if (observer->isCameo() || target->isCameo()) {
+        return; // a stage prop neither sees nor is seen
+    }
 
     float distance2 = observer->getSquareDistanceTo(*target);
     float hearingRange = observer->perception().hearingRange;
@@ -2536,13 +2590,37 @@ void Area::updatePerceptionPair(
     bool seen = distance2 <= sightRange * sightRange &&
                 isObjectSeen(*observer, *target);
 
+    // Stealth Mode: a hostile observer neither sees nor hears the creature
+    // until an Awareness check against its Stealth succeeds (design note stealth).
+    bool stealthHidden = false;
+    bool stealthed = target->isStealthed() && !target->isDead();
+    bool playerSide = _game.party().isMember(*target) || target->isCoopPartyCharacter();
+    bool poolAtStake = _stealthXPEnabled && playerSide && !target->isDead() &&
+                       _stealthXPDetectors.count(observer->id()) == 0;
+    if (stealthed || (poolAtStake && seen)) {
+        bool hostile = _services.game.reputes.getIsEnemy(*observer, *target);
+        if (stealthed && hostile) {
+            auto &watch = _stealthWatches[{observer->id(), target->id()}];
+            // Only a creature the observer could otherwise see is checked:
+            // a field hides it from a hostile through walls and doors too.
+            if (!runStealthCheck(*observer, *target, watch, seen)) {
+                heard = false;
+                seen = false;
+                stealthHidden = true;
+            }
+        }
+        if (hostile && seen) {
+            noteNoticedByHostile(*observer, *target);
+        }
+    }
+
     bool wasHeard = observer->perception().hears(target->id());
     bool wasSeen = observer->perception().sees(target->id());
     if (wasHeard == heard && wasSeen == seen) {
         return;
     }
 
-    if (wasSeen && !seen && target->isInvisibleTo(*observer)) {
+    if (wasSeen && !seen && (stealthHidden || target->isInvisibleTo(*observer))) {
         observer->clearHostileActionsAgainst(*target);
     }
     if (wasHeard != heard) {
@@ -2560,6 +2638,90 @@ void Area::updatePerceptionPair(
         observer->setObjectSeen(target, seen);
     }
     observer->runOnNotice(*target, heard, seen);
+}
+
+void Area::forgetStealthChecks(uint32_t targetId) {
+    for (auto it = _stealthWatches.begin(); it != _stealthWatches.end();) {
+        if (it->first.second == targetId) {
+            it = _stealthWatches.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    _stealthRolls.erase(targetId);
+}
+
+bool Area::hasDetectedStealthed(uint32_t observerId, uint32_t targetId) const {
+    auto it = _stealthWatches.find({observerId, targetId});
+    return it != _stealthWatches.end() && it->second.detected;
+}
+
+bool Area::runStealthCheck(const Creature &observer, const Creature &target, StealthWatch &watch, bool eligible) {
+    if (!eligible) {
+        // Out of sight: the next meeting is a first meeting again.
+        watch.eligible = false;
+        watch.detected = false;
+        return false;
+    }
+    bool due = !watch.eligible || (!watch.detected && _stealthClock >= watch.nextCheck);
+    watch.eligible = true;
+    if (!due) {
+        return watch.detected;
+    }
+    watch.nextCheck = _stealthClock + stealth::kRecheckInterval;
+
+    // One stealth roll stands against every observer for a while; each
+    // observer rolls its own Awareness (gameplay stream, deterministic).
+    auto &roll = _stealthRolls[target.id()];
+    if (roll.roll == 0 || _stealthClock >= roll.expires) {
+        roll.roll = randomInt(1, 20);
+        roll.expires = _stealthClock + stealth::kStealthRollLifetime;
+    }
+    stealth::AwarenessInputs inputs;
+    inputs.awarenessSkill = observer.getSkillValue(SkillType::Awareness);
+    inputs.distance = observer.getDistanceTo(target);
+    inputs.observerRunning = observer.movementType() == Creature::MovementType::Run;
+    glm::vec3 toTarget = target.position() - observer.position();
+    inputs.targetBehind = stealth::isBehind(observer.getFacing(), toTarget.x, toTarget.y);
+    inputs.observerInCombat = observer.isInCombat();
+    int awarenessRoll = randomInt(1, 20);
+    auto result = stealth::check(awarenessRoll, stealth::awarenessModifier(inputs), roll.roll,
+                                 target.getSkillValue(SkillType::Stealth));
+    debug(str(boost::format("Stealth check: %s vs %s: awareness %d vs stealth %d -> %s") % observer.tag() %
+              target.tag() % result.awarenessTotal % result.stealthTotal %
+              (result.detected ? "detected" : "hidden")),
+          LogChannel::Perception);
+    if (!result.detected) {
+        return false;
+    }
+    watch.detected = true;
+    if (_game.party().isMember(target) || target.isCoopPartyCharacter()) {
+        // TLK 38023: "<observer> successfully detects <target>: awareness N vs. stealth N"
+        _game.messageLog().add(
+            MessageLog::kFeedbackMessageType,
+            MessageLog::Style::Normal,
+            feedbackText(_game, stealth::kStrRefDetected,
+                         {{0, observer.name()}, {1, target.name()},
+                          {2, std::to_string(result.awarenessTotal)}, {3, std::to_string(result.stealthTotal)}}));
+    }
+    return true;
+}
+
+void Area::noteNoticedByHostile(const Creature &observer, const Creature &target) {
+    // Stealth XP: each hostile that notices one of the players' characters
+    // lowers the area's pool once (ARE StealthXPLoss).
+    if (!_stealthXPEnabled || observer.isDead()) {
+        return;
+    }
+    if (!(_game.party().isMember(target) || target.isCoopPartyCharacter())) {
+        return;
+    }
+    if (!_stealthXPDetectors.insert(observer.id()).second) {
+        return;
+    }
+    _currentStealthXP = stealth::poolAfterDetection(_currentStealthXP, _stealthXPDecrement, _stealthXPEnabled);
+    debug(str(boost::format("Stealth XP: %s noticed %s, pool now %d") % observer.tag() % target.tag() % _currentStealthXP),
+          LogChannel::Perception);
 }
 
 void Area::updateMessageBus() {

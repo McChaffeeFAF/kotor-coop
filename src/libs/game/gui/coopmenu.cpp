@@ -302,8 +302,11 @@ void CoopMenu::refresh() {
                                    }
                                }});
         }
+        if (_place == Place::InGame) {
+            buttons.push_back(nameTagsButton());
+        }
         buttons.push_back({"Stop hosting", [this]() { leave(); }});
-        layout(std::string("host-") + (_place == Place::MainMenu ? "main" : "game") + (online ? "-code" : ""), std::move(buttons),
+        layout(std::string("host-") + (_place == Place::MainMenu ? "main" : "game") + (online ? "-code" : "") + (_game.coopNameTags() ? "-t" : "-n"), std::move(buttons),
                _place == Place::MainMenu ? "Back" : "Close");
         showText((_message.empty() ? std::string() : _message + "\n\n") + hostText());
         break;
@@ -313,10 +316,20 @@ void CoopMenu::refresh() {
         showText(connectingText());
         break;
     case View::Playing:
-        layout("client-game", {{"Leave the game", [this]() { leave(); }}}, "Close");
+        layout("client-game-" + std::string(_game.coopNameTags() ? "tags" : "notags"), {nameTagsButton(), {"Leave the game", [this]() { leave(); }}}, "Close");
         showText("You are playing in the host's game. Leave the game to go back to the main menu.");
         break;
     }
+}
+
+std::pair<std::string, std::function<void()>> CoopMenu::nameTagsButton() {
+    // Name tags above the players and the guest portraits on the HUD.
+    return {std::string("Name tags: ") + (_game.coopNameTags() ? "On" : "Off"), [this]() {
+                _game.userSettings().setBool(kCoopNameTagsSetting, !_game.coopNameTags());
+                _game.userSettings().save();
+                _shownLayout.clear();
+                refresh();
+            }};
 }
 
 void CoopMenu::host(const std::string &mode) {

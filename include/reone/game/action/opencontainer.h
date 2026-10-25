@@ -20,6 +20,7 @@
 #include <functional>
 
 #include "../action.h"
+#include "objectapproach.h"
 
 namespace reone {
 
@@ -53,6 +54,7 @@ public:
 private:
     std::shared_ptr<Object> _object;
     ReachedHandler _onReached;
+    ObjectApproach _approach;
 
     void openAt(Object &actor);
 };

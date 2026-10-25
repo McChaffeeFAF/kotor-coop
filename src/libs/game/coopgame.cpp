@@ -16,6 +16,8 @@
 #include <boost/json.hpp>
 
 #include "reone/game/coopsession.h"
+#include "reone/game/location.h"
+#include "reone/game/action/jumptolocation.h"
 #include "reone/resource/director.h"
 #include "reone/game/gui/chargen.h"
 #include "reone/game/gui/ingame.h"
@@ -318,6 +320,29 @@ void Game::initCoopConsole() {
         }
         _coop->reissueCode();
         _console.printLine("coop reissue requested");
+    });
+    _console.registerCommand("coopscenejump", "co-op host (harness): fade out and jump the leader as a scene script does: coopscenejump x y [fade=1]", [this](const ConsoleArgs &args) {
+        if (!_coop || !_coop->isHost()) {
+            throw std::runtime_error("not a co-op host");
+        }
+        if (args.size() < 3 || args.size() > 4) {
+            throw std::runtime_error("Usage: coopscenejump x y [fade=1]");
+        }
+        auto leader = _party.getLeader();
+        if (!leader) {
+            throw std::runtime_error("no leader");
+        }
+        float x = args.get<float>(1).value();
+        float y = args.get<float>(2).value();
+        if (args.size() < 4 || args.get<int>(3).value_or(1) != 0) {
+            // SetGlobalFadeOut(0, 0) then SetGlobalFadeIn(0, 0.5), as k_pend_door18 starts.
+            _globalFade.request(GlobalFade::Direction::Out, 0.0f, 0.0f, glm::vec3(0.0f), GlobalFade::Source::Script);
+            _globalFade.request(GlobalFade::Direction::In, 0.0f, 0.5f, glm::vec3(0.0f), GlobalFade::Source::Script);
+        }
+        // The script's own action (ActionJumpToLocation on the leader), on top of its queue.
+        auto location = std::make_shared<Location>(glm::vec3(x, y, leader->position().z), leader->getFacing());
+        leader->addActionOnTop(newAction<JumpToLocationAction>(std::move(location)));
+        _console.printLine("coop scene jump queued for " + leader->tag());
     });
     _console.registerCommand("coopapprove", "co-op host: answer a join request: coopapprove <client id> [1|0]", [this](const ConsoleArgs &args) {
         if (!_coop || !_coop->isHost()) {
@@ -939,6 +964,7 @@ std::shared_ptr<CoopSession> startCoopSession(Game &game, const CoopLaunch &laun
     config.preferredTag = launch.preferredTag;
     config.hostOnlyTransitions = launch.hostOnlyTransitions;
     config.hostOnlyTrading = launch.hostOnlyTrading;
+    config.hostOnlyScenes = launch.hostOnlyScenes;
     config.noPause = launch.noPause;
     config.pauseCooldown = launch.pauseCooldown;
     config.enemyScaling = launch.enemyScaling;

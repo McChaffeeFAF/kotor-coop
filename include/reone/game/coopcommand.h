@@ -63,6 +63,39 @@ enum class CoopBench {
 CoopBench coopScriptBench(Game &game, const std::string &script);
 
 /**
+ * Is the conversation on the screen one player's own, not a shared scene? A workbench's or
+ * lab's talk before its screen (K1's Taris workbench tutorial): its owner is a placeable whose
+ * OnUsed script opens a bench. Other players are neither removed, moved nor held for it.
+ */
+bool coopPersonalConversation(Game &game);
+
+/**
+ * Does this compiled script start a conversation or a cutscene (ActionStartConversation,
+ * BeginConversation, PlayMovie, or ExecuteScript of a literal script that does)? Read from
+ * its ACTION instructions, never run. Cached per script.
+ */
+bool coopScriptStartsScene(Game &game, const std::string &script);
+
+/**
+ * Does this compiled script name the tag (a string constant, any case)? A door,
+ * trigger or placeable script that tests GetTag(GetEnteringObject()) == "t3m4"
+ * or compares with GetObjectByTag("end_trask") is about that creature. Cached.
+ */
+bool coopScriptNamesTag(Game &game, const std::string &script, const std::string &tag);
+
+/** How long one script action at the front of a player's creature holds its player's input at most. */
+constexpr float kCoopScriptHoldSeconds = 20.0f;
+
+/**
+ * Is a script driving this player's creature (design note guest_npc_scripts)?
+ * Its player's input waits while it is: the queue holds a script's sequence
+ * (a move, jump, door, animation, conversation, wait), or NoClicksFor runs.
+ * One script action holding the front for longer than kCoopScriptHoldSeconds
+ * (a looping animation left on) no longer holds.
+ */
+bool coopScriptHoldsCreature(Game &game, const Creature &creature);
+
+/**
  * Does any node of this dialog open a store, start Pazaak or load a
  * minigame module (a "*mg" module)? Read from the action scripts' compiled
  * code, never run. Cached per dialog.

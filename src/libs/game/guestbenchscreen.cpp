@@ -223,6 +223,8 @@ std::string GuestBenchScreen::rejectionText(CommandReject reason) {
         return "You no longer have that item";
     case CommandReject::RateLimited:
         return "Too many requests: try again";
+    case CommandReject::ItemEquippedByPlayer:
+        return "Another player has that equipped";
     default:
         return std::string("The host refused: ") + commandRejectName(reason);
     }

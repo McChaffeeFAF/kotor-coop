@@ -21,6 +21,8 @@
 
 #include "../camera.h"
 
+#include "reone/graphics/aabb.h"
+
 namespace reone {
 
 namespace game {
@@ -96,6 +98,13 @@ public:
     /** Whether the area blocks `shot` as a node's shot is checked. */
     bool isBlocked(const Shot &shot, glm::vec3 speaker, glm::vec3 listener) const;
 
+    /**
+     * Whether the line from `from` to `to` enters `box` before reaching `to`.
+     * A box that contains `from` (a speaker sitting in a chair, standing in a
+     * console's bounds) does not block.
+     */
+    static bool lineEntersBox(const glm::vec3 &from, const glm::vec3 &to, const graphics::AABB &box);
+
     /** The side of the line with fewer blocked views for this pair: 1 or 2. */
     int chooseSide(glm::vec3 speaker, glm::vec3 listener) const;
 
@@ -108,6 +117,12 @@ private:
     Framing _framing;
 
     bool blocked(glm::vec3 from, glm::vec3 to) const;
+    /**
+     * The first closed door or placeable whose model box the line from
+     * `from` to `to` enters (one that contains `from` does not count), or
+     * nullptr. The walkmesh alone misses door leaves and set pieces.
+     */
+    const Object *blockingObject(glm::vec3 from, glm::vec3 to) const;
     void updateSceneNode();
     float projectionFovy() const override;
 };

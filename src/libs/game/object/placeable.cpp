@@ -117,7 +117,8 @@ void Placeable::deserializeAll(
     gff.readShort(_currentHitPoints, "CurrentHP");
     gff.readByte(_hardness, "Hardness");
     if (identityContext.isSerializedState() && gff.has("CurrentHP")) {
-        _dead = _currentHitPoints <= 0;
+        // A container broken open (plot, unlocked) stays a container.
+        _dead = _currentHitPoints <= 0 && !(_plot && _hasInventory);
     }
     gff.readByte(_fort, "Fort");
     gff.readByte(_will, "Will");
@@ -322,6 +323,9 @@ void Placeable::playAnimation(AnimationType type, AnimationProperties properties
     }
 }
 
+// A K1 container broken open opens for the party leader this long after it breaks.
+static constexpr float kBrokenOpenDelaySeconds = 1.0f;
+
 void Placeable::damage(
     int amount,
     const std::shared_ptr<Object> &damager) {
@@ -349,6 +353,16 @@ void Placeable::damage(
         return;
     }
 
+    if (_hasInventory && !_game.isTSL()) {
+        // K1: a container broken open becomes plot and unlocked, and a second
+        // later opens for the party leader, wherever the leader stands. (TSL
+        // opens it only for a leader within reach; that is not ported.)
+        _plot = true;
+        _locked = false;
+        _brokenOpenSeconds = kBrokenOpenDelaySeconds;
+        return;
+    }
+
     _dead = true;
     _locked = false;
     _open = true;
@@ -362,7 +376,7 @@ void Placeable::onOpen(uint32_t triggererId) {
         return;
     }
     if (auto *coop = _game.coop()) {
-        triggererId = coop->scriptActor(triggererId); // a player's creature counts as the PC
+        triggererId = coop->scriptActor(triggererId, _onOpen); // a player's creature counts as the PC
     }
     _game.scriptRunner().run(
         _onOpen,
@@ -400,7 +414,7 @@ void Placeable::runOnUsed(std::shared_ptr<Object> usedBy) {
     if (usedBy) {
         uint32_t user = usedBy->id();
         if (auto *coop = _game.coop()) {
-            user = coop->scriptActor(user); // a player's creature counts as the PC
+            user = coop->scriptActor(user, _onUsed); // a player's creature counts as the PC
         }
         args.emplace_back(script::ArgKind::LastUsedBy, Variable::ofObject(user));
     }
@@ -444,6 +458,16 @@ void Placeable::signalEndDialogue() {
 
 void Placeable::update(float dt) {
     Object::update(dt);
+    if (_brokenOpenSeconds >= 0.0f) {
+        _brokenOpenSeconds -= dt;
+        if (_brokenOpenSeconds < 0.0f) {
+            _brokenOpenSeconds = -1.0f;
+            if (auto leader = _game.party().getLeader()) {
+                openContainer(leader->id());
+                _game.openContainer(_game.getObjectById(_id));
+            }
+        }
+    }
     if (!_transitionAnimation.empty()) {
         auto model = std::static_pointer_cast<ModelSceneNode>(_sceneNode);
         if (!model || model->isAnimationFinished()) {

@@ -11,6 +11,7 @@
 #include <random>
 
 #include <boost/algorithm/string.hpp>
+#include <glm/geometric.hpp>
 
 #include "reone/game/attack.h"
 #include "reone/game/coopprogress.h"
@@ -58,8 +59,6 @@ constexpr size_t kMaxRejoinTokens = 256;
 constexpr size_t kMaxAbsentGuests = 32;
 constexpr size_t kMaxPendingCommands = 32;
 constexpr size_t kMaxResults = 64;
-/** Animation drift, in seconds, past which the host resends the time. */
-constexpr float kAnimResync = 0.25f;
 
 std::string sanitizeName(const std::string &name) {
     std::string result;
@@ -257,7 +256,8 @@ CoopSession::~CoopSession() {
     } else if (isHost()) {
         _game.setPartyDefeatHandler(nullptr); // the single-player death screen again
     }
-    if (_joinPromptClient && _game._confirmPopup && _game._confirmPopup->isVisible()) {
+    if (_joinQueue.prompted() && _game._confirmPopup && _game._confirmPopup->isVisible() &&
+        _game._confirmPopup->serial() == _joinQueue.promptSerial()) {
         _game._confirmPopup->hide();
     }
 }
@@ -474,11 +474,16 @@ void CoopSession::hostDropClient(ConnectionId connection, const std::string &rea
     }
     auto &client = it->second;
     info("Co-op: client " + std::to_string(client.clientId) + " (" + client.name + ") left: " + reason);
-    if (_joinPromptClient == client.clientId) {
-        _joinPromptClient = 0;
-        if (_game._confirmPopup && _game._confirmPopup->isVisible()) {
+    uint64_t promptSerial = _joinQueue.promptSerial();
+    bool queued = _joinQueue.contains(client.clientId);
+    if (_joinQueue.remove(client.clientId)) {
+        // Its prompt was up: it goes with the player (only if it is still that prompt).
+        if (_game._confirmPopup && _game._confirmPopup->isVisible() && _game._confirmPopup->serial() == promptSerial) {
             _game._confirmPopup->hide();
         }
+        info("Co-op: join prompt for client " + std::to_string(client.clientId) + " taken down: the player left");
+    } else if (queued) {
+        info("Co-op: join request of client " + std::to_string(client.clientId) + " dropped: the player left");
     }
     if (client.welcomed && client.slot.status == SlotStatus::Assigned) {
         // Design item 10: the AI takes the companion over (it is no longer
@@ -576,6 +581,7 @@ void CoopSession::hostHandleMessage(HostClient &client, const std::vector<uint8_
             return;
         }
         client.slotRequested = true;
+        client.requestOrder = _nextRequestOrder++;
         client.preferredTag = request.preferredTag;
         info("Co-op: client " + std::to_string(client.clientId) + " asks for a companion slot" +
              (request.preferredTag.empty() ? std::string() : " (" + request.preferredTag + ")"));
@@ -604,6 +610,15 @@ void CoopSession::hostHandleMessage(HostClient &client, const std::vector<uint8_
             return;
         }
         client.pending.push_back(command);
+        break;
+    }
+    case MessageType::Steer: {
+        Steer steer;
+        if (!client.welcomed || !decode(data, steer)) {
+            hostViolation(client, "a steer out of turn or malformed");
+            return;
+        }
+        hostHandleSteer(client, steer);
         break;
     }
     case MessageType::MiniGameControl: {
@@ -675,6 +690,7 @@ void CoopSession::hostHandleAck(HostClient &client, const SnapshotAck &ack) {
         return; // already dropped from the history: a newer ack has superseded it
     }
     client.ackedTick = ack.tick;
+    client.loadedGeneration = ack.generation; // it holds a state of this module visit: loaded
     ++client.acks;
     // Everything older than the new base is no use as a base any more.
     client.history.erase(client.history.begin(), it);
@@ -856,6 +872,8 @@ void CoopSession::hostDetectModuleChange() {
         return;
     }
     ++_generation;
+    _moduleChangedAt = std::chrono::steady_clock::now();
+    _heldConversation = HeldConversation(); // its owner stayed in the old module
     if (_hostDefeated) {
         // The host chose a load: everyone follows it (the ModuleInfo below).
         _hostDefeated = false;
@@ -871,6 +889,12 @@ void CoopSession::hostDetectModuleChange() {
         // The stand-in and a guest's creature stayed with the old module's objects.
         client.standIn = 0;
         client.standInHp = 0;
+        client.away = HostClient::AwaySpot(); // spots of the old module mean nothing here
+        // Who the stand-in is gets decided again in the new module.
+        client.cast = CoopCastChoice();
+        client.castModule.clear();
+        client.castTemplate.clear();
+        client.castLevel = 0;
         client.guestId = 0;
         client.storeOpen = 0;
         client.benchOpen = 0;
@@ -880,6 +904,7 @@ void CoopSession::hostDetectModuleChange() {
         client.sheetSent.clear();
     }
     _standInSource.clear();
+    _standInTemplate.clear();
     _lootBaseline.clear();
     if (_ready.active()) {
         _ready.reset();
@@ -1132,6 +1157,7 @@ void CoopSession::hostUpdateSlots() {
                         client.approvalName = choice ? choice->name() : "a stand-in of " + leader->name();
                         info("Co-op: " + client.name + " wants to join as " + (choice ? choice->tag() : client.approvalName) +
                              "; waiting for the host");
+                        hostQueueJoin(client);
                     }
                     waitForHost = client.approval == HostClient::Approval::Pending;
                     declined = client.approval == HostClient::Approval::Declined;
@@ -1187,9 +1213,15 @@ bool CoopSession::answerJoin(uint32_t clientId, bool accept) {
         if (accept) {
             hostMarkApproved(client);
         }
-        info("Co-op: the host " + std::string(accept ? "accepted " : "declined ") + client.name);
-        if (_joinPromptClient == clientId) {
-            _joinPromptClient = 0;
+        info("Co-op: the host " + std::string(accept ? "accepted " : "declined ") + client.name + " (client " +
+             std::to_string(clientId) + ")");
+        uint64_t promptSerial = _joinQueue.promptSerial();
+        if (_joinQueue.remove(clientId)) {
+            if (_game._confirmPopup && _game._confirmPopup->isVisible() && _game._confirmPopup->serial() == promptSerial) {
+                // Answered elsewhere (the Co-op screen, the harness): the prompt goes.
+                _game._confirmPopup->hide();
+                info("Co-op: join prompt for client " + std::to_string(clientId) + " taken down: answered elsewhere");
+            }
         }
         hostUpdateSlots();
         return true;
@@ -1197,28 +1229,85 @@ bool CoopSession::answerJoin(uint32_t clientId, bool accept) {
     return false;
 }
 
+double CoopSession::joinClock() const {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - _joinClockStart).count();
+}
+
+void CoopSession::hostQueueJoin(const HostClient &client) {
+    if (_joinQueue.request(client.clientId, joinClock(), client.requestOrder)) {
+        info("Co-op: join request " + std::to_string(_joinQueue.size()) + " in line: client " + std::to_string(client.clientId) +
+             " (" + client.name + ") at tick " + std::to_string(_game.tickCount()));
+    }
+}
+
 void CoopSession::hostPromptJoin() {
+    // The queue is the pending requests, oldest first: none missing (a request
+    // made where nothing queued it), none stale (answered, or the player gone).
+    for (auto &[connection, client] : _clients) {
+        if (client.approval == HostClient::Approval::Pending && !_joinQueue.contains(client.clientId)) {
+            hostQueueJoin(client);
+        }
+    }
+    for (uint32_t id : _joinQueue.clients()) {
+        bool pending = std::any_of(_clients.begin(), _clients.end(), [id](const auto &entry) {
+            return entry.second.clientId == id && entry.second.approval == HostClient::Approval::Pending;
+        });
+        if (!pending) {
+            uint64_t promptSerial = _joinQueue.promptSerial();
+            if (_joinQueue.remove(id) && _game._confirmPopup && _game._confirmPopup->isVisible() &&
+                _game._confirmPopup->serial() == promptSerial) {
+                _game._confirmPopup->hide();
+            }
+        }
+    }
+    if (_joinQueue.empty()) {
+        return;
+    }
+    // A request the host has not answered for a while: its player hears that
+    // it is still waiting, instead of watching a join that seems stuck.
+    double now = joinClock();
+    for (uint32_t id : _joinQueue.overdue(now, kJoinReminderSeconds)) {
+        for (auto &[connection, client] : _clients) {
+            if (client.clientId == id) {
+                int waited = static_cast<int>(_joinQueue.waited(id, now));
+                info("Co-op: join request of client " + std::to_string(id) + " unanswered for " + std::to_string(waited) + " s");
+                hostNotice(client, NoticeKind::Info,
+                           "The host has not answered your request to join yet (" + std::to_string(waited) + " s); still waiting.");
+            }
+        }
+    }
+    bool visible = _game._confirmPopup && _game._confirmPopup->isVisible();
+    uint64_t serial = _game._confirmPopup ? _game._confirmPopup->serial() : 0;
+    if (uint32_t lost = _joinQueue.checkPrompt(visible, serial)) {
+        // Something else took the prompt down unanswered: a screen change
+        // (a cutscene's conversation starting), a message box or a tutorial
+        // window in its place. Ask again once the game is back, first, instead
+        // of leaving the player waiting with no way for the host to answer.
+        info("Co-op: the join prompt for client " + std::to_string(lost) + " was taken down unanswered; asking again");
+    }
     // One prompt at a time, in the game, when no other prompt is up.
-    if (_joinPromptClient || !showsPrompts() || _game.currentScreen() != Game::Screen::InGame) {
+    uint32_t id = _joinQueue.next();
+    if (!id || !showsPrompts() || _game.currentScreen() != Game::Screen::InGame) {
+        return;
+    }
+    if (!_game._confirmPopup) {
+        _game._confirmPopup = _game.tryLoadGUI<ConfirmPopup>();
+    }
+    if (!_game._confirmPopup || _game._confirmPopup->isVisible()) {
         return;
     }
     for (auto &[connection, client] : _clients) {
-        if (client.approval != HostClient::Approval::Pending) {
+        if (client.clientId != id) {
             continue;
         }
-        if (!_game._confirmPopup) {
-            _game._confirmPopup = _game.tryLoadGUI<ConfirmPopup>();
-        }
-        if (!_game._confirmPopup || _game._confirmPopup->isVisible()) {
-            return;
-        }
-        uint32_t id = client.clientId;
-        _joinPromptClient = id;
         auto companion = client.approvalName.empty() ? client.approvalTag : client.approvalName;
         _game._confirmPopup->showChoices(
             client.name + " wants to join as " + companion + ".",
             {{"Accept", [this, id]() { answerJoin(id, true); }},
              {"Decline", [this, id]() { answerJoin(id, false); }}});
+        _joinQueue.shown(id, _game._confirmPopup->serial());
+        info("Co-op: join prompt up for client " + std::to_string(id) + " (" + client.name + "), " +
+             std::to_string(_joinQueue.size()) + " waiting");
         return;
     }
 }
@@ -1357,6 +1446,7 @@ void CoopSession::beforeTick() {
     if (!isHost()) {
         return;
     }
+    hostUpdateHeldConversation();
     uint64_t tick = _game.tickCount();
     for (auto &[connection, client] : _clients) {
         while (!client.pending.empty()) {
@@ -1387,6 +1477,13 @@ void CoopSession::beforeTick() {
                 if (!session) {
                     uint32_t controlled = hostControlledId(client);
                     bool own = controlled != 0 && (controlled == client.standIn || controlled == client.guestId);
+                    if (own && command.actor != controlled &&
+                        std::find(client.pastStandIns.begin(), client.pastStandIns.end(), command.actor) != client.pastStandIns.end()) {
+                        // Sent for the stand-in this player had before a
+                        // conversation took it away: the same player's stand-in.
+                        command.actor = controlled;
+                        hostSendSlot(client, true);
+                    }
                     reason = validateCoopCommand(_game, command, controlled, targets, own, freeMode());
                     if (reason == CommandReject::HostLeadsConversation && _config.dedicated && freeMode() && controlled == client.guestId &&
                         client.clientId == _storyDrivers.driver() && targets.target && !targets.target->conversation().empty()) {
@@ -1462,6 +1559,7 @@ void CoopSession::beforeTick() {
             send(client.connection, encode(result));
         }
     }
+    hostApplySteering();
 }
 
 std::map<uint32_t, EntityState> CoopSession::hostCaptureEntities() const {
@@ -1486,7 +1584,9 @@ std::map<uint32_t, EntityState> CoopSession::hostCaptureEntities() const {
         if (auto source = _standInSource.find(object->id()); source != _standInSource.end()) {
             // A stand-in has no template: the client builds the same look.
             auto &creature = static_cast<const Creature &>(*object);
-            state.resref = coopStandInResRef(creature.appearance(), static_cast<int>(creature.gender()), source->second);
+            auto templ = _standInTemplate.find(object->id());
+            state.resref = coopStandInResRef(creature.appearance(), static_cast<int>(creature.gender()), source->second,
+                                             templ != _standInTemplate.end() ? templ->second : std::string());
         }
         if (object->type() == ObjectType::Creature) {
             if (_game.party().isMember(*object)) {
@@ -1495,8 +1595,104 @@ std::map<uint32_t, EntityState> CoopSession::hostCaptureEntities() const {
             if (object == _game.party().getLeader() || isPlayerControlled(object->id())) {
                 state.flags |= kFlagPlayer;
             }
+            hostFillLook(static_cast<const Creature &>(*object), state.look);
         }
         result.emplace(object->id(), std::move(state));
+    }
+    return result;
+}
+
+void CoopSession::hostFillLook(const Creature &creature, EntityLook &look) const {
+    look = EntityLook();
+    const HostClient *owner = nullptr;
+    for (const auto &[connection, client] : _clients) {
+        if (client.welcomed && (client.slot.creatureId == creature.id() && (client.slot.status == SlotStatus::Assigned || client.slot.status == SlotStatus::Guest) ||
+                                client.standIn == creature.id() || client.guestId == creature.id())) {
+            owner = &client;
+            break;
+        }
+    }
+    if (owner) {
+        look.playerName = owner->name.substr(0, 32);
+        look.colour = chatColourFor(owner->clientId);
+    } else if (!_config.dedicated && _game.party().getLeader().get() == &creature) {
+        look.playerName = (_config.playerName.empty() ? std::string("Host") : _config.playerName).substr(0, 32);
+        look.colour = chatColourFor(0);
+    }
+    if (!isStandIn(creature.id())) {
+        return;
+    }
+    // A stand-in has no template: send the whole look.
+    look.headRow = static_cast<int16_t>(std::clamp(creature.headRow(), -1, 32767));
+    auto presentation = creature.presentation();
+    look.bodyVariation = static_cast<int16_t>(std::clamp(presentation.bodyVariation, 0, 25));
+    look.textureVariation = static_cast<int16_t>(std::clamp(presentation.textureVariation, 0, 255));
+    for (const auto &[slot, item] : creature.equipment()) {
+        if (!item || slot == InventorySlots::body || slot == InventorySlots::head || slot == InventorySlots::rightWeapon ||
+            slot == InventorySlots::leftWeapon || look.slots.size() >= kMaxLookSlots) {
+            continue;
+        }
+        std::string ref = item->blueprintResRef().empty() ? item->tag() : item->blueprintResRef();
+        if (!ref.empty() && ref.size() <= kMaxStringBytes && slot >= 0 && slot < 256) {
+            look.slots.push_back({static_cast<uint8_t>(slot), ref});
+        }
+    }
+}
+
+std::vector<CoopSession::Presence> CoopSession::presences() const {
+    std::vector<Presence> result;
+    if (isHost()) {
+        auto module = _game.module();
+        if (!module || !module->area()) {
+            return result;
+        }
+        auto add = [&](const std::shared_ptr<Creature> &creature, bool own) {
+            if (!creature || !creature->isRuntimeLive()) {
+                return;
+            }
+            for (const auto &p : result) {
+                if (p.object == creature) {
+                    return;
+                }
+            }
+            EntityLook look;
+            hostFillLook(*creature, look);
+            if (look.playerName.empty()) {
+                return;
+            }
+            // A stand-in built from a template keeps its own name: "HK-47 (John)".
+            auto label = _standInTemplate.count(creature->id()) ? coopStandInLabel(creature->name(), look.playerName) : look.playerName;
+            result.push_back({creature, label, look.colour, own, !_game.party().isMember(*creature)});
+        };
+        add(_game.party().getLeader(), true);
+        for (const auto &[connection, client] : _clients) {
+            if (!client.welcomed) {
+                continue;
+            }
+            for (uint32_t id : {client.standIn, client.guestId, client.slot.status == SlotStatus::Assigned ? client.slot.creatureId : 0u}) {
+                if (id) {
+                    add(_game.getObjectById<Creature>(id), false);
+                }
+            }
+        }
+        return result;
+    }
+    uint32_t controlled = controlledHostId();
+    for (const auto &[hostId, replica] : _replicas) {
+        if (replica.localId == 0 || replica.state.look.playerName.empty() || replica.state.type != static_cast<uint8_t>(ObjectType::Creature)) {
+            continue;
+        }
+        if (auto object = _game.getObjectById(replica.localId); object && object->isRuntimeLive()) {
+            std::string label = replica.state.look.playerName;
+            int appearance = 0, gender = 0;
+            uint32_t source = 0;
+            std::string templ;
+            if (parseCoopStandInResRef(replica.state.resref, appearance, gender, source, &templ) && !templ.empty()) {
+                label = coopStandInLabel(static_cast<const Creature &>(*object).name(), label);
+            }
+            result.push_back({std::move(object), label, replica.state.look.colour, hostId == controlled,
+                              (replica.state.flags & kFlagPartyMember) == 0});
+        }
     }
     return result;
 }
@@ -1505,11 +1701,22 @@ std::vector<CoopSession::MapMarker> CoopSession::mapMarkers() const {
     std::vector<MapMarker> markers;
     if (isHost()) {
         for (const auto &[connection, client] : _clients) {
-            if (!client.welcomed || client.slot.status != SlotStatus::Assigned) {
+            if (!client.welcomed) {
                 continue;
             }
-            if (auto object = _game.getObjectById(client.slot.creatureId)) {
-                markers.push_back({std::move(object), true});
+            // Its party character, or the stand-in or guest character it plays.
+            for (uint32_t id : {client.slot.status == SlotStatus::Assigned ? client.slot.creatureId : 0u, client.standIn, client.guestId}) {
+                auto object = id ? _game.getObjectById(id) : nullptr;
+                if (!object || !object->isRuntimeLive()) {
+                    continue;
+                }
+                bool seen = false;
+                for (const auto &m : markers) {
+                    seen = seen || m.object == object;
+                }
+                if (!seen) {
+                    markers.push_back({std::move(object), true, chatColourFor(client.clientId)});
+                }
             }
         }
         return markers;
@@ -1521,7 +1728,8 @@ std::vector<CoopSession::MapMarker> CoopSession::mapMarkers() const {
             continue;
         }
         if (auto object = _game.getObjectById(replica.localId)) {
-            markers.push_back({std::move(object), (replica.state.flags & kFlagPlayer) != 0});
+            // A named character is a player's (the host's own included).
+            markers.push_back({std::move(object), (replica.state.flags & kFlagPlayer) != 0 || !replica.state.look.playerName.empty(), replica.state.look.colour});
         }
     }
     return markers;
@@ -1538,7 +1746,13 @@ WorldState CoopSession::hostCaptureWorld() const {
         world.movieName = _hostMovieName;
     }
     world.cameraType = static_cast<uint8_t>(_game._cameraType);
-    if (_game._screen == Game::Screen::Conversation && _game._conversation) {
+    bool personal = coopPersonalConversation(_game);
+    if (personal) {
+        // A workbench's own talk stays on the host's screen: the others play on.
+        world.screen = static_cast<uint8_t>(Game::Screen::InGame);
+        world.cameraType = static_cast<uint8_t>(CameraType::ThirdPerson);
+    }
+    if (!personal && _game._screen == Game::Screen::Conversation && _game._conversation) {
         auto state = _game._conversation->inspectionState();
         if (state.dialog) {
             auto &conversation = world.conversation;
@@ -1561,6 +1775,9 @@ WorldState CoopSession::hostCaptureWorld() const {
                 }
             }
             conversation.entryEnded = state.entryEnded;
+            if (auto camera = _game._conversation->placeableCamera()) {
+                conversation.placeableCamera = *camera;
+            }
         }
     }
     for (const auto &member : _game.party().members()) {
@@ -1631,6 +1848,7 @@ void CoopSession::afterTick() {
     hostUpdateSlots();
     if (freeMode()) {
         hostUpdateGuests();
+        hostUpdateScenes();
         hostSendRoster();
         hostUpdateTerminals();
         if (_config.dedicated) {
@@ -1651,6 +1869,8 @@ void CoopSession::afterTick() {
     hostUpdateScaling();
     hostSendInventories();
     hostSendSheets();
+    hostSendReputation();
+    hostSendMap();
     bool anyReady = hasHostModule() && std::any_of(_clients.begin(), _clients.end(), [this](const auto &entry) {
         return entry.second.welcomed && entry.second.moduleGeneration == _generation;
     });
@@ -1737,6 +1957,12 @@ void CoopSession::hostSendSnapshot(HostClient &client, const std::map<uint32_t, 
         next.world = world;
     }
     float dt = _game.tickSeconds();
+    // Until the client acknowledges a state of this module visit (it is still
+    // loading, or has just joined) every send is a full one: each creature's
+    // clip goes with the host's time into it now, so the state the client
+    // finally decodes starts the animation where the host is (late load,
+    // late join), not where it was when first sent.
+    bool fullNext = client.ackedTick == 0;
     for (const auto &[id, current] : entities) {
         const EntityState *previous = nullptr;
         if (latest) {
@@ -1752,10 +1978,7 @@ void CoopSession::hostSendSnapshot(HostClient &client, const std::map<uint32_t, 
         }
         EntityState state = *previous;
         uint16_t mask = diffEntity(state, current);
-        // The client advances animation time on its own; resend it only
-        // when the host's clip has drifted from where the client will be.
-        float expected = state.animTime + static_cast<float>(tick - state.animSentTick) * dt * state.animSpeed;
-        if (!(mask & kFieldAnim) && !current.anim.empty() && std::fabs(current.animTime - expected) > kAnimResync) {
+        if (!(mask & kFieldAnim) && CoopReplication::animationDue(state, current, tick, dt, fullNext)) {
             mask |= kFieldAnim;
         }
         if (mask) {
@@ -2099,6 +2322,24 @@ void CoopSession::clientHandleMessage(const std::vector<uint8_t> &data) {
         }
         break;
     }
+    case MessageType::MapState: {
+        MapState state;
+        ok = decode(data, state);
+        if (ok) {
+            _hostMap = std::move(state);
+            clientApplyMap();
+        }
+        break;
+    }
+    case MessageType::ReputationTable: {
+        ReputationTable table;
+        ok = decode(data, table);
+        if (ok) {
+            _hostReputation = std::move(table);
+            clientApplyReputation();
+        }
+        break;
+    }
     case MessageType::GuestCharacter: {
         GuestCharacter guest;
         ok = decode(data, guest);
@@ -2174,6 +2415,9 @@ void CoopSession::clientEnterModule() {
         showNotice(NoticeKind::Info, "The host loaded: back in the game");
     }
     // The host's snapshot history starts over with every ModuleInfo.
+    _ownTick = 0;
+    _ownSpeedTick = 0;
+    _predictOffset = glm::vec2(0.0f);
     _recon.clear();
     _buffer.clear();
     // Events of this visit may have arrived already (the load waited on a minigame's result).
@@ -2351,6 +2595,14 @@ void CoopSession::clientTick(float dt) {
         return;
     }
     ++_clientTicks;
+    if (_clientTicks % 30 == 0) {
+        // A module load starts the local table over from the install's
+        // repute.2da; the host's table is what counts.
+        clientApplyReputation();
+    }
+    if (_clientTicks % 15 == 0) {
+        clientApplyMap();
+    }
     // Interpolation runs from where each object stood at the start of this
     // tick to where this tick's state puts it.
     for (auto &[id, replica] : _replicas) {
@@ -2398,6 +2650,10 @@ void CoopSession::clientTick(float dt) {
             area.updateObjectSelection();
         }
     }
+    if (_moduleLoaded) {
+        clientApplyOwnState();
+        clientUpdatePrediction(dt);
+    }
     for (auto &[id, replica] : _replicas) {
         replica.interpolate = replica.state.type == static_cast<uint8_t>(ObjectType::Creature) &&
                               (replica.previousPosition != replica.state.position || replica.previousFacing != replica.state.facing);
@@ -2410,6 +2666,7 @@ void CoopSession::clientApplyRecon(const std::shared_ptr<const Recon> &recon) {
     bool first = !_applied;
     // Apply what differs from what the world shows: a snapshot skipped by
     // the jitter buffer or lost on the way costs nothing but smoothness.
+    _applyingTick = recon->tick;
     for (const auto &[id, state] : recon->entities) {
         const EntityState *was = nullptr;
         if (_applied) {
@@ -2417,6 +2674,10 @@ void CoopSession::clientApplyRecon(const std::shared_ptr<const Recon> &recon) {
             was = it != _applied->entities.end() ? &it->second : nullptr;
         }
         uint16_t mask = was ? exactDiffEntity(*was, state) : static_cast<uint16_t>(kFieldAllMask & ~kFieldRemoved);
+        if (was && id == _ownId && _ownTick >= recon->tick) {
+            // This player's own creature already shows a newer state.
+            mask &= ~(kFieldPosition | kFieldFacing | kFieldAnim);
+        }
         if (mask) {
             EntityRecord record;
             record.fields = mask;
@@ -2439,6 +2700,7 @@ void CoopSession::clientApplyRecon(const std::shared_ptr<const Recon> &recon) {
     if (worldFields) {
         clientApplyWorld(worldFields, recon->world);
     }
+    clientStartMissedAnimations(recon->tick);
     _applied = recon;
     _appliedTick = recon->tick;
     ++_snapshotsApplied;
@@ -2581,6 +2843,11 @@ void CoopSession::clientApplyEntity(const EntityRecord &record) {
         return;
     }
     mergeEntity(replica.state, record.state, record.fields);
+    if (record.fields & kFieldAnim) {
+        // A new clip or time: the model has to show it again.
+        replica.animTick = _applyingTick;
+        replica.animShown = false;
+    }
     std::shared_ptr<Object> object = replica.localId ? _game.getObjectById(replica.localId) : nullptr;
     if (!object) {
         replica.localId = 0;
@@ -2601,10 +2868,48 @@ void CoopSession::clientApplyEntity(const EntityRecord &record) {
         }
         return;
     }
+    auto *ownCreature = id == controlledHostId() ? dynamic_cast<Creature *>(object.get()) : nullptr;
+    bool wasStealthed = ownCreature && ownCreature->isStealthed();
     CoopReplication::apply(_game, *object, replica.state, record.fields);
+    if (ownCreature && ownCreature->isStealthed() != wasStealthed) {
+        // The host turned this player's Stealth Mode on or off: its feedback line.
+        _game.stealthFeedback(*ownCreature, ownCreature->isStealthed());
+    }
     if ((record.fields & kFieldPosition) && object->type() == ObjectType::Creature) {
         if (auto module = _game.module(); module && module->area()) {
             module->area()->determineObjectRoom(*object);
+        }
+    }
+}
+
+void CoopSession::clientStartMissedAnimations(uint32_t tick) {
+    // A creature bound before its model was ready (a late load or join) took no clip, and the
+    // host resends one only when it changes: start it now at the time the host is into it.
+    float dt = _game.tickSeconds();
+    for (auto &[id, replica] : _replicas) {
+        if (replica.animShown || !replica.localId || replica.state.anim.empty() || replica.animTried == replica.animTick + 1) {
+            continue;
+        }
+        auto object = _game.getObjectById(replica.localId);
+        if (!object || object->type() != ObjectType::Creature || !object->sceneNode()) {
+            continue;
+        }
+        std::string playing;
+        float time = 0.0f;
+        if (CoopReplication::playingAnimation(*object, playing, time)) {
+            replica.animShown = true;
+            continue;
+        }
+        replica.animTried = replica.animTick + 1; // once per clip the host sent
+        EntityState state = replica.state;
+        if (tick > replica.animTick) {
+            state.animTime += static_cast<float>(tick - replica.animTick) * dt * state.animSpeed;
+        }
+        CoopReplication::apply(_game, *object, state, kFieldAnim);
+        replica.animShown = CoopReplication::playingAnimation(*object, playing, time);
+        if (replica.animShown) {
+            ++_lateAnimations;
+            debug("Co-op: " + replica.state.tag + " starts " + state.anim + " late, at " + std::to_string(state.animTime) + " s");
         }
     }
 }
@@ -2757,7 +3062,8 @@ void CoopSession::clientShowConversation(const ConversationState &conversation) 
         gui->startReplica(dialog, owner);
         _replicaDialog = conversation.dialog;
     }
-    gui->showReplicaEntry(conversation.entry, conversation.replies, conversation.entryEnded);
+    gui->showReplicaEntry(conversation.entry, conversation.replies, conversation.entryEnded,
+                          conversation.placeableCamera >= 0 ? std::optional<int>(conversation.placeableCamera) : std::nullopt);
     if (_game._screen != Game::Screen::Conversation) {
         if (_game._container && _game._screen == Game::Screen::Container) {
             clientCloseContainerScreen(true);
@@ -2906,18 +3212,33 @@ void CoopSession::present(float alpha) {
     if (!isClient() || !_moduleLoaded) {
         return;
     }
+    bool predicted = _predictOffset != glm::vec2(0.0f);
     for (auto &[id, replica] : _replicas) {
-        if (!replica.interpolate || !replica.localId) {
+        bool own = id == _ownId && id != 0;
+        if (!replica.localId || !(replica.interpolate || (own && (predicted || _predictShown)))) {
             continue;
         }
         auto object = _game.getObjectById(replica.localId);
         if (!object) {
             continue;
         }
-        const auto &from = replica.previousPosition;
+        const auto &from = replica.interpolate ? replica.previousPosition : replica.state.position;
         const auto &to = replica.state.position;
         Vec3 position {from.x + (to.x - from.x) * alpha, from.y + (to.y - from.y) * alpha, from.z + (to.z - from.z) * alpha};
-        CoopReplication::presentTransform(*object, position, lerpAngle(replica.previousFacing, replica.state.facing, alpha));
+        float facing = replica.interpolate ? lerpAngle(replica.previousFacing, replica.state.facing, alpha) : replica.state.facing;
+        if (own) {
+            // The short look-ahead while the keys are held: drawn only, the
+            // creature itself stands where the host put it.
+            position.x += _predictOffset.x;
+            position.y += _predictOffset.y;
+            if (!predicted && !replica.interpolate) {
+                CoopReplication::restoreTransform(*object);
+                _predictShown = false;
+                continue;
+            }
+            _predictShown = predicted;
+        }
+        CoopReplication::presentTransform(*object, position, facing);
     }
 }
 
@@ -2929,7 +3250,14 @@ bool CoopSession::interceptClick(const std::shared_ptr<Object> &object) {
         return true;
     }
     auto hostId = _ids.host(object->id());
+    clientResolveControlled();
     uint32_t controlled = controlledHostId();
+    if (hostId && !controlled) {
+        // Row 13: a click with nothing to send it for says so.
+        showNotice(NoticeKind::Info, coopNoControlNotice(0, false));
+        ++_inputDropped;
+        _inputDroppedWhy = "no_slot";
+    }
     if (!hostId || !controlled) {
         return true;
     }
@@ -3046,10 +3374,11 @@ json::object CoopSession::statusJson() const {
             entry["address"] = client.address;
             entry["welcomed"] = client.welcomed;
             json::object slot;
-            slot["status"] = client.slotRequested ? slotStatusName(client.slot.status) : "not_requested";
-            slot["npc"] = client.slot.npc;
-            slot["id"] = client.slot.creatureId;
-            slot["tag"] = client.slot.tag;
+            auto effective = hostEffectiveSlot(client);
+            slot["status"] = client.slotRequested ? slotStatusName(effective.status) : "not_requested";
+            slot["npc"] = effective.npc;
+            slot["id"] = effective.creatureId;
+            slot["tag"] = effective.tag;
             entry["slot"] = std::move(slot);
             entry["generation"] = client.moduleGeneration;
             entry["commandsAccepted"] = client.commandsAccepted;
@@ -3073,6 +3402,7 @@ json::object CoopSession::statusJson() const {
             static const char *kApproval[] {"none", "pending", "accepted", "declined"};
             entry["approval"] = kApproval[static_cast<int>(client.approval)];
             entry["trusted"] = client.trusted;
+            entry["guestReceived"] = client.guestReceived; // Free Mode: its character reached the host (the request follows)
             if (_transport) {
                 auto route = _transport->routeDescription(connection);
                 if (!route.empty()) {
@@ -3080,7 +3410,26 @@ json::object CoopSession::statusJson() const {
                 }
             }
             entry["viewing"] = client.viewing;
-            entry["controlled"] = isPlayerControlled(client.slot.creatureId);
+            // What the player drives now: a companion, a stand-in or a guest (row 14).
+            uint32_t drives = hostControlledId(client);
+            entry["creature"] = drives;
+            entry["controlled"] = isPlayerControlled(drives);
+            {
+                json::object steer;
+                steer["received"] = client.steersReceived;
+                steer["dropped"] = client.steersDropped;
+                steer["ticks"] = client.steerTicks;
+                steer["moving"] = client.steer.moving;
+                steer["stale"] = client.steersStale;
+                steer["rateLimited"] = client.steersRateLimited;
+                steer["foreign"] = client.steersForeign;
+                json::object refused;
+                for (const auto &[why, count] : client.steerRefused) {
+                    refused[why] = count;
+                }
+                steer["refused"] = std::move(refused);
+                entry["steer"] = std::move(steer);
+            }
             {
                 json::array handed;
                 for (uint32_t id : client.handedOver) {
@@ -3135,15 +3484,63 @@ json::object CoopSession::statusJson() const {
                     standIn["hp"] = creature->currentHitPoints();
                     standIn["maxHp"] = creature->maxHitPoints();
                     standIn["inParty"] = _game.party().isMember(*creature);
+                    standIn["name"] = creature->name();
+                    standIn["level"] = creature->attributes().getAggregateLevel();
+                    json::array gear;
+                    for (const auto &[slot, item] : creature->equipment()) {
+                        if (item) {
+                            gear.push_back(json::value(std::to_string(slot) + ":" + item->blueprintResRef()));
+                        }
+                    }
+                    standIn["equipment"] = std::move(gear);
+                    standIn["carried"] = creature->items().size();
+                    standIn["puppet"] = creature->isPuppet();
+                    standIn["conversation"] = creature->conversation();
                 }
+                standIn["template"] = client.castTemplate;
                 entry["standIn"] = std::move(standIn);
             } else {
                 entry["standIn"] = nullptr;
+            }
+            {
+                // Which choice this player got, and why (coopcast.h).
+                json::object cast;
+                if (client.slot.status == SlotStatus::Assigned) {
+                    cast["kind"] = "companion";
+                    cast["name"] = client.slot.tag;
+                    cast["reason"] = "a companion of the party nobody else controls";
+                } else if (freeMode()) {
+                    cast["kind"] = "guest";
+                    cast["reason"] = "Free Mode: the guest's own character";
+                } else {
+                    cast["kind"] = coopCastKindName(client.cast.kind);
+                    cast["name"] = client.cast.name;
+                    cast["reason"] = client.cast.reason;
+                    cast["npc"] = client.cast.npc;
+                    cast["template"] = client.cast.templ;
+                    cast["role"] = coopPartyRoleName(client.cast.role);
+                    cast["tier"] = client.cast.tier;
+                    cast["module"] = client.castModule;
+                    cast["level"] = client.castLevel;
+                    json::array skipped;
+                    for (const auto &[who, why] : client.cast.skipped) {
+                        skipped.push_back(json::value(who + " " + why));
+                    }
+                    cast["skipped"] = std::move(skipped);
+                }
+                entry["cast"] = std::move(cast);
             }
             clients.push_back(std::move(entry));
         }
         root["clients"] = std::move(clients);
         root["askToJoin"] = _config.askToJoin;
+        root["joinPromptsLost"] = _joinQueue.lost();
+        root["joinPrompt"] = _joinQueue.prompted();
+        json::array joinQueue;
+        for (uint32_t id : _joinQueue.clients()) {
+            joinQueue.push_back(id);
+        }
+        root["joinQueue"] = std::move(joinQueue);
         root["guestRecords"] = _guests.size();
         root["rejoinTokens"] = _rejoinTokens.size();
         json::object reservations;
@@ -3153,8 +3550,9 @@ json::object CoopSession::statusJson() const {
         root["reservations"] = std::move(reservations);
         json::object controlled;
         for (const auto &[connection, client] : _clients) {
-            if (isPlayerControlled(client.slot.creatureId)) {
-                controlled[client.slot.tag] = client.name;
+            auto effective = hostEffectiveSlot(client);
+            if (isPlayerControlled(effective.creatureId)) {
+                controlled[effective.tag] = client.name;
             }
         }
         root["controlled"] = std::move(controlled);
@@ -3186,10 +3584,17 @@ json::object CoopSession::statusJson() const {
             json::object standIns;
             auto module = _game.module();
             standIns["pause"] = _standInPause;
+            standIns["sceneJumps"] = _guestSceneJumps;
+            standIns["pulledAlong"] = _guestsPulledAlong;
+            standIns["returned"] = _guestsReturned;
+            standIns["heldConversation"] = _heldConversation.active ? boost::json::value(_heldConversation.resRef) : boost::json::value(nullptr);
+            standIns["conversationsHeld"] = _conversationsHeld;
+            standIns["sharedScene"] = hostSharedScene();
             standIns["rule"] = module ? coopStandInRuleName(coopStandInRule(module->name())) : "play";
             standIns["soloMode"] = _game.party().isSoloMode();
             standIns["partySize"] = _game.party().getSize();
             standIns["count"] = _standInSource.size();
+            standIns["partyLevel"] = hostPartyLevel();
             root["standIns"] = std::move(standIns);
         }
         json::object scale;
@@ -3200,6 +3605,7 @@ json::object CoopSession::statusJson() const {
         json::object options;
         options["hostOnlyTransitions"] = _config.hostOnlyTransitions;
         options["hostOnlyTrading"] = _config.hostOnlyTrading;
+        options["hostOnlyScenes"] = _config.hostOnlyScenes;
         options["noPause"] = _config.noPause;
         options["pauseCooldown"] = _config.pauseCooldown;
         options["enemyScaling"] = _config.enemyScaling;
@@ -3245,6 +3651,16 @@ json::object CoopSession::statusJson() const {
         root["standInSpawns"] = _standInSpawns;
         root["steering"] = _steering;
         root["steerCommands"] = _steerCommands;
+        root["inputDropped"] = _inputDropped;
+        root["inputDroppedWhy"] = _inputDroppedWhy;
+        root["lastNotice"] = _lastNotice;
+        {
+            uint32_t newest = _recon.empty() ? _appliedTick : _recon.rbegin()->first;
+            uint32_t shown = _ownId ? std::max(_ownTick, _appliedTick) : _appliedTick;
+            root["ownLag"] = newest >= shown ? newest - shown : 0u;
+            root["ownApplied"] = _ownEarly;
+            root["predicted"] = glm::length(_predictOffset);
+        }
         if (freeMode()) {
             json::object guest;
             guest["sent"] = _guestSent;
@@ -3360,6 +3776,7 @@ json::object CoopSession::statusJson() const {
         root["generation"] = _module.generation;
         root["loaded"] = _moduleLoaded;
         root["appliedTick"] = _appliedTick;
+        root["reputationTables"] = _reputationTablesApplied;
         root["queued"] = _buffer.size();
         root["playTick"] = _playTick;
         root["delayTicks"] = _delayTicks;
@@ -3376,6 +3793,7 @@ json::object CoopSession::statusJson() const {
         }
         root["snapshotsApplied"] = _snapshotsApplied;
         root["snapshotsDropped"] = _snapshotsDropped;
+        root["lateAnimations"] = _lateAnimations;
         root["bytesReceived"] = _bytesReceived;
         root["replicas"] = _replicas.size();
         root["bound"] = _ids.size();
@@ -3495,6 +3913,26 @@ json::object CoopSession::dumpJson() const {
                 entry["localArmor"] = equipped(InventorySlots::body);
                 entry["localWeapon"] = equipped(InventorySlots::rightWeapon);
                 entry["localAppearance"] = creature->appearance();
+                std::string clip;
+                float clipTime = 0.0f;
+                if (CoopReplication::playingAnimation(*creature, clip, clipTime)) {
+                    entry["localAnim"] = clip;
+                    entry["localAnimTime"] = clipTime;
+                }
+                // The client's hostility view: what colours the target and
+                // turns a click into an attack (interceptClick), against the
+                // creature this player controls and the local party leader.
+                entry["localFaction"] = static_cast<int>(creature->reputationFaction());
+                auto actor = std::dynamic_pointer_cast<Creature>(localObjectForHost(controlledHostId()));
+                if (actor && actor != creature) {
+                    bool hostile = !creature->isDead() && _game._services.game.reputes.getIsEnemy(*actor, *creature);
+                    entry["hostile"] = hostile;
+                    entry["click"] = hostile ? "attack" : "use";
+                }
+                auto leader = _game.party().getLeader();
+                if (auto module = _game.module(); module && leader && creature != leader) {
+                    entry["hostileToLeader"] = module->isHostileToPartyLeader(*creature);
+                }
             }
             if (auto door = std::dynamic_pointer_cast<Door>(object)) {
                 entry["localOpen"] = door->isOpen();
@@ -3529,6 +3967,9 @@ json::object CoopSession::dumpJson() const {
         }
         dialog["replies"] = std::move(replies);
         dialog["entryEnded"] = conversation.entryEnded;
+        if (conversation.placeableCamera >= 0) {
+            dialog["placeableCamera"] = conversation.placeableCamera;
+        }
         world["conversation"] = std::move(dialog);
     } else {
         world["conversation"] = nullptr;

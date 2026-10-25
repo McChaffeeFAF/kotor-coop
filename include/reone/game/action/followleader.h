@@ -46,6 +46,18 @@ public:
     /// A follower that cannot reach the leader and is at least this far away,
     /// out of the leader's sight, rejoins at its formation slot.
     static constexpr float kRegroupDistance = 15.0f;
+
+    /// A follower runs beyond kDistanceWalk and, once running, keeps
+    /// running until this close: one threshold made it flip between walk
+    /// and run (and restart the gait clip) every tick around 4 m.
+    static constexpr float kStopRunningDistance = 3.0f;
+
+    /// A follower that arrived goes after the leader again, without waiting
+    /// for its heartbeat to re-issue the follow, once the leader is this far.
+    static constexpr float kResumeDistance = 4.0f;
+
+private:
+    bool _running {false};
 };
 
 } // namespace game

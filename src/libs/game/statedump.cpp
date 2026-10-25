@@ -408,10 +408,38 @@ static json::object objectJson(const Object &object,
             result["hostile"] = reputes.getIsEnemy(*leader, creature);
         }
         result["inCombat"] = creature.isInCombat();
+        if (creature.autoCombat()) {
+            result["autoCombat"] = true; // the HUD toggle is lit (a co-op client: the host's word)
+        }
+        if (creature.isStealthed()) {
+            result["stealth"] = true;
+            // The stealth field's shimmer (row 8002) as the presenter holds it.
+            json::array rows;
+            for (uint32_t row : creature.game().visualEffectPresenter().rowsOn(creature.id())) {
+                rows.push_back(row);
+            }
+            result["vfx"] = std::move(rows);
+        }
         // Animation advances with the simulation tick, and gameplay waits on it.
         if (auto model = std::dynamic_pointer_cast<scene::ModelSceneNode>(creature.sceneNode())) {
             result["anim"] = model->activeAnimationName();
+            // Every channel, layers first: name, time, speed, flags.
+            json::array channels;
+            for (const auto &channel : model->animationChannels()) {
+                json::object c;
+                c["name"] = channel.anim ? channel.anim->name() : std::string();
+                c["time"] = std::round(channel.time * 1000.0f) / 1000.0f;
+                c["speed"] = std::round(channel.properties.speed * 1000.0f) / 1000.0f;
+                c["flags"] = channel.properties.flags;
+                if (channel.finished) {
+                    c["finished"] = true;
+                }
+                channels.push_back(std::move(c));
+            }
+            result["animChannels"] = std::move(channels);
         }
+        result["movementType"] = static_cast<int>(creature.movementType());
+        result["talking"] = creature.isTalking();
         auto attackTarget = creature.getAttackTarget();
         result["attackTarget"] = idOrNull(attackTarget);
         if (creature.isInConversation()) {
@@ -528,11 +556,60 @@ std::string Game::dumpStateJson(float radius) const {
         map["columns"] = exploration.columns();
         map["rows"] = exploration.rows();
         map["explored"] = exploration.exploredCount();
+        if (_coop && exploration.columns() > 0) { // co-op harness only: the golden hashes cover this dump
+            // A hash of the cells, so two screens' grids compare exactly.
+            uint64_t hash = 1469598103934665603ull;
+            for (uint8_t b : exploration.bytes()) {
+                hash = (hash ^ b) * 1099511628211ull;
+            }
+            map["cellsHash"] = std::to_string(hash);
+            if (exploration.columns() * exploration.rows() <= 4096) {
+                std::string hex;
+                static const char *digits = "0123456789abcdef";
+                for (uint8_t b : exploration.bytes()) {
+                    hex += digits[b >> 4];
+                    hex += digits[b & 15];
+                }
+                map["cells"] = hex;
+            }
+        }
+        if (_coop && exploration.columns() > 0) {
+            // Where the other players' characters stand on the map, and whether that cell is explored.
+            json::array players;
+            if (auto coop = _coop.get()) {
+                for (const auto &marker : coop->mapMarkers()) {
+                    if (!marker.object) {
+                        continue;
+                    }
+                    glm::vec2 point = area->worldToMapPoint(glm::vec2(marker.object->position()));
+                    int column = std::clamp(static_cast<int>(std::floor(point.x * exploration.columns())), 0, exploration.columns() - 1);
+                    int row = std::clamp(static_cast<int>(std::floor(point.y * exploration.rows())), 0, exploration.rows() - 1);
+                    json::object entry;
+                    entry["id"] = marker.object->id();
+                    entry["player"] = marker.player;
+                    entry["column"] = column;
+                    entry["row"] = row;
+                    entry["explored"] = exploration.isExplored(column, row);
+                    players.push_back(std::move(entry));
+                }
+            }
+            map["markers"] = std::move(players);
+        }
         if (leader) {
             glm::vec2 point = area->worldToMapPoint(glm::vec2(leader->position()));
             map["leaderMapPoint"] = json::array {point.x, point.y};
         }
         root["map"] = std::move(map);
+        if (area->maxStealthXP() > 0 || area->isStealthXPEnabled()) {
+            // Stealth XP (design note stealth): the pool and who has cost it.
+            json::object stealthXP;
+            stealthXP["enabled"] = area->isStealthXPEnabled();
+            stealthXP["current"] = area->currentStealthXP();
+            stealthXP["max"] = area->maxStealthXP();
+            stealthXP["decrement"] = area->stealthXPDecrement();
+            stealthXP["detectors"] = area->stealthXPDetectors().size();
+            root["stealthXP"] = std::move(stealthXP);
+        }
     } else {
         root["area"] = nullptr;
     }
@@ -687,9 +764,12 @@ std::string Game::dumpStateJson(float radius) const {
         }
         json::object entry;
         static const char *kStates[] {"pending", "first_action", "second_action", "finished"};
-        int state = static_cast<int>(round->state);
+        // The round's state and time are its first creature's; each action
+        // carries its own creature's.
+        const auto &owner = round->actions.front();
+        int state = static_cast<int>(owner.state);
         entry["state"] = state >= 0 && state < 4 ? kStates[state] : "unknown";
-        entry["time"] = round->time;
+        entry["time"] = owner.time;
         entry["duel"] = round->duel;
         json::array actions;
         for (auto &roundAction : round->actions) {
@@ -698,6 +778,10 @@ std::string Game::dumpStateJson(float radius) const {
             auto target = roundAction.target.resolve();
             item["attacker"] = attacker ? json::value(attacker->id()) : json::value(nullptr);
             item["target"] = idOrNull(target);
+            int sideState = static_cast<int>(roundAction.state);
+            item["state"] = sideState >= 0 && sideState < 4 ? kStates[sideState] : "unknown";
+            item["time"] = roundAction.time;
+            item["abandoned"] = roundAction.abandoned;
             if (roundAction.action) {
                 auto name = actionTypeName(roundAction.action->type());
                 item["type"] = name.empty() ? json::string("unknown") : json::string(name);

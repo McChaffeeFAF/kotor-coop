@@ -71,6 +71,18 @@ void ToggleButton::copyCheckedFill(const ToggleButton &other) {
     setShowCheckedFill(other._showCheckedFill);
 }
 
+void ToggleButton::setCheckedFills(std::shared_ptr<graphics::Texture> off, std::shared_ptr<graphics::Texture> offHilight,
+                                   std::shared_ptr<graphics::Texture> on, std::shared_ptr<graphics::Texture> onHilight) {
+    _offFill = std::move(off);
+    _offHilightFill = std::move(offHilight);
+    _onFill = std::move(on);
+    _onHilightFill = std::move(onHilight);
+    if (_border) {
+        _border->fill = _on && _showCheckedFill && _onFill ? _onFill : _offFill;
+    }
+    applyCheckedFill();
+}
+
 void ToggleButton::setOnTextColor(const glm::vec3 &color) {
     _offTextColor = _text.color;
     _onTextColor = color;

@@ -16,6 +16,7 @@
  */
 
 #include "reone/game/effect/mindtrick.h"
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -30,9 +31,13 @@ bool MindTrickEffect::onApply(Object &object, const EffectInstance &instance) {
         return false;
     }
     auto creator = instance.boundCreator();
-    return !creature->hasEffectImmunity(
-        ImmunityType::MindSpells,
-        creator ? dyn_cast<Creature>(creator.get()) : nullptr);
+    if (creature->hasEffectImmunity(
+            ImmunityType::MindSpells,
+            creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::MindSpells);
+        return false;
+    }
+    return true;
 }
 
 } // namespace game

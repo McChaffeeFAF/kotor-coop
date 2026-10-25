@@ -193,6 +193,7 @@ void ConfirmPopup::fitPanelForTwoButtons() {
 }
 
 void ConfirmPopup::show(const std::string &message, std::shared_ptr<graphics::Texture> icon) {
+    ++_serial;
     _onConfirm = {};
     _onCancel = {};
     _onThird = {};
@@ -291,6 +292,7 @@ void ConfirmPopup::showConfirm(
 }
 
 void ConfirmPopup::hide() {
+    ++_serial;
     _visible = false;
     _onConfirm = {};
     _onCancel = {};

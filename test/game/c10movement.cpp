@@ -29,6 +29,10 @@
 #include "reone/game/action/followleader.h"
 #include "reone/game/action/movetolocation.h"
 #include "reone/game/action/movetopoint.h"
+#include "reone/game/action/interactobject.h"
+#include "reone/game/action/opencontainer.h"
+#include "reone/game/action/useskill.h"
+#include "reone/game/object/placeable.h"
 #include "reone/game/game.h"
 #include "reone/game/location.h"
 #include "reone/game/object/area.h"
@@ -777,6 +781,114 @@ TEST(C10DoorBetween, an_attack_on_an_unreachable_target_gives_up) {
     }
     EXPECT_TRUE(harness.pc->actions().empty()) << "attack still queued after " << tick << " ticks";
     EXPECT_EQ(40, target->currentHitPoints());
+}
+
+// Interactions with a placeable no path reaches (a container in a room not
+// yet open, as metalbox 102 is when coop_n2 sends Trask to it) give up as an
+// attack does, instead of holding the queue: opening it, using it, and
+// picking its lock. The lock order used to hold the creature for good.
+namespace {
+
+std::shared_ptr<Placeable> unreachableContainer(MovementHarness &harness, bool locked) {
+    auto box = harness.game->newPlaceable();
+    box->setPosition(glm::vec3(10.0f, 8.0f, 0.0f));
+    box->setHasInventory(true);
+    box->setLocked(locked);
+    harness.area->add(box);
+    return box;
+}
+
+int ticksUntilIdle(MovementHarness &harness) {
+    int tick = 0;
+    for (; tick < 30 * 30 && !harness.pc->actions().empty(); ++tick) {
+        harness.pc->update(kTick);
+        harness.game->combat().update(kTick);
+    }
+    return tick;
+}
+
+} // namespace
+
+TEST(C10DoorBetween, opening_an_unreachable_container_gives_up) {
+    MovementHarness harness;
+    auto box = unreachableContainer(harness, false);
+    harness.pc->addAction(harness.game->newAction<OpenContainerAction>(box));
+    int ticks = ticksUntilIdle(harness);
+    EXPECT_TRUE(harness.pc->actions().empty()) << "still queued after " << ticks << " ticks";
+    EXPECT_GT(harness.pc->getDistanceTo(*box), 4.0f);
+}
+
+// A click on a container walks the leader up to it and only then opens it.
+// A container's footprint is off the walkmesh, so the walk goes to the
+// nearest ground beside it; before, that walk found no path and the click
+// either opened the container from where the leader stood or did nothing.
+TEST(C10DoorBetween, clicking_a_container_walks_to_it_before_opening) {
+    MovementHarness harness;
+    auto box = harness.game->newPlaceable();
+    box->setPosition(glm::vec3(10.0f, 0.0f, 0.0f)); // on the walkmesh
+    box->setHasInventory(true);
+    harness.area->add(box);
+    float openedAt = -1.0f;
+    auto action = harness.game->newAction<OpenContainerAction>(box);
+    action->setOnReached([&](const std::shared_ptr<Object> &) { openedAt = harness.pc->position().x; });
+    harness.pc->addAction(action);
+    harness.pc->update(kTick);
+    EXPECT_LT(openedAt, 0.0f) << "opened on the first frame, from 10 m away";
+    ticksUntilIdle(harness);
+    EXPECT_GE(openedAt, 8.0f);
+    EXPECT_LE(openedAt, 10.0f);
+}
+
+TEST(C10DoorBetween, clicking_a_container_off_the_walkmesh_walks_to_the_ground_beside_it) {
+    MovementHarness harness;
+    auto box = harness.game->newPlaceable();
+    box->setPosition(glm::vec3(10.0f, 3.0f, 0.0f)); // 1 m past the corridor's edge
+    box->setHasInventory(true);
+    harness.area->add(box);
+    bool opened = false;
+    glm::vec3 openedAt(0.0f);
+    auto action = harness.game->newAction<OpenContainerAction>(box);
+    action->setOnReached([&](const std::shared_ptr<Object> &) {
+        opened = true;
+        openedAt = harness.pc->position();
+    });
+    harness.pc->addAction(action);
+    harness.pc->update(kTick);
+    EXPECT_FALSE(opened);
+    ticksUntilIdle(harness);
+    ASSERT_TRUE(opened);
+    EXPECT_GT(openedAt.x, 7.0f);
+    EXPECT_LT(glm::distance(glm::vec2(openedAt), glm::vec2(box->position())), 3.5f);
+}
+
+TEST(C10DoorBetween, using_a_placeable_off_the_walkmesh_walks_to_the_ground_beside_it) {
+    MovementHarness harness;
+    auto panel = harness.game->newPlaceable();
+    panel->setPosition(glm::vec3(10.0f, 3.0f, 0.0f));
+    harness.area->add(panel);
+    auto action = harness.game->newAction<InteractObjectAction>(panel);
+    harness.pc->addAction(action);
+    harness.pc->update(kTick);
+    EXPECT_FALSE(action->isCompleted());
+    ticksUntilIdle(harness);
+    EXPECT_GT(harness.pc->position().x, 7.0f);
+}
+
+TEST(C10DoorBetween, using_an_unreachable_placeable_gives_up) {
+    MovementHarness harness;
+    auto box = unreachableContainer(harness, false);
+    harness.pc->addAction(harness.game->newAction<InteractObjectAction>(box));
+    int ticks = ticksUntilIdle(harness);
+    EXPECT_TRUE(harness.pc->actions().empty()) << "still queued after " << ticks << " ticks";
+}
+
+TEST(C10DoorBetween, picking_the_lock_of_an_unreachable_container_gives_up) {
+    MovementHarness harness;
+    auto box = unreachableContainer(harness, true);
+    harness.pc->addAction(harness.game->newAction<UseSkillAction>(SkillType::Security, box));
+    int ticks = ticksUntilIdle(harness);
+    EXPECT_TRUE(harness.pc->actions().empty()) << "still queued after " << ticks << " ticks";
+    EXPECT_TRUE(box->isLocked());
 }
 
 // The same for a ranged attacker in range with a wall in the way and no path

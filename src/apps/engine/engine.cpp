@@ -230,6 +230,7 @@ void Engine::init() {
     defaults.preferredTag = _options.coop.slot;
     defaults.hostOnlyTransitions = _options.coop.hostOnlyTransitions;
     defaults.hostOnlyTrading = _options.coop.hostOnlyTrading;
+    defaults.hostOnlyScenes = _options.coop.hostOnlyScenes;
     defaults.noPause = _options.coop.noPause;
     defaults.pauseCooldown = _options.coop.pauseCooldown;
     defaults.enemyScaling = _options.coop.enemyScaling;
@@ -351,9 +352,26 @@ int Engine::run() {
         if (quit) {
             break;
         }
-        if (!_window->isInFocus() && !_options.graphics.headless && !_options.runUnfocused) {
+        bool focused = _window->isInFocus();
+        bool serving = _options.dedicated.enabled || (_game->coop() && _game->coop()->isHost());
+        if (input::FocusTracker::sleepsUnfocused(focused, _options.graphics.headless, _harnessFocusLost, _options.runUnfocused, serving)) {
             std::this_thread::sleep_for(std::chrono::milliseconds {100});
+            if (_channel && !_pendingReply && !_captureRequest && _scriptPauseFrames <= 0 && !_game->hasCommandBlocker()) {
+                // The harness can still ask and give focus back ("focus
+                // gained"). A command that needs frames waits, as the world does.
+                while (auto request = _channel->poll()) {
+                    executeChannelCommand(*request);
+                    if (_pendingReply || _captureRequest || _scriptPauseFrames > 0 || _game->hasCommandBlocker()) {
+                        break;
+                    }
+                }
+            }
             continue;
+        }
+        if (input::FocusTracker::throttlesUnfocused(focused, serving) && !_options.graphics.headless) {
+            // A co-op host in the background keeps the world going for its
+            // guests; it only draws less (about 30 frames a second).
+            std::this_thread::sleep_for(std::chrono::milliseconds {25});
         }
         uint64_t ticks = clock.micros();
         if (_game->consumeTimingDiscontinuity()) {
@@ -412,10 +430,12 @@ int Engine::run() {
                 imguiNewFrame();
             }
             _game->update(frameTime);
-            bool showcur = _game->cursorType() == CursorType::None;
-            bool relmouse = _game->relativeMouseMode();
-            showCursor(showcur);
-            setRelativeMouseMode(relmouse);
+            if (auto capture = _game->takeAuditCapture()) {
+                if (!_captureRequest) {
+                    _captureRequest = CaptureRequest {std::filesystem::path(*capture), 1, 0};
+                }
+            }
+            syncPointer(false);
             _profiler->update(frameTime);
         });
         if (_options.dedicated.enabled) {
@@ -531,6 +551,24 @@ void Engine::initAutomationCommands() {
     };
     _console->registerCommand("pause", "pause command-file execution for a number of rendered frames", pause);
     _console->registerCommand("frames", "alias of pause", pause);
+    _console->registerCommand("focus", "window focus harness: focus lost|gained|hold|release|state, one line of JSON", [this](const auto &args) {
+        auto mode = args[1];
+        std::string m = mode ? std::string(*mode) : "state";
+        if (m == "lost" || m == "gained") {
+            _harnessFocusLost = m == "lost";
+            SDL_Event e {};
+            e.type = m == "lost" ? SDL_EVENT_WINDOW_FOCUS_LOST : SDL_EVENT_WINDOW_FOCUS_GAINED;
+            e.window.windowID = SDL_GetWindowID(_window->sdlWindow());
+            SDL_PushEvent(&e);
+        } else if (m == "hold") {
+            { auto injected = input::Event::newMouseButtonDown(input::MouseButtonEvent(input::MouseButton::Right, true, 1, 640, 360)); _focus.observe(injected); _events.push(injected); }
+        } else if (m == "release") {
+            { auto injected = input::Event::newMouseButtonUp(input::MouseButtonEvent(input::MouseButton::Right, false, 1, 640, 360)); _focus.observe(injected); _events.push(injected); }
+        } else if (m != "state") {
+            throw std::invalid_argument("usage: focus [lost|gained|hold|release|state]");
+        }
+        _console->printLine(focusReport());
+    });
     _console->registerCommand("ping", "reply pong", [this](const auto &) {
         _console->printLine("pong");
     });
@@ -803,6 +841,9 @@ void Engine::processEvents(bool &quit) {
             }
             continue;
         }
+        if ((sdlEvent.type == SDL_EVENT_WINDOW_FOCUS_LOST || sdlEvent.type == SDL_EVENT_WINDOW_FOCUS_GAINED) && _window->isAssociatedWith(sdlEvent)) {
+            onFocusChanged(sdlEvent.type == SDL_EVENT_WINDOW_FOCUS_GAINED);
+        }
         if (_options.graphics.headless) {
             if (_window->isAssociatedWith(sdlEvent) && _window->handle(sdlEvent) && _window->isCloseRequested()) {
                 quit = true;
@@ -831,12 +872,60 @@ void Engine::processEvents(bool &quit) {
         if (_profiler->handle(*event)) {
             continue;
         }
+        _focus.observe(*event);
         unhandled.push(*event);
     }
     while (!unhandled.empty()) {
         _events.push(std::move(unhandled.front()));
         unhandled.pop();
     }
+}
+
+/**
+ * Focus left or came back (alt-tab, a minimise, a pop-up window over us).
+ * Losing it lets go of everything held - the release happens in another
+ * window and never arrives - and of the mouse capture; gaining it applies
+ * the pointer state the current screen wants from scratch, because the OS
+ * may have changed the real state behind our cached copy.
+ */
+void Engine::onFocusChanged(bool gained) {
+    if (gained) {
+        _focus.gainFocus();
+        syncPointer(true);
+        return;
+    }
+    // Off-screen position: a release must not click whatever lies under the last position.
+    auto releases = _focus.loseFocus(-1, -1);
+    _game->releaseHeldInput(releases);
+    setRelativeMouseMode(false);
+    showCursor(true);
+}
+
+void Engine::syncPointer(bool force) {
+    if (force) {
+        _showCursor = !_showCursor;
+        _relativeMouseMode = !_relativeMouseMode;
+    }
+    bool allowed = input::FocusTracker::allowRelativeMouse(_game->relativeMouseMode(), _game->isPopupVisible(), _focus.focused());
+    showCursor(_game->cursorType() == CursorType::None || !_focus.focused());
+    setRelativeMouseMode(allowed);
+}
+
+std::string Engine::focusReport() const {
+    std::ostringstream json;
+    json << "{\"focused\":" << _focus.focused()
+         << ",\"osCursorShown\":" << SDL_CursorVisible()
+         << ",\"osRelative\":" << SDL_GetWindowRelativeMouseMode(_window->sdlWindow())
+         << ",\"cachedCursor\":" << _showCursor
+         << ",\"cachedRelative\":" << _relativeMouseMode
+         << ",\"gameRelative\":" << _game->relativeMouseMode()
+         << ",\"popup\":" << _game->isPopupVisible()
+         << ",\"heldKeys\":" << _focus.heldKeys()
+         << ",\"heldButtons\":" << _focus.heldButtons()
+         << ",\"cursorType\":" << static_cast<int>(_game->cursorType())
+         << ",\"pointer\":[" << _game->cursorPosition().x << "," << _game->cursorPosition().y << "]"
+         << ",\"harnessLost\":" << _harnessFocusLost << "}";
+    return json.str();
 }
 
 void Engine::showCursor(bool show) {

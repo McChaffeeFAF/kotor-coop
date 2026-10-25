@@ -35,8 +35,16 @@ struct ServicesView;
 /**
  * Combat round consists of either one or two actions. Second action is only
  * present when both combatants are creatures.
+ *
+ * Each creature keeps its own round in its side of the round: its clock and
+ * how far it has got. A side that answers the other starts in step with it
+ * and goes on from there on its own, so nothing done to one creature moves
+ * the other's round (design note vrifftech_rules_triage, "Combat rounds").
  */
 struct CombatRound {
+    /** The length of a creature's round, in seconds. */
+    static constexpr float kDuration = 3.0f;
+
     explicit CombatRound(const std::shared_ptr<Action> &action,
                          const std::shared_ptr<Creature> &attacker,
                          const std::shared_ptr<Object> &target,
@@ -66,17 +74,35 @@ struct CombatRound {
         RuntimeObjectRef<Object> target;
         bool actorQueueAssociated {false};
 
+        /** How far the creature's round has got; Finished once it has ended. */
+        State state {Pending};
+        /** The seconds of the creature's round gone by. */
+        float time {0.0f};
+        /**
+         * The creature's command left the round (it was cleared, or finished
+         * early) after taking its turn; the creature's round runs on to its
+         * end, and its next attack waits for that end.
+         */
+        bool abandoned {false};
+        /** The command has been let take its turn in the round. */
+        mutable bool tookTurn {false};
+
         bool participantBindingsLive() const;
         bool remainsInActorQueue() const;
     };
 
     SmallVector<RoundAction, 2> actions;
 
-    State state {Pending};
     bool duel {false};
-    float time {0.0f};
 
+    /** The side of the round \p action takes its turn in, if any. */
+    const RoundAction *sideOf(const Action &action) const;
+    /** \p action may take its turn in the round now. */
     bool canExecute(Action &action) const;
+    /** The round of \p action's creature has ended; true for an action not in the round. */
+    bool hasEnded(const Action &action) const;
+    /** The round has ended for every creature in it. */
+    bool allEnded() const;
 };
 
 /**
@@ -119,11 +145,20 @@ private:
     RoundQueue _rounds;
 
     void updateRound(CombatRound &round, float dt);
-    void finishRound(CombatRound &round);
-    void continuePlayerAttack(CombatRound &round, const std::shared_ptr<Creature> &hand);
+    /**
+     * The rounds of the creatures of \p sides have ended: their attackers
+     * finish the round, the creatures not under a player's hand run their
+     * end-of-round script, and the player's hands fight on. A side whose
+     * command was given up (\p quiet) only finishes the round and lets its
+     * creatures leave combat.
+     */
+    void finishSides(CombatRound &round, const SmallVector<size_t, 2> &sides, bool quiet);
+    void continuePlayerAttack(CombatRound &round, const SmallVector<size_t, 2> &sides, const std::shared_ptr<Creature> &hand);
     void pruneInvalidRounds();
-    void releaseParticipants(CombatRound &round);
-    void cancelRound(CombatRound &round);
+    void releaseSide(CombatRound::RoundAction &side);
+    void cancelSide(CombatRound::RoundAction &side);
+    /** A round the creature's given-up command took its turn in, still running out. */
+    CombatRound *findRunningAbandonedRound(const Creature &attacker);
 
     CombatRound *findRoundForAction(
         const std::shared_ptr<Action> &action,

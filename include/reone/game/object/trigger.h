@@ -90,6 +90,7 @@ public:
     const std::string &getOnExit() const { return _onExit; }
     bool hasClickScript() const { return !_onClick.empty(); }
     void setOnClick(std::string script) { _onClick = std::move(script); }
+    void setOnEnter(std::string script) { _onEnter = std::move(script); }
 
     /**
      * The party leader took the area transition: its OnClick runs in place of

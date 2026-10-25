@@ -34,9 +34,7 @@ cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cm
 cmake --build build --config Release --parallel
 ```
 
-Add `wxwidgets` to the vcpkg list if you want the toolkit or the old launcher. The
-GitHub Actions workflow in `.github/actions/build-windows` uses a slightly different
-package list (it builds the toolkit too); either works.
+Add `wxwidgets` to the vcpkg list if you want the toolkit or the old launcher.
 
 ## Linux
 
@@ -51,7 +49,9 @@ cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TOOLKIT=OFF -DBU
 cmake --build build
 ```
 
-`tools/cloud/linux_test.sh` does all of it and then runs the unit tests:
+`tools/cloud/linux_test.sh` does all of it and then runs the unit tests (the GitHub
+Actions workflow, `.github/workflows/build-test-linux.yml`, runs exactly this on every
+push to `main` and every pull request):
 
 ```
 tools/cloud/linux_test.sh                       # deps, configure, build `tests`, run them

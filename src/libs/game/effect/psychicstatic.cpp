@@ -16,6 +16,7 @@
  */
 
 #include "reone/game/effect/psychicstatic.h"
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -31,9 +32,13 @@ bool PsychicStaticEffect::onApply(Object &object, const EffectInstance &instance
         return false;
     }
     auto creator = instance.boundCreator();
-    return !creature->hasEffectImmunity(
-        ImmunityType::Confused,
-        creator ? dyn_cast<Creature>(creator.get()) : nullptr);
+    if (creature->hasEffectImmunity(
+            ImmunityType::Confused,
+            creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::Confused);
+        return false;
+    }
+    return true;
 }
 
 } // namespace game

@@ -1097,6 +1097,17 @@ void UpgradeGUI::openCategory(UpgradeCategory category) {
 }
 
 void UpgradeGUI::openItem(const std::shared_ptr<Item> &item) {
+    _hostNote.clear();
+    std::string wearer;
+    auto *coop = _guest ? nullptr : _game.coop();
+    if (item && coop && coop->hostItemWornByGuest(item->id(), wearer)) {
+        // Story Mode co-op: the inventory is shared, what another player wears is not.
+        _hostNote = wearer + " has that equipped: only they can upgrade it now";
+        if (_page == Page::Items) {
+            _itemsPanel->redescribe();
+        }
+        return;
+    }
     if (!_bench.begin(item)) {
         return;
     }
@@ -1171,7 +1182,7 @@ GuestBenchScreen *UpgradeGUI::guestScreen() const {
 
 std::string UpgradeGUI::guestNote() const {
     auto *screen = guestScreen();
-    return screen ? screen->rejection() : std::string();
+    return screen ? screen->rejection() : _hostNote;
 }
 
 void UpgradeGUI::useGuestHolder() {

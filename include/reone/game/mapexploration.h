@@ -17,6 +17,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <vector>
 
 #include <glm/vec2.hpp>
@@ -58,6 +59,16 @@ public:
     std::vector<uint32_t> packed() const;
     /** Restore a packed grid; false (and no change) if the size differs. */
     bool unpack(int columns, int rows, const std::vector<uint32_t> &words);
+
+    /**
+     * The grid for the wire (co-op shared map): one bit per cell, row-major,
+     * least significant bit first, (columns * rows + 7) / 8 bytes.
+     */
+    std::vector<uint8_t> bytes() const;
+    /** Replace the grid from bytes(); false (and no change) if the size differs. */
+    bool setBytes(int columns, int rows, const std::vector<uint8_t> &bytes);
+    /** Explore every cell `bytes` has explored; false (and no change) if the size differs. */
+    bool mergeBytes(int columns, int rows, const std::vector<uint8_t> &bytes);
 
     int columns() const { return _columns; }
     int rows() const { return _rows; }

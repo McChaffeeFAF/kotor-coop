@@ -20,6 +20,11 @@
 #include <cmath>
 
 #include "reone/game/di/services.h"
+#include "reone/game/game.h"
+#include "reone/game/object/area.h"
+#include "reone/game/object/door.h"
+#include "reone/game/object/module.h"
+#include "reone/scene/node/model.h"
 #include "reone/graphics/types.h"
 #include "reone/scene/collision.h"
 #include "reone/scene/di/services.h"
@@ -205,7 +210,58 @@ bool DialogCamera::blocked(glm::vec3 from, glm::vec3 to) const {
     }
     Collision collision;
     auto &scene = _services.scene.graphs.get(_sceneName);
-    return scene.testLineOfSight(from, to, collision);
+    if (scene.testLineOfSight(from, to, collision)) {
+        return true;
+    }
+    if (const Object *object = blockingObject(from, to)) {
+        if (_game.cutsceneAuditEnabled()) {
+            info(str(boost::format("Cutscene audit: dialog camera avoids %s") % object->tag()));
+        }
+        return true;
+    }
+    return false;
+}
+
+const Object *DialogCamera::blockingObject(glm::vec3 from, glm::vec3 to) const {
+    auto module = _game.module();
+    if (!module || !module->area()) {
+        return nullptr;
+    }
+    for (const auto &object : module->area()->objects()) {
+        if (!object || !object->isRuntimeLive()) {
+            continue;
+        }
+        if (object->type() == ObjectType::Door) {
+            // Open: the doorway is clear. Opening: the leaves still stand.
+            if (static_cast<const Door &>(*object).isOpen()) {
+                continue;
+            }
+        } else if (object->type() != ObjectType::Placeable) {
+            continue;
+        }
+        auto node = object->sceneNode();
+        if (!node || node->type() != scene::SceneNodeType::Model || !node->isEnabled()) {
+            continue;
+        }
+        if (lineEntersBox(from, to, node->aabb() * node->absoluteTransform())) {
+            return object.get();
+        }
+    }
+    return nullptr;
+}
+
+bool DialogCamera::lineEntersBox(const glm::vec3 &from, const glm::vec3 &to, const graphics::AABB &box) {
+    if (box.isDegenerate() || box.contains(from)) {
+        return false;
+    }
+    glm::vec3 delta(to - from);
+    float length = glm::length(delta);
+    if (!(length > 1e-3f)) {
+        return false;
+    }
+    glm::vec3 invDir(1.0f / (delta / length));
+    float distance = 0.0f;
+    return box.raycast(from, invDir, length, distance) && distance < length;
 }
 
 int DialogCamera::countBlocked(const Shot &shot, glm::vec3 speaker, glm::vec3 listener, std::initializer_list<glm::vec3> from) const {

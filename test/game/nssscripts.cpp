@@ -17,7 +17,7 @@
 
 // Example tests that compile small NWScript sources (test/support/nsscomp.h) and
 // run them against game fixtures: the scripts call the engine's real routines
-// through the real routine table. See docs/testing_scripts.md.
+// through the real routine table. See docs/dev/testing_scripts.md.
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>

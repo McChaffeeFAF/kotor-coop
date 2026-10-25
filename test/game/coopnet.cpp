@@ -11,6 +11,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <glm/gtc/constants.hpp>
+
 #include "../fixtures/engine.h"
 #include "../fixtures/game.h"
 #include "../fixtures/resource.h"
@@ -24,12 +26,25 @@
 #include "reone/game/coopidmap.h"
 #include "reone/game/cooploot.h"
 #include "reone/game/action/attackobject.h"
+#include "reone/game/action/jumptolocation.h"
+#include "reone/game/action/movetolocation.h"
+#include "reone/game/action/wait.h"
+#include "reone/game/location.h"
 #include "reone/game/combat.h"
 #include "reone/game/effect.h"
 #include "reone/game/coopreplication.h"
+#include "reone/game/companionbrain.h"
 #include "reone/game/coopsession.h"
+#include "reone/game/gui/conversation.h"
+#include "reone/game/guestbenchscreen.h"
+#include "reone/resource/dialog.h"
 #include "reone/game/coopprogress.h"
+#include "reone/game/autolevel.h"
+#include "reone/game/cameo.h"
+#include "reone/game/coopcast.h"
 #include "reone/game/coopstandin.h"
+#include "reone/resource/2da.h"
+#include "reone/resource/gff.h"
 #include "reone/game/game.h"
 #include "reone/game/object/area.h"
 #include "reone/game/object/creature.h"
@@ -940,6 +955,73 @@ TEST_F(CoopCompanionCombatTest, a_client_s_companion_keeps_attacking_at_the_end_
     EXPECT_LE(_trask->actions().size(), 1u);
 }
 
+// Owner report on alpha-0.4.5 (Story Mode, Smarter Companions on): AI
+// movement seemed to fight the guest's character. The brain must never
+// decide for a creature a player controls, the host's leader or a guest's.
+TEST_F(CoopCompanionCombatTest, smarter_companions_never_drive_a_creature_a_player_controls) {
+    _engine.options().game.smartCompanions = true;
+    traskJoins();
+    _trask->setOnEndRound("k_hen_combend01");
+    _player->setOnEndRound("k_hen_combend01");
+    EXPECT_TRUE(companion::usesBrain(*_game, *_trask)) << "an AI companion on the generic script";
+    EXPECT_FALSE(companion::usesBrain(*_game, *_player)) << "the host's leader";
+    _client.send(hello());
+    exchange();
+    net::SlotRequest request;
+    _client.send(request);
+    exchange();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    EXPECT_FALSE(companion::usesBrain(*_game, *_trask)) << "the guest's character";
+    // Its end of round runs neither the brain nor the script.
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("k_hen_combend01")).Times(0);
+    _trask->setObjectSeen(_sith, true);
+    sithAttacksPlayer();
+    finishRounds();
+    EXPECT_TRUE(_trask->actions().empty()) << "no order the guest did not give";
+    _engine.options().game.smartCompanions = false;
+}
+
+// Owner report (single player too): companions "following inefficiently"
+// some of the time. FollowLeader ended on arrival and nothing followed again
+// until the next heartbeat re-issued it (up to 6 s), so a companion stood
+// while the leader walked off and then ran to catch up.
+TEST_F(CoopCompanionCombatTest, an_arrived_follower_goes_after_the_leader_again_without_waiting_for_its_heartbeat) {
+    traskJoins();
+    _player->setPosition(glm::vec3(0.0f));
+    _trask->setPosition(glm::vec3(3.0f, 0.0f, 0.0f));
+    _trask->clearAllActions();
+    _trask->setFollowingLeader(true); // as a FollowLeader that arrived leaves it
+    _trask->updateIdleFollow(0.25f);
+    EXPECT_TRUE(_trask->actions().empty()) << "close enough: stays";
+
+    _trask->setPosition(glm::vec3(6.0f, 0.0f, 0.0f)); // the leader walked off
+    _trask->updateIdleFollow(0.25f);
+    ASSERT_FALSE(_trask->actions().empty());
+    EXPECT_EQ(ActionType::FollowLeader, _trask->actions().front()->type());
+
+    // Ordered to do something else: the follow is over until a script issues one.
+    _trask->clearAllActions();
+    EXPECT_FALSE(_trask->isFollowingLeader());
+    _trask->updateIdleFollow(0.25f);
+    EXPECT_TRUE(_trask->actions().empty());
+
+    // A guest's character is never sent after the host's leader.
+    _trask->setFollowingLeader(true);
+    _client.send(hello());
+    exchange();
+    net::SlotRequest request;
+    _client.send(request);
+    exchange();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    _trask->clearAllActions();
+    _trask->setFollowingLeader(true);
+    _trask->updateIdleFollow(0.25f);
+    EXPECT_TRUE(_trask->actions().empty());
+    EXPECT_FALSE(_trask->isFollowingLeader());
+}
+
 TEST_F(CoopCompanionCombatTest, a_companion_without_a_player_gets_no_continuation) {
     traskJoins(); // the AI's companion: OnEndRound decides its next round
     auto attack = _game->newAction<AttackObjectAction>(_sith);
@@ -993,6 +1075,22 @@ TEST_F(CoopCompanionCombatTest, an_idle_client_s_companion_joins_a_fight_against
     idle(0.75f);
     EXPECT_EQ(_sith, traskTarget()) << "the nearest hostile, not the far one";
     EXPECT_FALSE(_trask->getCurrentAction()->isUserAction());
+}
+
+TEST_F(CoopCompanionCombatTest, a_creature_its_player_steers_is_not_idle) {
+    // Playtest 2026-10-22: a guest walking with its movement keys through a
+    // fight stalled every second: steering leaves the queue empty, so idle
+    // engage queued an attack and the swing held the creature in place.
+    traskTaken();
+    _trask->setObjectSeen(_sith, true);
+    sithAttacksPlayer();
+    for (int i = 0; i < 12; ++i) {
+        _trask->noteDirectControl(); // what hostApplySteering does each tick it moves it
+        idle(0.25f);
+    }
+    EXPECT_TRUE(_trask->actions().empty()) << "three seconds of steering, no attack of its own";
+    idle(1.25f);
+    EXPECT_EQ(_sith, traskTarget()) << "let go, it joins the fight again";
 }
 
 TEST_F(CoopCompanionCombatTest, idle_engage_stays_out_of_the_player_s_way) {
@@ -1191,6 +1289,45 @@ public:
     static void applyEvent(CoopSession &session, const net::NetEvent &event) {
         session.clientApplyEvent(event);
     }
+
+    /** The guest's copy localId stands for the host's hostId, as a bound snapshot leaves it. */
+    static void bindReplica(CoopSession &session, uint32_t hostId, uint32_t localId) {
+        session._ids.bind(hostId, localId);
+        session._replicas[hostId].localId = localId;
+    }
+
+    static void applyEntity(CoopSession &session, const net::EntityRecord &record) {
+        session.clientApplyEntity(record);
+    }
+
+    /** The guest was welcomed as clientId and told it plays a stand-in under hostId. */
+    static void setStandInSlot(CoopSession &session, uint32_t clientId, uint32_t hostId) {
+        session._welcome.clientId = clientId;
+        session._slot.status = net::SlotStatus::StandIn;
+        session._slot.creatureId = hostId;
+        session._slot.tag = "coop_standin_" + std::to_string(clientId);
+    }
+
+    static void setReplicaTag(CoopSession &session, uint32_t hostId, const std::string &tag) {
+        session._replicas[hostId].state.tag = tag;
+        session._replicas[hostId].state.id = hostId;
+    }
+
+    static void resolveControlled(CoopSession &session) {
+        session.clientResolveControlled();
+    }
+
+    /** The client's keys are held with nothing to drive: what clientSteer does. */
+    static void steerWithNothing(CoopSession &session, float dt) {
+        session._clientState = CoopSession::ClientState::Joined;
+        session._moduleLoaded = true;
+        session.clientSteer(dt);
+    }
+
+    static void receiveReputation(CoopSession &session, net::ReputationTable table) {
+        session._hostReputation = std::move(table);
+        session.clientApplyReputation();
+    }
 };
 
 } // namespace game
@@ -1270,6 +1407,92 @@ TEST_F(CoopClientSessionTest, a_guest_draws_a_beam_from_its_own_copy_of_the_sour
     EXPECT_FALSE(pending[1]->ended);
 }
 
+TEST_F(CoopClientSessionTest, a_respawned_stand_in_is_found_by_its_tag_when_the_slot_lags) {
+    // Playtest 2026-10-22 row 12: a conversation takes the stand-in away and
+    // it comes back under a new host id. Whatever the slot last said, the
+    // guest's own stand-in is the one tagged with its client id.
+    constexpr uint32_t kOld = 611;
+    constexpr uint32_t kNew = 617;
+    TestCoopSession::setStandInSlot(*_session, 3, kOld);
+    TestCoopSession::bindReplica(*_session, kNew, _trask->id());
+    TestCoopSession::setReplicaTag(*_session, kNew, "coop_standin_3");
+    TestCoopSession::bindReplica(*_session, 700, _sith->id());
+    TestCoopSession::setReplicaTag(*_session, 700, "coop_standin_4"); // another player's
+    EXPECT_EQ(kOld, _session->controlledHostId());
+    TestCoopSession::resolveControlled(*_session);
+    EXPECT_EQ(kNew, _session->controlledHostId());
+    EXPECT_EQ(_trask, _session->localObjectForHost(_session->controlledHostId()));
+}
+
+TEST_F(CoopClientSessionTest, held_keys_with_nothing_to_drive_say_so) {
+    // Row 13: no silent input loss. With no module loaded the keys are not
+    // read; the notice itself is what the player sees once they are.
+    EXPECT_EQ(nullptr, coopNoControlNotice(611, true));
+    EXPECT_STREQ("You have no character to control yet", coopNoControlNotice(0, false));
+    EXPECT_STREQ("Your character is on its way", coopNoControlNotice(611, false));
+    TestCoopSession::steerWithNothing(*_session, 0.1f);
+    EXPECT_EQ(0, _session->statusJson().at("inputDropped").to_number<int64_t>()) << "no keys held, nothing dropped";
+}
+
+TEST_F(CoopClientSessionTest, a_creature_the_host_turns_hostile_turns_hostile_on_the_guest) {
+    // The guest's client runs no scripts: ChangeToStandardFaction on the host
+    // reaches its copy only as the replicated faction.
+    _trask->setFaction(Faction::Friendly1);
+    TestCoopSession::bindReplica(*_session, 9003, _trask->id());
+    net::EntityRecord record;
+    record.fields = net::kFieldFaction;
+    record.state.id = 9003;
+    record.state.faction = static_cast<uint8_t>(Faction::Hostile1);
+    TestCoopSession::applyEntity(*_session, record);
+    EXPECT_EQ(Faction::Hostile1, _trask->faction());
+
+    // A delta without the field leaves it as it is.
+    record.fields = net::kFieldPosition;
+    record.state.position = {3.0f, 0.0f, 0.0f};
+    TestCoopSession::applyEntity(*_session, record);
+    EXPECT_EQ(Faction::Hostile1, _trask->faction());
+
+    // No faction at all on the host.
+    record.fields = net::kFieldFaction;
+    record.state.faction = net::kNoFaction;
+    TestCoopSession::applyEntity(*_session, record);
+    EXPECT_EQ(Faction::Invalid, _trask->faction());
+}
+
+TEST_F(CoopClientSessionTest, the_host_s_reputation_table_replaces_the_guest_s_own) {
+    auto &reputes = _engine.gameModule().reputes();
+    IReputes::State local;
+    local.factions.resize(2);
+    local.labels.resize(2);
+    local.values = {{100, 100}, {100, 100}};
+    ON_CALL(reputes, state()).WillByDefault(Return(local));
+    ON_CALL(reputes, getReputation(_, _)).WillByDefault(Return(100));
+    IReputes::State replaced;
+    EXPECT_CALL(reputes, replace(_)).Times(1).WillOnce(Invoke([&](IReputes::State state) { replaced = std::move(state); }));
+
+    net::ReputationTable table;
+    table.values = {{100, 0, 50}, {0, 100, 50}, {50, 50, 100}};
+    TestCoopSession::receiveReputation(*_session, table);
+    ASSERT_EQ(3u, replaced.values.size());
+    EXPECT_EQ(0, replaced.values[0][1]) << "the player faction is hostile to Hostile_1 because the host says so";
+    EXPECT_EQ(0, replaced.values[1][0]);
+    EXPECT_EQ(50, replaced.values[2][0]);
+    EXPECT_EQ(3u, replaced.factions.size()) << "the table grows to the host's faction count";
+    EXPECT_EQ(1u, _session->reputationTablesApplied());
+}
+
+TEST_F(CoopClientSessionTest, a_table_the_guest_already_has_is_not_applied_again) {
+    auto &reputes = _engine.gameModule().reputes();
+    ON_CALL(reputes, getReputation(_, _)).WillByDefault(Invoke([](Faction source, Faction target) {
+        return source == target ? 100 : 0;
+    }));
+    EXPECT_CALL(reputes, replace(_)).Times(0);
+    net::ReputationTable table;
+    table.values = {{100, 0}, {0, 100}};
+    TestCoopSession::receiveReputation(*_session, table);
+    EXPECT_EQ(0u, _session->reputationTablesApplied());
+}
+
 TEST_F(CoopSessionTest, a_host_that_asks_holds_a_new_player_until_accepted) {
     traskJoins();
     _session.reset();
@@ -1293,10 +1516,21 @@ TEST_F(CoopSessionTest, a_host_that_asks_holds_a_new_player_until_accepted) {
     ASSERT_EQ(1u, players.size());
     EXPECT_TRUE(players[0].waiting);
     EXPECT_FALSE(_session->isPlayerControlled(_trask->id())) << "no companion before the host accepts";
+    {
+        // The request is in the host's join queue (headless: no prompt up).
+        auto status = _session->statusJson();
+        ASSERT_TRUE(status.contains("joinQueue"));
+        auto &queue = status.at("joinQueue").as_array();
+        ASSERT_EQ(1u, queue.size());
+        EXPECT_EQ(players[0].clientId, queue[0].to_number<uint32_t>());
+        EXPECT_EQ(0, status.at("joinPrompt").to_number<int>());
+    }
+    EXPECT_FALSE(_session->answerJoin(players[0].clientId + 1, true)) << "no request from another client";
     ASSERT_TRUE(_session->answerJoin(players[0].clientId, true));
     tick();
     EXPECT_TRUE(_session->isPlayerControlled(_trask->id()));
     EXPECT_FALSE(_session->answerJoin(players[0].clientId, true)) << "answered already";
+    EXPECT_TRUE(_session->statusJson().at("joinQueue").as_array().empty());
 
     // A welcome carries the token a reconnect presents to skip the question.
     auto welcomes = _client.take<net::Welcome>(net::MessageType::Welcome);
@@ -1341,7 +1575,7 @@ TEST(CoopStandIn, the_template_field_round_trips_and_refuses_junk) {
     EXPECT_EQ(91, appearance);
     EXPECT_EQ(1, gender);
     EXPECT_EQ(7u, source);
-    for (const char *junk : {"@standin:", "@standin:1:2", "@standin:1:2:3:4", "@standin:-1:0:3", "@standin:1:9:3",
+    for (const char *junk : {"@standin:", "@standin:1:2", "@standin:1:2:3:4:5", "@standin:1:2:3:T", "@standin:-1:0:3", "@standin:1:9:3",
                              "@standin:1:0:0", "@standin:x:0:3", "@appearance:4", "p_carth"}) {
         EXPECT_FALSE(parseCoopStandInResRef(junk, appearance, gender, source)) << junk;
     }
@@ -1382,6 +1616,54 @@ protected:
 
     std::vector<net::SlotAssign> slots() { return _client.take<net::SlotAssign>(net::MessageType::SlotAssign); }
 };
+
+TEST_F(CoopStandInSessionTest, the_stand_in_carries_its_players_name_and_the_whole_look) {
+    join();
+    _client.inbox.clear();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    EXPECT_FALSE(standIn->name().empty());
+    EXPECT_NE(_player->name(), standIn->name()) << "the guest's name, not the host's";
+    auto snapshots = _client.take<net::Snapshot>(net::MessageType::Snapshot);
+    ASSERT_FALSE(snapshots.empty());
+    const net::EntityState *standInState = nullptr;
+    const net::EntityState *hostState = nullptr;
+    for (const auto &snapshot : snapshots) {
+        for (const auto &record : snapshot.entities) {
+            if ((record.fields & net::kFieldLook) == 0) {
+                continue;
+            }
+            if (record.state.id == id) {
+                standInState = &record.state;
+            } else if (record.state.id == _player->id()) {
+                hostState = &record.state;
+            }
+        }
+    }
+    ASSERT_TRUE(standInState) << "the stand-in's look travels";
+    EXPECT_EQ(standIn->name(), standInState->look.playerName);
+    EXPECT_GE(standInState->look.bodyVariation, 0) << "marks a whole look";
+    EXPECT_GE(standInState->look.textureVariation, 0);
+    EXPECT_EQ(standIn->headRow(), standInState->look.headRow);
+    ASSERT_TRUE(hostState) << "the host's own character is named too";
+    EXPECT_EQ(0, hostState->look.colour);
+    EXPECT_EQ(-1, hostState->look.bodyVariation) << "only a stand-in sends the whole look";
+
+    // The same on both ends of the session's own presence list.
+    bool found = false;
+    for (const auto &presence : _session->presences()) {
+        if (presence.object == standIn) {
+            found = true;
+            EXPECT_TRUE(presence.outsideParty);
+            EXPECT_FALSE(presence.own);
+            EXPECT_EQ(standIn->name(), presence.name);
+        }
+    }
+    EXPECT_TRUE(found);
+}
 
 TEST_F(CoopStandInSessionTest, a_player_with_no_companion_plays_a_stand_in_outside_the_party) {
     _player->setMaxHitPoints(30);
@@ -1466,6 +1748,204 @@ TEST_F(CoopStandInSessionTest, a_free_companion_replaces_the_stand_in) {
     ASSERT_EQ(1u, sent.size());
     EXPECT_EQ(net::SlotStatus::Assigned, sent[0].status);
     EXPECT_EQ(_trask->id(), sent[0].creatureId);
+}
+
+// Playtest 2026-10-22, rows 1, 12 and 14 (design note coop_playtest_1022).
+
+static net::Steer steerMessage(uint32_t seq, uint32_t actor, bool moving, float facing = 0.0f, bool run = true) {
+    net::Steer steer;
+    steer.seq = seq;
+    steer.actor = actor;
+    steer.moving = moving;
+    steer.facing = facing;
+    steer.run = run;
+    return steer;
+}
+
+TEST_F(CoopStandInSessionTest, the_host_reports_the_stand_in_as_the_guest_s_creature) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    auto status = _session->statusJson();
+    const auto &guest = status.at("clients").as_array()[0].as_object();
+    EXPECT_TRUE(guest.at("controlled").as_bool()) << boost::json::serialize(guest);
+    EXPECT_EQ(static_cast<int64_t>(id), guest.at("creature").to_number<int64_t>());
+    EXPECT_EQ("standin", std::string(guest.at("slot").as_object().at("status").as_string()));
+    EXPECT_EQ(static_cast<int64_t>(id), guest.at("slot").as_object().at("id").to_number<int64_t>());
+    EXPECT_EQ(1u, status.at("controlled").as_object().size()) << "the stand-in is in the controlled list";
+}
+
+TEST_F(CoopStandInSessionTest, movement_keys_steer_the_stand_in_directly_each_tick_until_a_stop) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    auto start = standIn->position();
+    // Facing pi/2: direction (-1, 0), as the host's own keys read it.
+    _client.send(steerMessage(1, id, true, glm::half_pi<float>(), true));
+    for (int i = 0; i < 5; ++i) {
+        tick();
+    }
+    EXPECT_TRUE(standIn->actions().empty()) << "no MoveTo is queued: it moves directly";
+    EXPECT_EQ(Creature::MovementType::Run, standIn->movementType());
+    EXPECT_NEAR(glm::half_pi<float>(), standIn->getFacing(), 1e-3f);
+    float expected = standIn->runSpeed() * 5.0f * _game->tickSeconds();
+    EXPECT_NEAR(expected, glm::distance(start, standIn->position()), 1e-3f) << "the creature's own run speed, every tick";
+    if (expected > 0.0f) {
+        EXPECT_LT(standIn->position().x, start.x);
+    }
+    auto status = _session->statusJson().at("clients").as_array()[0].as_object().at("steer").as_object();
+    EXPECT_EQ(5, status.at("ticks").to_number<int64_t>());
+
+    // A stop (reliable) ends it at once; an older update arriving late is spent.
+    _client.send(steerMessage(3, id, false));
+    _client.transport->send(_client.connection, net::encode(steerMessage(2, id, true, 0.0f)), net::SendMode::Unreliable);
+    tick();
+    auto stopped = standIn->position();
+    tick();
+    tick();
+    EXPECT_EQ(stopped, standIn->position());
+    EXPECT_EQ(Creature::MovementType::None, standIn->movementType());
+
+    // Walk, then the updates stop coming: it stops on its own.
+    _client.send(steerMessage(4, id, true, 0.0f, false));
+    tick();
+    EXPECT_EQ(Creature::MovementType::Walk, standIn->movementType());
+    int timeout = static_cast<int>(std::ceil(net::kSteerTimeoutSeconds * _game->tickRate()));
+    for (int i = 0; i < timeout + 2; ++i) {
+        tick();
+    }
+    EXPECT_EQ(Creature::MovementType::None, standIn->movementType());
+    EXPECT_FALSE(_session->statusJson().at("clients").as_array()[0].as_object().at("steer").as_object().at("moving").as_bool());
+}
+
+TEST_F(CoopStandInSessionTest, steering_names_only_the_guest_s_own_creature_and_waits_out_conversations) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    auto start = standIn->position();
+    _client.inbox.clear();
+    // Someone else's creature: refused, and the host repeats which one is theirs.
+    _client.send(steerMessage(1, _player->id(), true));
+    tick();
+    tick();
+    EXPECT_EQ(start, standIn->position());
+    EXPECT_EQ(start, standIn->position());
+    auto sent = slots();
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(id, sent.back().creatureId);
+
+    // During a conversation the host owns the story: no steering.
+    _client.send(steerMessage(2, id, true));
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    EXPECT_EQ(0u, standInId());
+}
+
+TEST_F(CoopStandInSessionTest, the_guest_keeps_control_of_its_stand_in_across_a_conversation) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t first = standInId();
+    ASSERT_NE(0u, first);
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    _client.inbox.clear();
+    tick();
+    uint32_t second = standInId();
+    ASSERT_NE(0u, second);
+    ASSERT_NE(first, second) << "a new object, as before";
+    // The new id goes out reliably as the slot.
+    auto sent = slots();
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(net::SlotStatus::StandIn, sent.back().status);
+    EXPECT_EQ(second, sent.back().creatureId);
+
+    // Input still naming the old stand-in (in flight across the respawn)
+    // drives the new one, and the host repeats the slot.
+    auto standIn = _game->getObjectById<Creature>(second);
+    auto start = standIn->position();
+    _client.inbox.clear();
+    _client.send(steerMessage(1, first, true, glm::half_pi<float>()));
+    tick();
+    tick();
+    EXPECT_EQ(Creature::MovementType::Run, standIn->movementType());
+    EXPECT_NEAR(standIn->runSpeed() * 2.0f * _game->tickSeconds(), glm::distance(start, standIn->position()), 1e-3f);
+    sent = slots();
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(second, sent.back().creatureId);
+
+    net::Command move;
+    move.seq = 1;
+    move.type = net::CommandType::MoveTo;
+    move.actor = first;
+    move.point = {-3.0f, 2.0f, 0.0f};
+    _client.send(move);
+    _session->pollNetwork();
+    _client.inbox.clear();
+    tick();
+    auto results = _client.take<net::CommandResult>(net::MessageType::CommandResult);
+    ASSERT_EQ(1u, results.size());
+    EXPECT_TRUE(results[0].accepted) << net::commandRejectName(results[0].reason);
+}
+
+TEST_F(CoopStandInSessionTest, the_keys_win_over_an_attack_the_player_did_not_order) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    // The player's own attack, mid-swing: the keys wait for it, as the host's own do.
+    auto ordered = _game->newAction<AttackObjectAction>(_sith);
+    ordered->setUserAction(true);
+    standIn->addAction(ordered);
+    standIn->setMovementRestricted(true);
+    _client.send(steerMessage(1, id, true));
+    _session->pollNetwork();
+    _session->beforeTick();
+    EXPECT_FALSE(standIn->actions().empty()) << "a player order is not cut short";
+    // An automatic continuation (not the player's order): the keys cancel it and move.
+    standIn->clearAllActions();
+    standIn->addAction(_game->newAction<AttackObjectAction>(_sith));
+    standIn->setMovementRestricted(true);
+    auto start = standIn->position();
+    _client.send(steerMessage(2, id, true));
+    _session->pollNetwork();
+    _session->beforeTick();
+    EXPECT_TRUE(standIn->actions().empty());
+    EXPECT_EQ(Creature::MovementType::Run, standIn->movementType());
+    EXPECT_NEAR(standIn->runSpeed() * _game->tickSeconds(), glm::distance(start, standIn->position()), 1e-3f);
+}
+
+TEST_F(CoopStandInSessionTest, moving_updates_are_held_to_the_rate_and_stops_never_are) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t id = standInId();
+    // A flood within one tick: past the per-second allowance they are dropped.
+    for (uint32_t seq = 1; seq <= static_cast<uint32_t>(net::kMaxSteersPerSecond) + 10; ++seq) {
+        _client.transport->send(_client.connection, net::encode(steerMessage(seq, id, true)), net::SendMode::Unreliable);
+    }
+    _client.send(steerMessage(1000, id, false));
+    tick();
+    auto steer = _session->statusJson().at("clients").as_array()[0].as_object().at("steer").as_object();
+    EXPECT_GE(steer.at("dropped").to_number<int64_t>(), 10);
+    EXPECT_FALSE(steer.at("moving").as_bool()) << "the stop went through";
 }
 
 TEST_F(CoopStandInSessionTest, solo_mode_and_a_dropped_player_leave_no_stand_in) {
@@ -4369,4 +4849,1133 @@ TEST_F(CoopFreeHostileTest, random_commands_from_a_guest_never_crash_the_host_an
         ASSERT_FALSE(_fake->wasClosedByHost(1)) << "a valid command ended the connection";
     }
     EXPECT_GT(refused, fuzzRounds() / 3);
+}
+
+// Factions (docs/guest_scenes.md): what a guest needs to see enemies as the host does.
+
+TEST_F(CoopSessionTest, each_creature_s_faction_travels_and_a_change_travels_alone) {
+    _client.send(hello());
+    exchange();
+    _client.inbox.clear();
+    tick();
+    auto snapshots = _client.take<net::Snapshot>(net::MessageType::Snapshot);
+    ASSERT_EQ(1u, snapshots.size());
+    std::map<uint32_t, uint8_t> factions;
+    for (auto &record : snapshots[0].entities) {
+        if (record.fields & net::kFieldFaction) {
+            factions[record.state.id] = record.state.faction;
+        }
+    }
+    EXPECT_EQ(static_cast<uint8_t>(Faction::Player), factions[_player->id()]);
+    EXPECT_EQ(static_cast<uint8_t>(Faction::Friendly1), factions[_trask->id()]);
+    EXPECT_EQ(static_cast<uint8_t>(Faction::Hostile1), factions[_sith->id()]);
+    EXPECT_EQ(net::kNoFaction, factions.count(_door->id()) ? factions[_door->id()] : net::kNoFaction);
+
+    // A companion joining is the player faction to the reputation rules.
+    traskJoins();
+    _client.inbox.clear();
+    tick();
+    snapshots = _client.take<net::Snapshot>(net::MessageType::Snapshot);
+    ASSERT_EQ(1u, snapshots.size());
+    bool trask = false;
+    for (auto &record : snapshots[0].entities) {
+        if (record.state.id == _trask->id() && (record.fields & net::kFieldFaction)) {
+            trask = true;
+            EXPECT_EQ(static_cast<uint8_t>(Faction::Player), record.state.faction);
+        }
+    }
+    EXPECT_TRUE(trask);
+
+    // ChangeToStandardFaction mid-scene: only the faction goes.
+    _sith->setFaction(Faction::Hostile2);
+    _client.inbox.clear();
+    tick();
+    snapshots = _client.take<net::Snapshot>(net::MessageType::Snapshot);
+    ASSERT_EQ(1u, snapshots.size());
+    ASSERT_EQ(1u, snapshots[0].entities.size());
+    EXPECT_EQ(_sith->id(), snapshots[0].entities[0].state.id);
+    EXPECT_EQ(net::kFieldFaction, snapshots[0].entities[0].fields);
+    EXPECT_EQ(static_cast<uint8_t>(Faction::Hostile2), snapshots[0].entities[0].state.faction);
+}
+
+TEST_F(CoopSessionTest, the_reputation_table_goes_to_each_client_when_it_changes) {
+    auto &reputes = _engine.gameModule().reputes();
+    IReputes::State state;
+    state.factions.resize(3);
+    state.labels.resize(3);
+    state.values = {{100, 0, 50}, {0, 100, 50}, {50, 50, 100}};
+    ON_CALL(reputes, state()).WillByDefault(Invoke([&state]() { return state; }));
+    _client.send(hello());
+    exchange();
+    _client.inbox.clear();
+    tick();
+    auto tables = _client.take<net::ReputationTable>(net::MessageType::ReputationTable);
+    ASSERT_EQ(1u, tables.size());
+    ASSERT_EQ(3u, tables[0].values.size());
+    EXPECT_EQ(0, tables[0].values[0][1]);
+    EXPECT_EQ(50, tables[0].values[2][1]);
+
+    // Unchanged: nothing more.
+    _client.inbox.clear();
+    for (int i = 0; i < 12; ++i) {
+        tick();
+    }
+    EXPECT_TRUE(_client.take<net::ReputationTable>(net::MessageType::ReputationTable).empty());
+
+    // AdjustReputation on the host: the new table follows within a check period.
+    state.values[2][0] = 5;
+    _client.inbox.clear();
+    for (int i = 0; i < 12; ++i) {
+        tick();
+    }
+    tables = _client.take<net::ReputationTable>(net::MessageType::ReputationTable);
+    ASSERT_EQ(1u, tables.size());
+    EXPECT_EQ(5, tables[0].values[2][0]);
+}
+
+// Guest scenes (docs/guest_scenes.md)
+
+TEST_F(CoopFreeSessionTest, the_leader_s_scripted_jump_in_a_scene_takes_the_guest_along) {
+    join(sampleGuest());
+    tick();
+    auto guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    // k_pend_door18: fade to black, then jump the party into the next room.
+    _game->globalFade().request(GlobalFade::Direction::Out, 0.0f, 0.0f, glm::vec3(0.0f), GlobalFade::Source::Script);
+    _game->globalFade().update(0.0f);
+    glm::vec3 from = _player->position();
+    glm::vec3 to(40.0f, 20.0f, 0.0f);
+    _player->setPosition(to);
+    _session->onScriptedJump(*_player, from, to);
+    EXPECT_EQ(1u, _session->guestSceneJumps());
+    float distance = glm::distance(glm::vec2(guest->position()), glm::vec2(to));
+    EXPECT_LT(distance, 6.0f) << "beside the leader's destination";
+    EXPECT_GT(distance, 0.1f) << "on a free spot, not on the leader";
+    EXPECT_EQ(_player->getFacing(), guest->getFacing());
+}
+
+TEST_F(CoopFreeSessionTest, a_jump_soon_after_a_scene_s_fade_still_belongs_to_it) {
+    join(sampleGuest());
+    tick();
+    auto guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    _game->globalFade().request(GlobalFade::Direction::Out, 0.0f, 0.0f, glm::vec3(0.0f), GlobalFade::Source::Script);
+    _game->globalFade().update(0.0f);
+    tick(); // the scene is seen
+    _game->globalFade().request(GlobalFade::Direction::In, 0.0f, 0.0f, glm::vec3(0.0f), GlobalFade::Source::Script);
+    _game->globalFade().update(0.1f);
+    ASSERT_FALSE(_game->globalFade().fading());
+    ASSERT_EQ(0.0f, _game->globalFade().opacity());
+    tick();
+    guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    glm::vec3 to(40.0f, 20.0f, 0.0f);
+    glm::vec3 from = _player->position();
+    _player->setPosition(to);
+    _session->onScriptedJump(*_player, from, to);
+    EXPECT_EQ(1u, _session->guestSceneJumps());
+    EXPECT_LT(glm::distance(glm::vec2(guest->position()), glm::vec2(to)), 6.0f);
+}
+
+TEST_F(CoopFreeSessionTest, outside_a_scene_and_for_other_creatures_or_short_moves_guests_stay) {
+    join(sampleGuest());
+    tick();
+    auto guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    glm::vec3 where = guest->position();
+    // Free play: no fade, no conversation, a commandable leader.
+    glm::vec3 to(40.0f, 20.0f, 0.0f);
+    _session->onScriptedJump(*_player, _player->position(), to);
+    // In a scene, but a creature other than the leader, or a step in place.
+    _game->globalFade().request(GlobalFade::Direction::Out, 0.0f, 0.0f, glm::vec3(0.0f), GlobalFade::Source::Script);
+    _game->globalFade().update(0.0f);
+    _session->onScriptedJump(*_trask, _trask->position(), to);
+    _session->onScriptedJump(*_player, _player->position(), _player->position() + glm::vec3(1.0f, 0.0f, 0.0f));
+    EXPECT_EQ(0u, _session->guestSceneJumps());
+    EXPECT_EQ(where, guest->position());
+}
+
+// Co-op scenes (design note coop_playtest_1022 rows 9, 10, 11, 15, 16, 18, 19)
+
+void reone::game::TestGameModule::equipForTest(Creature &creature, int slot, const std::shared_ptr<Item> &item) {
+    creature._equipment[slot] = item;
+    item->setEquipped(true);
+    item->setOwner(creature.id());
+}
+
+namespace {
+
+class ScenesConversation : public Conversation {
+public:
+    ScenesConversation(Game &game, ServicesView &services) :
+        Conversation(game, services) {
+    }
+
+    /** As a running conversation stands for the session: its dialog and owner (no screen work). */
+    void start(const std::shared_ptr<Dialog> &dialog, const std::shared_ptr<Object> &owner) {
+        _dialog = dialog;
+        _owner = owner;
+        _currentEntry = &_dialog->entries[0];
+    }
+
+protected:
+    void setReplyLines(std::vector<std::string>) override {}
+    void setMessage(std::string) override {}
+};
+
+std::shared_ptr<Dialog> oneEntryDialog(const std::string &resRef) {
+    auto dialog = std::make_shared<Dialog>();
+    dialog->resRef = resRef;
+    Dialog::EntryReplyLink start;
+    start.index = 0;
+    dialog->startEntries.push_back(start);
+    dialog->entries.resize(1);
+    dialog->replies.resize(1);
+    dialog->entries[0].text = "[Throughout the game you will find upgradeable items.]";
+    dialog->entries[0].delay = 100;
+    Dialog::EntryReplyLink reply;
+    reply.index = 0;
+    dialog->entries[0].replies.push_back(reply);
+    dialog->replies[0].text = "[Use the workbench now.]";
+    return dialog;
+}
+
+// The session is the game's for the test's length (creature and trigger code reach it through Game).
+struct SessionOnGame {
+    Game &game;
+    SessionOnGame(Game &game, std::shared_ptr<CoopSession> session) :
+        game(game) {
+        game.setCoopSession(std::move(session));
+    }
+    ~SessionOnGame() { game.setCoopSession(nullptr); }
+};
+
+// ExecuteScript("inner", ...): the literal is pushed just before the call.
+std::shared_ptr<script::ScriptProgram> scriptExecuting(Game &game, const std::string &name, const std::string &inner) {
+    auto program = std::make_shared<script::ScriptProgram>(name);
+    program->add(script::Instruction::newCONSTS(inner));
+    program->add(script::Instruction::newACTION(game.routines().getIndexByName("ExecuteScript"), 1));
+    return program;
+}
+
+} // namespace
+
+// Row 15: a workbench's own talk is the host's personal screen.
+TEST_F(CoopStandInSessionTest, a_workbench_s_own_talk_on_the_host_leaves_the_stand_in_where_it_is_and_free_to_move) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    auto bench = _game->newPlaceable();
+    bench->setTag("Workbench");
+    bench->setUsable(true);
+    bench->setOnUsed("scenes_wb_used");
+    bench->setConversation("scenes_wb_talk");
+    bench->setPosition(glm::vec3(1.0f, 1.0f, 0.0f));
+    _area->add(bench);
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_wb_used"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_wb_used", "ShowUpgradeScreen")));
+    join();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    auto standIn = _game->getObjectById<Creature>(id);
+    standIn->setPosition(glm::vec3(7.0f, -4.0f, 0.0f)); // walking about the apartment
+    glm::vec3 where = standIn->position();
+
+    ScenesConversation talk(*_game, _engine.services());
+    talk.start(oneEntryDialog("scenes_wb_talk"), bench);
+    TestGameModule::setConversation(*_game, &talk);
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    EXPECT_TRUE(coopPersonalConversation(*_game));
+    _client.inbox.clear();
+    tick();
+    tick();
+    EXPECT_EQ(id, standInId()) << "the stand-in is not removed for the host's bench";
+    EXPECT_EQ(where, standIn->position()) << "nor moved";
+    auto status = _session->statusJson().at("standIns").as_object();
+    EXPECT_EQ("", std::string(status.at("pause").as_string()));
+    EXPECT_FALSE(status.at("sharedScene").as_bool());
+    for (const auto &snapshot : _client.take<net::Snapshot>(net::MessageType::Snapshot)) {
+        if (snapshot.worldFields & net::kWorldConversation) {
+            EXPECT_FALSE(snapshot.world.conversation.active) << "the talk stays on the host's screen";
+        }
+        if (snapshot.worldFields & net::kWorldScreen) {
+            EXPECT_EQ(static_cast<uint8_t>(Game::Screen::InGame), snapshot.world.screen);
+        }
+    }
+    // Nor frozen: its player's orders are taken.
+    net::Command move;
+    move.seq = 77;
+    move.type = net::CommandType::MoveTo;
+    move.actor = id;
+    move.point = {6.0f, -3.0f, 0.0f};
+    _client.send(move);
+    _session->pollNetwork();
+    _client.inbox.clear();
+    tick();
+    auto results = _client.take<net::CommandResult>(net::MessageType::CommandResult);
+    ASSERT_FALSE(results.empty());
+    EXPECT_TRUE(results.back().accepted) << net::commandRejectName(results.back().reason);
+
+    // A story conversation is a shared scene: the stand-in leaves for it, as before.
+    talk.start(oneEntryDialog("scenes_npc_talk"), _trask);
+    EXPECT_FALSE(coopPersonalConversation(*_game));
+    tick();
+    EXPECT_EQ(0u, standInId());
+    EXPECT_EQ("conversation", std::string(_session->statusJson().at("standIns").as_object().at("pause").as_string()));
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    TestGameModule::setConversation(*_game, nullptr);
+}
+
+// Rows 15 and 16, Free Mode: a guest's bench stays open while the host talks at the same bench and upgrades.
+TEST_F(CoopFreeSessionTest, a_guest_at_a_bench_stays_while_the_host_uses_the_same_bench) {
+    auto bench = _game->newPlaceable();
+    bench->setTag("Workbench");
+    bench->setUsable(true);
+    bench->setOnUsed("scenes_free_wb");
+    bench->setConversation("scenes_free_wb_talk");
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_free_wb"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_free_wb", "ShowUpgradeScreen")));
+    join(sampleGuest());
+    tick();
+    uint32_t id = guestId();
+    auto guest = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(guest);
+    bench->setPosition(guest->position());
+    _area->add(bench);
+    auto ticks = [this]() {
+        tick();
+        tick();
+        tick();
+    };
+    ASSERT_EQ(net::CommandReject::None, guestCommand(*_session, _client, id, net::CommandType::UseObject, bench->id(), 0, "", ticks));
+    std::vector<net::BenchView> views;
+    for (int i = 0; i < 5 && views.empty(); ++i) {
+        guest->update(0.1f);
+        tick();
+        views = _client.take<net::BenchView>(net::MessageType::BenchView);
+    }
+    ASSERT_FALSE(views.empty());
+    ASSERT_TRUE(views.back().open);
+
+    // The host uses the same bench: its tutorial talk, then its own upgrade screen.
+    ScenesConversation talk(*_game, _engine.services());
+    talk.start(oneEntryDialog("scenes_free_wb_talk"), bench);
+    TestGameModule::setConversation(*_game, &talk);
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    _client.inbox.clear();
+    for (int i = 0; i < 4; ++i) {
+        tick();
+    }
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Upgrade));
+    for (int i = 0; i < 4; ++i) {
+        tick();
+    }
+    EXPECT_EQ(id, guestId()) << "the guest's character stays in the world";
+    for (const auto &view : _client.take<net::BenchView>(net::MessageType::BenchView)) {
+        EXPECT_TRUE(view.open) << "nothing closes the guest's own bench";
+    }
+    std::string wearer;
+    for (const auto &[slot, item] : guest->equipment()) {
+        if (item) {
+            EXPECT_FALSE(_session->hostItemWornByGuest(item->id(), wearer)) << "Free Mode: the host's bench never shares a guest's items";
+        }
+    }
+    EXPECT_EQ(net::CommandReject::None, guestCommand(*_session, _client, id, net::CommandType::BenchClose, bench->id(), 0, "", ticks));
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    TestGameModule::setConversation(*_game, nullptr);
+}
+
+// Row 16, Story Mode: the inventory is shared, what another player wears is not.
+TEST_F(CoopStandInSessionTest, a_story_mode_bench_refuses_an_item_another_player_has_equipped) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    auto bench = _game->newPlaceable();
+    bench->setTag("workbench");
+    bench->setUsable(true);
+    bench->setOnUsed("scenes_story_wb");
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_story_wb"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_story_wb", "ShowUpgradeScreen")));
+    auto hostsBlaster = _game->newItem();
+    TestGameModule::equipForTest(*_player, InventorySlots::rightWeapon, hostsBlaster);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    bench->setPosition(standIn->position());
+    _area->add(bench);
+    auto run = [&](net::CommandType type, int32_t param, const std::string &item) {
+        return guestCommand(*_session, _client, id, type, bench->id(), param, item, [this]() {
+            tick();
+            tick();
+            tick();
+        });
+    };
+    ASSERT_EQ(net::CommandReject::None, run(net::CommandType::UseObject, 0, ""));
+    for (int i = 0; i < 5; ++i) {
+        standIn->update(0.1f);
+        tick();
+    }
+    EXPECT_EQ(net::CommandReject::ItemEquippedByPlayer, run(net::CommandType::BenchUpgrade, static_cast<int32_t>(hostsBlaster->id()), "5"))
+        << "the host is holding that blaster";
+    EXPECT_EQ(net::CommandReject::ItemEquippedByPlayer, run(net::CommandType::BenchRemove, static_cast<int32_t>(hostsBlaster->id()), "0"));
+    EXPECT_EQ("Another player has that equipped", GuestBenchScreen::rejectionText(net::CommandReject::ItemEquippedByPlayer));
+    // Something nobody wears is the bench's usual business (here: no such item).
+    EXPECT_EQ(net::CommandReject::ItemUnavailable, run(net::CommandType::BenchUpgrade, 424242, "5"));
+
+    // The host's own bench: a companion a guest plays is that guest's to change.
+    std::string wearer;
+    EXPECT_FALSE(_session->hostItemWornByGuest(hostsBlaster->id(), wearer)) << "the host's own blaster is the host's";
+    auto traskBlaster = _game->newItem();
+    TestGameModule::equipForTest(*_trask, InventorySlots::rightWeapon, traskBlaster);
+    traskJoins();
+    tick();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    EXPECT_TRUE(_session->hostItemWornByGuest(traskBlaster->id(), wearer));
+    EXPECT_EQ("Guest", wearer);
+}
+
+// Row 9: back where it stood after a conversation, unless the scene moved the party.
+TEST_F(CoopStandInSessionTest, after_a_conversation_the_stand_in_comes_back_where_it_stood) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    join();
+    tick();
+    uint32_t first = standInId();
+    ASSERT_NE(0u, first);
+    _game->getObjectById<Creature>(first)->setPosition(glm::vec3(17.0f, 9.0f, 0.0f)); // 19 m from the host
+    _game->getObjectById<Creature>(first)->setFacing(1.25f);
+
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    ASSERT_EQ(0u, standInId());
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    tick();
+    auto back = _game->getObjectById<Creature>(standInId());
+    ASSERT_TRUE(back);
+    EXPECT_LT(glm::distance(glm::vec2(back->position()), glm::vec2(17.0f, 9.0f)), 1.0f) << "not yanked to the host";
+    EXPECT_FLOAT_EQ(1.25f, back->getFacing());
+    EXPECT_EQ(1u, _session->statusJson().at("standIns").as_object().at("returned").to_number<uint64_t>());
+
+    // A cutscene that moves the party: the stand-in goes with the host's character.
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    _player->setPosition(glm::vec3(60.0f, 40.0f, 0.0f));
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    tick();
+    back = _game->getObjectById<Creature>(standInId());
+    ASSERT_TRUE(back);
+    EXPECT_LT(glm::distance(back->position(), _player->position()), 4.0f);
+}
+
+TEST_F(CoopFreeSessionTest, after_a_conversation_a_guest_comes_back_where_it_stood) {
+    join(sampleGuest());
+    tick();
+    auto guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    guest->setPosition(glm::vec3(-12.0f, 30.0f, 0.0f));
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    ASSERT_EQ(0u, guestId());
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    tick();
+    guest = _game->getObjectById<Creature>(guestId());
+    ASSERT_TRUE(guest);
+    EXPECT_LT(glm::distance(glm::vec2(guest->position()), glm::vec2(-12.0f, 30.0f)), 1.0f);
+}
+
+// Row 18: auto-combat on a player's character acts only in a fight.
+TEST_F(CoopStandInSessionTest, auto_combat_on_a_player_s_character_does_nothing_out_of_combat_and_shows_on_its_hud) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    SessionOnGame on(*_game, _session);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    ASSERT_TRUE(_session->isPlayerControlled(id));
+    standIn->setOnEndRound("scenes_round");
+    // Out of combat the round script is never even looked up.
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_round")).Times(0);
+    glm::vec3 where = standIn->position();
+    auto ticks = [this]() { tick(); };
+    EXPECT_EQ(net::CommandReject::None, guestCommand(*_session, _client, id, net::CommandType::AutoCombat, 0, 1, "", ticks));
+    ASSERT_TRUE(standIn->autoCombat());
+    for (int i = 0; i < 40; ++i) {
+        standIn->update(0.1f);
+    }
+    EXPECT_TRUE(standIn->actions().empty()) << "no follow, no wandering";
+    EXPECT_EQ(where, standIn->position());
+
+    // The guest's HUD toggle reads the host's word.
+    auto state = CoopReplication::capture(*standIn, "");
+    EXPECT_NE(0, state.flags & net::kFlagAutoCombat);
+    auto copy = _game->newCreature();
+    CoopReplication::apply(*_game, *copy, state, net::kFieldFlags);
+    EXPECT_TRUE(copy->autoCombat());
+    state.flags &= ~net::kFlagAutoCombat;
+    CoopReplication::apply(*_game, *copy, state, net::kFieldFlags);
+    EXPECT_FALSE(copy->autoCombat());
+}
+
+// Row 19: only the host's character starts scripted conversations and cutscenes.
+TEST_F(CoopNetTest, scripts_that_start_a_conversation_or_a_cutscene_are_told_apart) {
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_talks"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_talks", "ActionStartConversation")));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_movie"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_movie", "PlayMovie")));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_outer"))
+        .WillRepeatedly(Return(scriptExecuting(*_game, "scenes_outer", "scenes_talks")));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_locks"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_locks", "SetLocked")));
+    EXPECT_TRUE(coopScriptStartsScene(*_game, "scenes_talks"));
+    EXPECT_TRUE(coopScriptStartsScene(*_game, "scenes_movie"));
+    EXPECT_TRUE(coopScriptStartsScene(*_game, "scenes_outer")) << "through ExecuteScript";
+    EXPECT_FALSE(coopScriptStartsScene(*_game, "scenes_locks"));
+    EXPECT_FALSE(coopScriptStartsScene(*_game, "scenes_missing"));
+    EXPECT_FALSE(coopScriptStartsScene(*_game, ""));
+}
+
+TEST_F(CoopStandInSessionTest, a_guest_walking_into_a_conversation_trigger_does_not_start_it_the_host_does) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    SessionOnGame on(*_game, _session);
+    join();
+    tick();
+    uint32_t id = standInId();
+    auto standIn = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(standIn);
+    // k_ptar_carstr_en: Carth talks to whoever GetIsPC says walked in.
+    int fetched = 0;
+    auto program = scriptCalling(*_game, "scenes_carstr", "ActionStartConversation");
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_carstr")).WillRepeatedly(Invoke([&](const std::string &) {
+        // The first fetch is the scan; the runs that follow find nothing to execute here.
+        return ++fetched == 1 ? program : std::shared_ptr<script::ScriptProgram>();
+    }));
+    ASSERT_TRUE(coopScriptStartsScene(*_game, "scenes_carstr"));
+    ASSERT_EQ(1, fetched);
+    auto trigger = _game->newTrigger();
+    trigger->setTag("tar02_carstr");
+    trigger->setOnEnter("scenes_carstr");
+    trigger->setOnClick("scenes_carstr");
+    _area->add(trigger);
+
+    EXPECT_TRUE(_session->hostHoldsScene(id, "scenes_carstr"));
+    trigger->addTenant(standIn);
+    EXPECT_EQ(1, fetched) << "the guest's stand-in does not run the scene's script";
+    trigger->runClickScript(id);
+    EXPECT_EQ(1, fetched) << "nor by clicking it";
+    EXPECT_FALSE(_session->hostHoldsScene(_player->id(), "scenes_carstr"));
+    trigger->addTenant(_player);
+    EXPECT_EQ(2, fetched) << "the host's character does";
+    EXPECT_FALSE(_session->hostHoldsScene(id, "")) << "no script, nothing to hold";
+    EXPECT_TRUE(_session->statusJson().at("options").as_object().at("hostOnlyScenes").as_bool());
+}
+
+TEST_F(CoopStandInSessionTest, with_host_only_scenes_off_a_guest_starts_trigger_scenes_as_before) {
+    _player->setMaxHitPoints(30);
+    _player->setCurrentHitPoints(30);
+    auto [host, client] = net::createLoopbackPair();
+    _session.reset();
+    _client = RawClient();
+    _client.transport = std::move(client);
+    CoopConfig config;
+    config.role = CoopRole::Host;
+    config.build = "build-A";
+    config.k1 = {true, 1, 2, 3};
+    config.hostOnlyScenes = false;
+    _session = std::make_shared<CoopSession>(*_game, config, std::move(host));
+    _session->pollNetwork();
+    _client.poll();
+    join();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_carstr_off"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_carstr_off", "ActionStartConversation")));
+    EXPECT_FALSE(_session->hostHoldsScene(id, "scenes_carstr_off"));
+}
+
+// Row 11: a module's opening conversation waits for guests still loading it.
+TEST_F(CoopSessionTest, a_conversation_right_after_a_load_waits_for_a_guest_still_loading) {
+    SessionOnGame on(*_game, _session);
+    _client.autoAck = false; // the guest is still loading: it acknowledges nothing
+    _client.send(hello());
+    exchange();
+    tick();
+    ASSERT_FALSE(moduleGenerations(_client).empty());
+    auto npc = addCreature("carth", glm::vec3(1.0f, 0.0f, 0.0f), Faction::Friendly1);
+    EXPECT_CALL(_engine.resourceModule().gffs(), get("scenes_wake", ResType::Dlg)).Times(0);
+    _game->startDialog(npc, "scenes_wake");
+    EXPECT_TRUE(_session->conversationHeld());
+    EXPECT_EQ(Game::Screen::InGame, _game->currentScreen()) << "not started yet";
+    auto status = _session->statusJson().at("standIns").as_object();
+    EXPECT_EQ("scenes_wake", std::string(status.at("heldConversation").as_string()));
+    tick();
+    tick();
+    EXPECT_TRUE(_session->conversationHeld()) << "still loading";
+    Mock::VerifyAndClearExpectations(&_engine.resourceModule().gffs());
+
+    // The guest's first state arrives: the conversation starts (its file is missing here, so it ends there).
+    auto snapshots = _client.take<net::Snapshot>(net::MessageType::Snapshot);
+    ASSERT_FALSE(snapshots.empty());
+    EXPECT_CALL(_engine.resourceModule().gffs(), get("scenes_wake", ResType::Dlg)).Times(1);
+    net::SnapshotAck ack {snapshots.back().generation, snapshots.back().tick};
+    _client.transport->send(_client.connection, net::encode(ack), net::SendMode::Unreliable);
+    tick();
+    tick();
+    EXPECT_FALSE(_session->conversationHeld());
+    EXPECT_EQ(1u, _session->statusJson().at("standIns").as_object().at("conversationsHeld").to_number<uint64_t>());
+
+    // Once everyone has loaded, conversations start at once.
+    EXPECT_CALL(_engine.resourceModule().gffs(), get("scenes_later", ResType::Dlg)).Times(1);
+    _game->startDialog(npc, "scenes_later");
+    EXPECT_FALSE(_session->conversationHeld());
+}
+
+// Row 10: a late-loading guest gets each clip at the host's time now.
+TEST(CoopAnimationTest, a_clip_goes_at_the_host_s_time_while_the_client_has_no_base_and_on_drift_after) {
+    net::EntityState sent;
+    sent.anim = "talk_normal";
+    sent.animTime = 0.0f;
+    sent.animSpeed = 1.0f;
+    sent.animSentTick = 100;
+    net::EntityState now = sent;
+    now.animTime = 2.0f; // 60 ticks later at 30 Hz: where the client will have run it too
+    float dt = 1.0f / 30.0f;
+    EXPECT_FALSE(CoopReplication::animationDue(sent, now, 160, dt, false)) << "a client with a base runs the clip on itself";
+    EXPECT_TRUE(CoopReplication::animationDue(sent, now, 160, dt, true))
+        << "a loading client's full state carries the host's time now, not the time first sent";
+    now.animTime = 0.5f; // the host restarted or slowed it
+    EXPECT_TRUE(CoopReplication::animationDue(sent, now, 160, dt, false));
+    net::EntityState still;
+    EXPECT_FALSE(CoopReplication::animationDue(still, still, 160, dt, true)) << "no clip, nothing to send";
+}
+
+// Better stand-ins (design note companion_standins): a copy of a companion
+// who fits, else John Shepard, and the copy rules.
+
+namespace {
+
+std::shared_ptr<resource::TwoDA> standInTable(const std::vector<std::string> &columns, const std::vector<std::vector<std::string>> &rows) {
+    resource::TwoDA::Builder builder;
+    builder.columns(columns);
+    for (const auto &row : rows) {
+        builder.row(row);
+    }
+    return std::shared_ptr<resource::TwoDA>(builder.build());
+}
+
+std::shared_ptr<resource::Gff> missionTemplate() {
+    using resource::Gff;
+    auto pistol = Gff::Builder().type(16).field(Gff::Field::newResRef("EquippedRes", "g_w_blstrpstl001")).build();
+    auto blade = Gff::Builder().type(0).field(Gff::Field::newResRef("InventoryRes", "g_w_vbroshort08")).build();
+    auto scoundrel = Gff::Builder().type(2).field(Gff::Field::newInt("Class", 2)).field(Gff::Field::newShort("ClassLevel", 3)).build();
+    return Gff::Builder()
+        .field(Gff::Field::newCExoLocString("FirstName", -1, "Mission"))
+        .field(Gff::Field::newCExoString("Tag", "Mission"))
+        .field(Gff::Field::newWord("Appearance_Type", 10))
+        .field(Gff::Field::newByte("Gender", 1))
+        .field(Gff::Field::newWord("PortraitId", 35))
+        .field(Gff::Field::newResRef("Conversation", "k_hmis_dialog"))
+        .field(Gff::Field::newResRef("ScriptHeartbeat", "k_hen_heartbt01"))
+        .field(Gff::Field::newResRef("ScriptSpawn", "k_hen_spawn01"))
+        .field(Gff::Field::newByte("Plot", 1))
+        .field(Gff::Field::newShort("HitPoints", 18))
+        .field(Gff::Field::newShort("MaxHitPoints", 21))
+        .field(Gff::Field::newShort("CurrentHitPoints", 21))
+        .field(Gff::Field::newList("ClassList", {scoundrel}))
+        .field(Gff::Field::newList("Equip_ItemList", {pistol}))
+        .field(Gff::Field::newList("ItemList", {blade}))
+        .build();
+}
+
+std::shared_ptr<resource::Gff> itemTemplate(int baseItem, const std::string &tag) {
+    using resource::Gff;
+    return Gff::Builder()
+        .field(Gff::Field::newInt("BaseItem", baseItem))
+        .field(Gff::Field::newCExoString("Tag", tag))
+        .field(Gff::Field::newResRef("TemplateResRef", tag))
+        .field(Gff::Field::newByte("Dropable", 1))
+        .build();
+}
+
+} // namespace
+
+class CoopCastSessionTest : public CoopStandInSessionTest {
+protected:
+    void SetUp() override {
+        CoopStandInSessionTest::SetUp();
+        auto &gffs = _engine.resourceModule().gffs();
+        ON_CALL(gffs, get(_, _)).WillByDefault(Return(std::shared_ptr<resource::Gff>()));
+        ON_CALL(gffs, get("p_mission", resource::ResType::Utc)).WillByDefault(Return(missionTemplate()));
+        ON_CALL(gffs, get("g_w_blstrpstl001", resource::ResType::Uti)).WillByDefault(Return(itemTemplate(12, "g_w_blstrpstl001")));
+        ON_CALL(gffs, get("g_w_vbroshort08", resource::ResType::Uti)).WillByDefault(Return(itemTemplate(5, "g_w_vbroshort08")));
+        // Blaster pistols and vibroblades go in either hand (baseitems.2da equipableslots 0x30).
+        std::vector<std::vector<std::string>> rows(13, std::vector<std::string> {"0"});
+        rows[5] = {"48"};
+        rows[12] = {"48"};
+        auto &twoDas = _engine.resourceModule().twoDas();
+        ON_CALL(twoDas, get("baseitems")).WillByDefault(Return(standInTable({"equipableslots"}, rows)));
+    }
+
+    void enterModule(const std::string &name) {
+        auto ifo = resource::Gff::Builder()
+                       .field(resource::Gff::Field::newCExoLocString("Mod_Name", -1, name))
+                       .field(resource::Gff::Field::newResRef("Mod_Entry_Area", "entryarea"))
+                       .build();
+        TestGameModule::loadModuleInfo(*_game->module(), name, *ifo);
+    }
+
+    boost::json::object cast() const {
+        return _session->statusJson().at("clients").as_array().at(0).as_object().at("cast").as_object();
+    }
+};
+
+TEST_F(CoopCastSessionTest, on_taris_a_guest_with_no_companion_plays_a_copy_of_one_who_fits) {
+    enterModule("tar_m02aa");
+    join();
+    _client.inbox.clear();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id) << boost::json::serialize(_session->statusJson());
+    auto copy = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(copy);
+    auto status = cast();
+    EXPECT_EQ("copy", status.at("kind").as_string());
+    EXPECT_EQ("Mission", status.at("name").as_string());
+    EXPECT_EQ(6, status.at("npc").to_number<int>());
+    EXPECT_NE(std::string::npos, std::string(status.at("reason").as_string()).find("Taris")) << boost::json::serialize(status);
+
+    // Its own name, the guest's name on the tag; a puppet outside the party with nothing of the story.
+    EXPECT_EQ("Mission", copy->name());
+    EXPECT_EQ(0u, copy->tag().find("coop_standin_"));
+    EXPECT_TRUE(copy->isPuppet());
+    EXPECT_FALSE(_game->party().isMember(*copy));
+    EXPECT_EQ(1, _game->party().getSize());
+    EXPECT_TRUE(copy->conversation().empty()) << "no companion dialogue: no plot globals, no influence";
+    EXPECT_FALSE(copy->plotFlag());
+    EXPECT_EQ(Faction::Player, copy->faction());
+    EXPECT_EQ(10, copy->appearance());
+    bool labelled = false;
+    for (const auto &presence : _session->presences()) {
+        if (presence.object == copy) {
+            labelled = true;
+            EXPECT_EQ("Mission (Guest)", presence.name);
+        }
+    }
+    EXPECT_TRUE(labelled);
+
+    // The template's gear, worn; nothing carried (the vibroblade in its pack never comes).
+    auto pistol = copy->getEquippedItem(InventorySlots::rightWeapon);
+    ASSERT_TRUE(pistol);
+    EXPECT_EQ("g_w_blstrpstl001", pistol->blueprintResRef());
+    EXPECT_FALSE(pistol->isDropable()) << "never loot";
+    EXPECT_TRUE(copy->items().empty());
+    EXPECT_TRUE(_session->isStandInItem(pistol->id()));
+    EXPECT_FALSE(_session->isStandInItem(_player->id()));
+    for (const auto &item : _player->items()) {
+        EXPECT_NE(pistol, item) << "never the party's";
+    }
+
+    // The client builds it from the same template.
+    bool sent = false;
+    for (const auto &snapshot : _client.take<net::Snapshot>(net::MessageType::Snapshot)) {
+        for (const auto &record : snapshot.entities) {
+            if (record.state.id == id && !record.state.resref.empty()) {
+                sent = true;
+                EXPECT_NE(std::string::npos, record.state.resref.find(":p_mission"));
+            }
+        }
+    }
+    EXPECT_TRUE(sent);
+}
+
+TEST_F(CoopCastSessionTest, the_copy_keeps_its_identity_across_a_conversation_and_its_gear_goes_with_it) {
+    enterModule("tar_m02aa");
+    join();
+    tick();
+    uint32_t first = standInId();
+    ASSERT_NE(0u, first);
+    auto pistol = _game->getObjectById<Creature>(first)->getEquippedItem(InventorySlots::rightWeapon);
+    ASSERT_TRUE(pistol);
+    uint32_t pistolId = pistol->id();
+    pistol.reset();
+
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::Conversation));
+    tick();
+    EXPECT_EQ(0u, standInId());
+    EXPECT_FALSE(_game->getObjectById<Item>(pistolId)) << "destroyed with it: nothing to duplicate";
+
+    TestGameModule::setCurrentScreen(*_game, static_cast<int>(Game::Screen::InGame));
+    tick();
+    uint32_t second = standInId();
+    ASSERT_NE(0u, second);
+    EXPECT_EQ("Mission", _game->getObjectById<Creature>(second)->name()) << "the same character comes back";
+    EXPECT_EQ("Mission", cast().at("name").as_string());
+}
+
+TEST_F(CoopCastSessionTest, a_companion_present_in_the_module_is_never_copied) {
+    enterModule("tar_m04aa");
+    addCreature("tar04_mission", glm::vec3(30.0f, 0.0f, 0.0f), Faction::Friendly1);
+    join();
+    tick();
+    auto status = cast();
+    EXPECT_EQ(8, status.at("npc").to_number<int>()) << boost::json::serialize(status) << " (Zaalbar is next)";
+    bool skippedMission = false;
+    for (const auto &entry : status.at("skipped").as_array()) {
+        skippedMission = skippedMission || std::string(entry.as_string()).find("Mission is in this module") == 0;
+    }
+    EXPECT_TRUE(skippedMission);
+    // This test's install has no Zaalbar template: the build falls back, and says so.
+    EXPECT_EQ("clone", status.at("kind").as_string());
+    EXPECT_NE(std::string::npos, std::string(status.at("reason").as_string()).find("build failed"));
+    EXPECT_NE(0u, standInId()) << "the guest still plays";
+}
+
+TEST_F(CoopCastSessionTest, a_free_companion_is_reported_as_the_real_one) {
+    enterModule("tar_m02aa");
+    traskJoins();
+    join();
+    tick();
+    EXPECT_EQ("companion", cast().at("kind").as_string());
+    EXPECT_EQ(0u, standInId());
+}
+
+TEST_F(CoopCastSessionTest, the_endar_spire_has_john_shepard_and_the_wire_names_him) {
+    enterModule("end_m01aa");
+    // A soldier class for him to be (classes.2da row 0).
+    auto &twoDas = _engine.resourceModule().twoDas();
+    const std::vector<std::string> columns = {"name", "description", "hitdie", "skillpointbase", "str", "dex", "con", "int", "wis", "cha",
+                                              "skillstable", "savingthrowtable", "attackbonustable", "featstable", "featgain", "spellgaintable", "forcedie", "spellcaster"};
+    std::vector<std::vector<std::string>> classRows(9, std::vector<std::string>(columns.size()));
+    classRows[0] = {"1", "2", "10", "2", "16", "14", "14", "10", "12", "10", "sol", "save", "attack", "sol", "", "", "0", "0"};
+    ON_CALL(twoDas, get("classes")).WillByDefault(Return(standInTable(columns, classRows)));
+    ON_CALL(twoDas, get("skills")).WillByDefault(Return(standInTable({"label", "sol_class", "sol_reco"}, {{"computeruse", "0", ""}})));
+    ON_CALL(twoDas, get("save")).WillByDefault(Return(standInTable({"level", "fortsave", "refsave", "willsave"}, {{"1", "0", "0", "0"}})));
+    ON_CALL(twoDas, get("attack")).WillByDefault(Return(standInTable({"bab"}, {{"0"}})));
+    auto classes = std::make_shared<Classes>(_engine.resourceModule().strings(), twoDas);
+    ON_CALL(_engine.gameModule().classes(), get(_)).WillByDefault(Invoke([classes](ClassType type) { return classes->get(type); }));
+    join();
+    _client.inbox.clear();
+    tick();
+    uint32_t id = standInId();
+    ASSERT_NE(0u, id);
+    auto shepard = _game->getObjectById<Creature>(id);
+    ASSERT_TRUE(shepard);
+    auto status = cast();
+    EXPECT_EQ("generic", status.at("kind").as_string()) << boost::json::serialize(status);
+    EXPECT_EQ("Republic soldier", status.at("name").as_string());
+    EXPECT_EQ("John Shepard", shepard->name());
+    EXPECT_EQ(coopShepard().appearance, shepard->appearance());
+    EXPECT_EQ(coopShepard().portrait, shepard->portraitId());
+    EXPECT_TRUE(shepard->isPuppet());
+    EXPECT_FALSE(_game->party().isMember(*shepard));
+    bool sent = false;
+    for (const auto &snapshot : _client.take<net::Snapshot>(net::MessageType::Snapshot)) {
+        for (const auto &record : snapshot.entities) {
+            if (record.state.id == id && !record.state.resref.empty()) {
+                sent = true;
+                EXPECT_NE(std::string::npos, record.state.resref.find(":coop_shepard"));
+            }
+        }
+    }
+    EXPECT_TRUE(sent);
+}
+
+TEST_F(CoopCastSessionTest, a_shepard_cameo_goes_to_guests_as_an_ownerless_stand_in_and_cannot_be_targeted) {
+    enterModule("tar_m02af");
+    auto &twoDas = _engine.resourceModule().twoDas();
+    const std::vector<std::string> columns = {"name", "description", "hitdie", "skillpointbase", "str", "dex", "con", "int", "wis", "cha",
+                                              "skillstable", "savingthrowtable", "attackbonustable", "featstable", "featgain", "spellgaintable", "forcedie", "spellcaster"};
+    std::vector<std::vector<std::string>> classRows(9, {"1", "2", "10", "2", "16", "14", "14", "10", "12", "10", "sol", "save", "attack", "sol", "", "", "0", "0"});
+    ON_CALL(twoDas, get("classes")).WillByDefault(Return(standInTable(columns, classRows)));
+    ON_CALL(twoDas, get("skills")).WillByDefault(Return(standInTable({"label", "sol_class", "sol_reco"}, {{"computeruse", "0", ""}})));
+    ON_CALL(twoDas, get("save")).WillByDefault(Return(standInTable({"level", "fortsave", "refsave", "willsave"}, {{"1", "0", "0", "0"}})));
+    ON_CALL(twoDas, get("attack")).WillByDefault(Return(standInTable({"bab"}, {{"0"}})));
+    auto classes = std::make_shared<Classes>(_engine.resourceModule().strings(), twoDas);
+    ON_CALL(_engine.gameModule().classes(), get(_)).WillByDefault(Invoke([classes](ClassType type) { return classes->get(type); }));
+    join();
+    tick();
+    _client.inbox.clear();
+    _game->setCoopSession(_session); // the director finds the session through the game
+    _game->cameos().lenient = true;
+    _game->cameos().update(*_game);
+    tick();
+    uint32_t cameoId = 0;
+    for (const auto &object : _game->module()->area()->getObjectsByType(ObjectType::Creature)) {
+        if (std::static_pointer_cast<Creature>(object)->isCameo()) {
+            cameoId = object->id();
+        }
+    }
+    ASSERT_NE(0u, cameoId);
+    EXPECT_TRUE(_session->isStandIn(cameoId)) << "the host's targeting and bench rules treat him as a stand-in";
+    EXPECT_NE(cameoId, standInId()) << "no guest owns him";
+    bool sent = false;
+    for (const auto &snapshot : _client.take<net::Snapshot>(net::MessageType::Snapshot)) {
+        for (const auto &record : snapshot.entities) {
+            if (record.state.id == cameoId && !record.state.resref.empty()) {
+                sent = true;
+                EXPECT_NE(std::string::npos, record.state.resref.find(std::string(":") + kCoopCameoTemplate)) << record.state.resref;
+                EXPECT_EQ(std::string(kCameoTag), record.state.tag);
+                EXPECT_TRUE(record.state.look.playerName.empty()) << "no name tag: nobody plays him";
+            }
+        }
+    }
+    EXPECT_TRUE(sent);
+    // Gone: the wire forgets him too.
+    _engine.options().game.cameos = false;
+    _game->cameos().update(*_game);
+    EXPECT_FALSE(_session->isStandIn(cameoId));
+    _game->setCoopSession(nullptr);
+}
+
+TEST_F(CoopCastSessionTest, the_cameo_yields_where_a_guest_plays_john_shepard) {
+    enterModule("end_m01aa");
+    auto &twoDas = _engine.resourceModule().twoDas();
+    const std::vector<std::string> columns = {"name", "description", "hitdie", "skillpointbase", "str", "dex", "con", "int", "wis", "cha",
+                                              "skillstable", "savingthrowtable", "attackbonustable", "featstable", "featgain", "spellgaintable", "forcedie", "spellcaster"};
+    std::vector<std::vector<std::string>> classRows(9, {"1", "2", "10", "2", "16", "14", "14", "10", "12", "10", "sol", "save", "attack", "sol", "", "", "0", "0"});
+    ON_CALL(twoDas, get("classes")).WillByDefault(Return(standInTable(columns, classRows)));
+    ON_CALL(twoDas, get("skills")).WillByDefault(Return(standInTable({"label", "sol_class", "sol_reco"}, {{"computeruse", "0", ""}})));
+    ON_CALL(twoDas, get("save")).WillByDefault(Return(standInTable({"level", "fortsave", "refsave", "willsave"}, {{"1", "0", "0", "0"}})));
+    ON_CALL(twoDas, get("attack")).WillByDefault(Return(standInTable({"bab"}, {{"0"}})));
+    auto classes = std::make_shared<Classes>(_engine.resourceModule().strings(), twoDas);
+    ON_CALL(_engine.gameModule().classes(), get(_)).WillByDefault(Invoke([classes](ClassType type) { return classes->get(type); }));
+    EXPECT_FALSE(_session->hostGuestPlaysShepard("end_m01aa")) << "nobody has joined";
+    join();
+    tick();
+    ASSERT_EQ("generic", cast().at("kind").as_string());
+    EXPECT_TRUE(_session->hostGuestPlaysShepard("end_m01aa"));
+    EXPECT_TRUE(_session->hostGuestPlaysShepard("END_M01AA")) << "whatever the case";
+    EXPECT_FALSE(_session->hostGuestPlaysShepard("tar_m02af")) << "another module";
+}
+
+TEST_F(CoopCastSessionTest, auto_level_up_levels_party_companions_but_not_the_player_character) {
+    auto &twoDas = _engine.resourceModule().twoDas();
+    const std::vector<std::string> columns = {"name", "description", "hitdie", "skillpointbase", "str", "dex", "con", "int", "wis", "cha",
+                                              "skillstable", "savingthrowtable", "attackbonustable", "featstable", "featgain", "spellgaintable", "forcedie", "spellcaster"};
+    std::vector<std::vector<std::string>> classRows(9, std::vector<std::string>(columns.size()));
+    classRows[0] = {"1", "2", "10", "2", "16", "14", "14", "10", "12", "10", "sol", "save", "attack", "sol", "", "", "0", "0"};
+    ON_CALL(twoDas, get("classes")).WillByDefault(Return(standInTable(columns, classRows)));
+    ON_CALL(twoDas, get("skills")).WillByDefault(Return(standInTable({"label", "sol_class", "sol_reco"}, {{"computeruse", "1", "1"}})));
+    ON_CALL(twoDas, get("save")).WillByDefault(Return(standInTable({"level", "fortsave", "refsave", "willsave"}, {{"1", "0", "0", "0"}})));
+    ON_CALL(twoDas, get("attack")).WillByDefault(Return(standInTable({"bab"}, {{"0"}})));
+    auto classes = std::make_shared<Classes>(_engine.resourceModule().strings(), twoDas);
+    ON_CALL(_engine.gameModule().classes(), get(_)).WillByDefault(Invoke([classes](ClassType type) { return classes->get(type); }));
+    auto soldier = classes->get(ClassType::Soldier);
+    ASSERT_TRUE(soldier);
+    traskJoins();
+    _trask->attributes().addClassLevels(soldier.get(), 1);
+    _trask->setMaxHitPoints(10);
+    _player->attributes().addClassLevels(soldier.get(), 1);
+    _trask->setXP(3000); // two levels (1000, 3000)
+    _player->setXP(3000);
+    EXPECT_EQ(2, autoLevelPartyCompanions(*_game));
+    EXPECT_EQ(3, _trask->attributes().getAggregateLevel());
+    EXPECT_EQ(30, _trask->hitPoints()) << "a hit die per level";
+    EXPECT_EQ(2, _trask->attributes().getSkillRank(SkillType::ComputerUse)) << "one recommended rank per level";
+    EXPECT_EQ(1, _player->attributes().getAggregateLevel()) << "the player character levels through the screen";
+    EXPECT_EQ(0, autoLevelPartyCompanions(*_game)) << "nothing more pending";
+}
+
+// Scripts drive a companion a guest controls (design note guest_npc_scripts):
+// the Endar Spire's end_door02 jumps the party and Trask's hint conversation
+// is an action queued on him; neither may be cut short by his player.
+
+namespace {
+
+// Queue an action the way a script routine does (AssignCommand, Action*).
+void queueAsScript(Game &game, Object &object, std::shared_ptr<game::Action> action) {
+    game.enterScriptRoutine();
+    object.addAction(std::move(action));
+    game.leaveScriptRoutine();
+}
+
+std::shared_ptr<script::ScriptProgram> scriptNaming(const std::string &name, const std::string &text) {
+    auto program = std::make_shared<script::ScriptProgram>(name);
+    program->add(script::Instruction::newCONSTS(text));
+    return program;
+}
+
+} // namespace
+
+TEST_F(CoopNetTest, actions_queued_inside_a_script_routine_are_the_script_s) {
+    auto jump = _game->newAction<JumpToLocationAction>(std::make_shared<Location>(glm::vec3(1.0f), 0.0f));
+    queueAsScript(*_game, *_trask, jump);
+    EXPECT_TRUE(jump->isScriptAction());
+    EXPECT_TRUE(_trask->hasScriptSequence());
+
+    auto click = _game->newAction<MoveToLocationAction>(std::make_shared<Location>(glm::vec3(2.0f), 0.0f), true);
+    _player->addAction(click);
+    EXPECT_FALSE(click->isScriptAction()) << "a click or a co-op command is not a script's";
+
+    auto order = _game->newAction<AttackObjectAction>(_sith);
+    order->setUserAction(true);
+    queueAsScript(*_game, *_player, order);
+    EXPECT_FALSE(order->isScriptAction()) << "a player's order stays the player's";
+
+    // The auto-combat round a player's hand asks the AI for is the AI's.
+    _game->setAutoCombatScriptCaller(_trask->id());
+    auto round = _game->newAction<MoveToLocationAction>(std::make_shared<Location>(glm::vec3(3.0f), 0.0f), true);
+    queueAsScript(*_game, *_trask, round);
+    _game->setAutoCombatScriptCaller(script::kObjectInvalid);
+    EXPECT_FALSE(round->isScriptAction());
+}
+
+TEST_F(CoopNetTest, a_script_driving_the_guest_s_companion_holds_its_input_until_done) {
+    traskJoins();
+    ASSERT_EQ(net::CommandReject::None, check(net::CommandType::MoveTo));
+
+    // k_pend_door18: AssignCommand(GetPartyMemberByIndex(1), ActionJumpToLocation(...)).
+    auto jump = _game->newAction<JumpToLocationAction>(std::make_shared<Location>(glm::vec3(4.0f, 0.0f, 0.0f), 0.0f));
+    queueAsScript(*_game, *_trask, jump);
+    EXPECT_EQ(net::CommandReject::Busy, check(net::CommandType::MoveTo));
+    EXPECT_EQ(net::CommandReject::Busy, check(net::CommandType::Cancel)) << "nor may the player clear the script's queue";
+    EXPECT_EQ(net::CommandReject::Busy, check(net::CommandType::Attack, _sith->id()));
+
+    // The jump runs as in single player; then the player has him back.
+    _trask->update(0.0f);
+    EXPECT_EQ(4.0f, _trask->position().x);
+    _trask->update(0.0f);
+    EXPECT_FALSE(_trask->hasScriptSequence());
+    EXPECT_EQ(net::CommandReject::None, check(net::CommandType::MoveTo));
+
+    // Fights, follows and wanders a script queues do not hold: the player may take over.
+    queueAsScript(*_game, *_trask, _game->newAction<AttackObjectAction>(_sith));
+    EXPECT_EQ(net::CommandReject::None, check(net::CommandType::MoveTo));
+    _trask->clearAllActions();
+
+    // NoClicksFor holds every player's clicks, the host's and a guest's.
+    _game->blockClicksFor(0.5f);
+    EXPECT_EQ(net::CommandReject::Busy, check(net::CommandType::MoveTo));
+}
+
+TEST_F(CoopNetTest, a_script_action_left_running_for_long_no_longer_holds_the_player) {
+    traskJoins();
+    queueAsScript(*_game, *_trask, _game->newAction<WaitAction>(1000.0f));
+    _trask->update(0.0f); // it starts
+    EXPECT_EQ(net::CommandReject::Busy, check(net::CommandType::MoveTo));
+    int limit = static_cast<int>(kCoopScriptHoldSeconds * static_cast<float>(_game->tickRate())) + 2;
+    for (int i = 0; i < limit; ++i) {
+        TestGameModule::advanceTick(*_game);
+    }
+    EXPECT_EQ(net::CommandReject::None, check(net::CommandType::MoveTo)) << "a looping animation or a long wait left on";
+}
+
+TEST_F(CoopCompanionCombatTest, steering_waits_while_a_script_moves_the_companion_and_resumes_after) {
+    traskTaken();
+    auto steer = [&]() { return _session->statusJson().at("clients").as_array()[0].as_object().at("steer").as_object(); };
+    auto steerTicks = [&]() { return steer().at("ticks").to_number<int64_t>(); };
+    // The guest holds a movement key: the host steers Trask every tick.
+    _client.send(steerMessage(1, _trask->id(), true, 0.0f, true));
+    tick();
+    tick();
+    auto before = steerTicks();
+    ASSERT_GE(before, 1) << "the keys drive him";
+
+    // Trask's OnUserDefined 50 (k_pend_trask_d) queues his hint conversation;
+    // k_pend_door18 queues a jump. Steering used to clear them every tick.
+    auto jump = _game->newAction<JumpToLocationAction>(std::make_shared<Location>(glm::vec3(20.0f, 20.0f, 0.0f), 0.0f));
+    queueAsScript(*_game, *_trask, jump);
+    auto wait = _game->newAction<WaitAction>(0.5f);
+    queueAsScript(*_game, *_trask, wait);
+    tick();
+    EXPECT_FALSE(jump->isCancelled()) << "the steering did not clear the script's jump";
+    EXPECT_EQ(before, steerTicks()) << "no steering while the script holds him";
+    EXPECT_FALSE(steer().at("moving").as_bool()) << "the held key waits for a fresh update";
+    _trask->update(0.0f);
+    EXPECT_EQ(20.0f, _trask->position().x) << "the jump ran";
+    _client.send(steerMessage(2, _trask->id(), true, 0.0f, true));
+    tick();
+    EXPECT_FALSE(wait->isCancelled()) << "nor the script's wait";
+    EXPECT_EQ(before, steerTicks());
+
+    // Done: the player's keys (still held, resent) drive him again.
+    wait->complete();
+    _trask->update(0.0f);
+    ASSERT_FALSE(_trask->hasScriptSequence());
+    _client.send(steerMessage(3, _trask->id(), true, 0.0f, true));
+    tick();
+    EXPECT_GT(steerTicks(), before) << "the player's input is taken again";
+}
+
+TEST_F(CoopStandInSessionTest, a_script_that_names_a_guest_s_companion_sees_the_companion) {
+    traskJoins();
+    join();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    // tar02's Sith base trigger: GetTag(GetEnteringObject()) == "t3m4"; the Endar
+    // Spire's doors name "end_trask".
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("k_names_trask"))
+        .WillRepeatedly(Return(scriptNaming("k_names_trask", "END_TRASK")));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("k_names_other"))
+        .WillRepeatedly(Return(scriptNaming("k_names_other", "end_door02")));
+    EXPECT_TRUE(coopScriptNamesTag(*_game, "k_names_trask", "end_trask")) << "any case";
+    EXPECT_FALSE(coopScriptNamesTag(*_game, "k_names_other", "end_trask"));
+    EXPECT_EQ(_trask->id(), _session->scriptActor(_trask->id(), "k_names_trask"));
+    EXPECT_EQ(_player->id(), _session->scriptActor(_trask->id(), "k_names_other")) << "other scripts read the PC as before";
+    EXPECT_EQ(_player->id(), _session->scriptActor(_trask->id()));
+}
+
+TEST_F(CoopStandInSessionTest, a_guest_s_companion_counts_as_a_pc_for_door_and_trigger_scripts) {
+    traskJoins();
+    SessionOnGame on(*_game, _session);
+    join();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    int routine = _game->routines().getIndexByName("GetIsPC");
+    ASSERT_GE(routine, 0);
+    auto trigger = _game->newTrigger();
+    _area->add(trigger);
+    auto isPC = [&](const std::shared_ptr<Creature> &creature, const std::shared_ptr<Object> &self) {
+        script::ExecutionContext execution;
+        execution.args.push_back({script::ArgKind::Caller, script::Variable::ofObject(self->id())});
+        std::vector<script::Variable> args {script::Variable::ofObject(creature->id())};
+        return _game->routines().get(routine).invoke(args, execution).intValue;
+    };
+    EXPECT_EQ(1, isPC(_player, trigger));
+    EXPECT_EQ(1, isPC(_trask, trigger)) << "to a trigger's script, the guest's character, as a companion the host switches to";
+    EXPECT_EQ(0, isPC(_sith, trigger));
+    EXPECT_EQ(0, isPC(_trask, _sith)) << "creature scripts (the AI) keep one PC, as in single player";
+    EXPECT_EQ(1, isPC(_player, _sith));
+}
+
+TEST_F(CoopStandInSessionTest, a_scene_trigger_a_script_moved_the_guest_s_companion_into_runs) {
+    traskJoins();
+    SessionOnGame on(*_game, _session);
+    join();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    EXPECT_CALL(_engine.resourceModule().scripts(), get("scenes_room3"))
+        .WillRepeatedly(Return(scriptCalling(*_game, "scenes_room3", "ActionStartConversation")));
+    EXPECT_TRUE(_session->hostHoldsScene(_trask->id(), "scenes_room3")) << "walked in by its player: held for the host";
+    auto jump = _game->newAction<JumpToLocationAction>(std::make_shared<Location>(glm::vec3(6.0f, 0.0f, 0.0f), 0.0f));
+    queueAsScript(*_game, *_trask, jump);
+    _trask->update(0.0f);
+    EXPECT_FALSE(_session->hostHoldsScene(_trask->id(), "scenes_room3")) << "a script jumped it there: the scene runs";
+    for (int i = 0; i < _game->tickRate() + 2; ++i) {
+        TestGameModule::advanceTick(*_game);
+    }
+    _trask->update(0.0f);
+    EXPECT_TRUE(_session->hostHoldsScene(_trask->id(), "scenes_room3")) << "a second later it is the player's walk again";
+}
+
+TEST_F(CoopNetTest, a_client_s_level_up_icon_is_the_host_s_word) {
+    // The guest's copy of the host's PC kept its own template level while
+    // the shared XP grew: it showed a level-up the host did not have.
+    auto copy = addCreature("player_copy", glm::vec3(0.0f), Faction::Player);
+    copy->setXP(1000000);
+    net::EntityState state = CoopReplication::capture(*_player, "");
+    EXPECT_EQ(_player->isLevelUpPending(), (state.progress & net::kProgressLevelUp) != 0);
+    state.progress = 0;
+    CoopReplication::apply(*_game, *copy, state, net::kFieldProgress);
+    EXPECT_FALSE(copy->isLevelUpPending()) << "the host says no level is due";
+    state.progress = net::kProgressLevelUp;
+    CoopReplication::apply(*_game, *copy, state, net::kFieldProgress);
+    EXPECT_TRUE(copy->isLevelUpPending());
+    copy->setXP(0);
+    EXPECT_TRUE(copy->isLevelUpPending()) << "its own numbers do not count";
 }

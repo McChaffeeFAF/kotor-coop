@@ -154,7 +154,23 @@ check "setup: k2game" "$h/.local/share/Steam/steamapps/common/Knights of the Old
 check "setup: name" "Alice" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" coop-name)"
 check "setup: service address from the package defaults" "join.example.org:27200" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" coop-server)"
 
+# 8b. KotOR II is optional: with only KotOR 1 the setup skips it, drops k2game
+# and picks the KotOR look (hud k1), so a K1-only owner can still host and join.
+h="$work/h8b"
+root="$work/pkg-k1only"
+stage "$root"
+mkdir -p "$h/.local/share/Steam/steamapps/common"
+fake_game "$h/.local/share/Steam/steamapps/common/swkotor" swkotor.exe
+printf 'y\n\nBob\n\n' | HOME="$h" USER=tester "$root/setup.sh" >/dev/null 2>&1
+check "setup k1-only: game" "$h/.local/share/Steam/steamapps/common/swkotor" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" game)"
+check "setup k1-only: no k2game" "" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" k2game)"
+check "setup k1-only: hud k1" "k1" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" hud)"
+check "setup k1-only: name" "Bob" "$(. "$FILES/scripts/detect.sh"; cfg_get "$root/reone.cfg" coop-name)"
+
 # 9. Host and join pass the right engine arguments (a stub engine records them).
+# Back to test 8's package: it has the join-code service address.
+h="$work/h8"
+root="$work/pkg"
 mkdir -p "$root/bin"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@" >"$PWD/args.txt"\n' >"$root/bin/engine"
 chmod +x "$root/bin/engine"

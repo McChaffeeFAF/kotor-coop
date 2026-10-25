@@ -18,6 +18,7 @@
 #pragma once
 
 #include "../action.h"
+#include "objectapproach.h"
 #include "../object/placeable.h"
 
 namespace reone {
@@ -42,6 +43,7 @@ public:
 
 private:
     std::shared_ptr<Placeable> _placeable;
+    ObjectApproach _approach;
 };
 
 } // namespace game

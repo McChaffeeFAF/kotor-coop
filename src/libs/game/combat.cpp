@@ -39,7 +39,6 @@ namespace reone {
 
 namespace game {
 
-static constexpr float kRoundDuration = 3.0f;
 static constexpr float kDeactivateDelay = 8.0f;
 static constexpr float kMaxAttackRange = 20.0f;
 static constexpr float kAttackTargetSearchPadding = 2.0f;
@@ -52,20 +51,46 @@ static bool isUnavailableAttackTarget(const Creature &creature) {
     return creature.isDead() || creature.isTemporarilyDead();
 }
 
+const CombatRound::RoundAction *CombatRound::sideOf(const Action &action) const {
+    for (const RoundAction &side : actions) {
+        if (side.action.get() == &action) {
+            return &side;
+        }
+    }
+    return nullptr;
+}
+
 bool CombatRound::canExecute(Action &action) const {
     State requiredState[] = {CombatRound::FirstAction, CombatRound::SecondAction};
     assert(actions.size() <= 2 && "no more than 2 actors in a round");
     for (unsigned i = 0; i < actions.size(); ++i) {
-        if (actions[i].action.get() == &action) {
-            return actions[i].participantBindingsLive() &&
-                   actions[i].remainsInActorQueue() &&
-                   action.runtimeDependenciesLive() &&
-                   !action.isCompleted() &&
-                   !action.isCancelled() &&
-                   state == requiredState[i];
+        const RoundAction &side = actions[i];
+        if (side.action.get() == &action) {
+            bool can = !side.abandoned &&
+                       side.participantBindingsLive() &&
+                       side.remainsInActorQueue() &&
+                       action.runtimeDependenciesLive() &&
+                       !action.isCompleted() &&
+                       !action.isCancelled() &&
+                       side.state == requiredState[i];
+            if (can) {
+                side.tookTurn = true;
+            }
+            return can;
         }
     }
     return false;
+}
+
+bool CombatRound::hasEnded(const Action &action) const {
+    const RoundAction *side = sideOf(action);
+    return !side || side->state == Finished;
+}
+
+bool CombatRound::allEnded() const {
+    return std::all_of(actions.begin(), actions.end(), [](const RoundAction &side) {
+        return side.state == Finished;
+    });
 }
 
 bool CombatRound::RoundAction::participantBindingsLive() const {
@@ -126,7 +151,7 @@ static void recordCombatAction(
 }
 
 static bool isRoundPastFirstAttack(float time) {
-    return time + kRoundTimeEpsilon >= 0.5f * kRoundDuration;
+    return time + kRoundTimeEpsilon >= 0.5f * CombatRound::kDuration;
 }
 
 static float getAttackTargetSearchRange(const Creature &attacker) {
@@ -196,28 +221,26 @@ CombatRound *Combat::tryAppendAction(
     bool actorQueueAssociated) {
 
     for (auto &round : _rounds) {
-        if (round->state == CombatRound::Finished) {
-            // Finished rounds may not be retired until all actions are
-            // completed. Do not consider them for new rounds.
+        if (round->actions.size() > 1) {
+            continue;
+        }
+        // A side whose round has ended, or whose command was given up, takes
+        // no one new.
+        const CombatRound::RoundAction &answered = round->actions.front();
+        if (answered.state == CombatRound::Finished || answered.abandoned ||
+            answered.attacker.resolve().get() != target.get() ||
+            answered.target.resolve().get() != attacker.get()) {
             continue;
         }
 
-        bool isReversed = false;
-        for (CombatRound::RoundAction &roundAction : round->actions) {
-            if (roundAction.attacker.resolve().get() == target.get() &&
-                roundAction.target.resolve().get() == attacker.get()) {
-                isReversed = true;
-                break;
-            }
-        }
-
-        if (!isReversed || round->actions.size() > 1) {
-            continue;
-        }
-
-        // Found a round to append.
+        // Found a round to append. The new side starts in step with the
+        // creature it answers, and its round goes on from there on its own.
+        const CombatRound::State state = answered.state;
+        const float time = answered.time;
         round->actions.emplace_back(
             action, attacker, target, actorQueueAssociated);
+        round->actions.back().state = state;
+        round->actions.back().time = time;
         round->duel = true;
         return round.get();
     }
@@ -238,6 +261,16 @@ const CombatRound &Combat::addAction(const std::shared_ptr<Action> &action, Obje
     // If attacker has already started a combat round, return it.
     if (CombatRound *round = findRoundForAction(action, *attacker)) {
         return *round;
+    }
+
+    // A creature fights one round at a time: when its last command was given
+    // up after taking its turn, its next attack waits for that round to run
+    // out. The waiting attack is handed the old round, in which it has no
+    // turn. A scripted cutscene attack does not wait.
+    if (isa<AttackObjectAction>(action.get()) || isa<UseFeatAction>(action.get())) {
+        if (CombatRound *running = findRunningAbandonedRound(*attacker)) {
+            return *running;
+        }
     }
 
     // Find an existing round where target and attacker roles are reversed, and
@@ -275,6 +308,24 @@ const CombatRound &Combat::addAction(const std::shared_ptr<Action> &action, Obje
         debug(str(boost::format("Start round: %s") % actor.tag()), LogChannel::Combat);
     }
 
+    // Stealth Mode: combat cancels it (TLK 248, 38064). An attack or a power
+    // at someone else ends the actor's; being set upon by an enemy ends the
+    // target's. A power on oneself or a friend is a mundane task.
+    if (auto *creature = dyn_cast<Creature>(&actor); creature && creature->isStealthed()) {
+        auto *other = target ? dyn_cast<Creature>(target.get()) : nullptr;
+        bool attack = isa<AttackObjectAction>(action.get()) || isa<UseFeatAction>(action.get());
+        bool atEnemy = other && other != creature && _services.game.reputes.getIsEnemy(*creature, *other);
+        if (attack || atEnemy) {
+            _game.endStealth(*creature);
+        }
+    }
+    if (auto *other = target ? dyn_cast<Creature>(target.get()) : nullptr; other && other->isStealthed() &&
+                                                                       other != &actor) {
+        if (auto *creature = dyn_cast<Creature>(&actor); creature && _services.game.reputes.getIsEnemy(*other, *creature)) {
+            _game.endStealth(*other);
+        }
+    }
+
     if (auto *creature = dyn_cast<Creature>(&actor)) {
         creature->activateCombat();
     }
@@ -299,41 +350,49 @@ static bool isActionFinished(const CombatRound::RoundAction &action) {
     return action.action->isCompleted() || action.action->isCancelled();
 }
 
-void Combat::cancelRound(CombatRound &round) {
-    for (auto &roundAction : round.actions) {
-        if (roundAction.action->isCompleted()) {
-            continue;
+CombatRound *Combat::findRunningAbandonedRound(const Creature &attacker) {
+    for (auto &round : _rounds) {
+        for (const CombatRound::RoundAction &side : round->actions) {
+            if (side.abandoned && side.state != CombatRound::Finished &&
+                side.attacker.resolve().get() == &attacker) {
+                return round.get();
+            }
         }
-        if (roundAction.action->isCancelled()) {
-            roundAction.action->complete();
-            continue;
-        }
-        auto attacker = roundAction.attacker.resolve();
-        if (attacker) {
-            roundAction.action->cancel(roundAction.action, *attacker);
-        } else {
-            roundAction.action->complete();
-        }
-        roundAction.action->markCancelled();
-        if (!roundAction.action->isCompleted()) {
-            roundAction.action->complete();
-        }
+    }
+    return nullptr;
+}
+
+void Combat::cancelSide(CombatRound::RoundAction &side) {
+    if (side.action->isCompleted()) {
+        return;
+    }
+    if (side.action->isCancelled()) {
+        side.action->complete();
+        return;
+    }
+    auto attacker = side.attacker.resolve();
+    if (attacker) {
+        side.action->cancel(side.action, *attacker);
+    } else {
+        side.action->complete();
+    }
+    side.action->markCancelled();
+    if (!side.action->isCompleted()) {
+        side.action->complete();
     }
 }
 
-// A round dropped before it finished (its actions were cleared: a leader
+// A side dropped before its round ended (its command was cleared: a leader
 // switch, Cancel Combat, a script's ClearAllActions) must still let its
-// participants leave combat, as a finished round does. Otherwise they stay in
+// creatures leave combat, as a finished round does. Otherwise they stay in
 // combat mode with nothing to end it (playtest 1, item 11).
-void Combat::releaseParticipants(CombatRound &round) {
-    for (auto &roundAction : round.actions) {
-        if (auto attacker = roundAction.attacker.resolve()) {
-            attacker->deactivateCombat(kDeactivateDelay);
-        }
-        if (auto target = roundAction.target.resolve()) {
-            if (auto *creature = dyn_cast<Creature>(target.get())) {
-                creature->deactivateCombat(kDeactivateDelay);
-            }
+void Combat::releaseSide(CombatRound::RoundAction &side) {
+    if (auto attacker = side.attacker.resolve()) {
+        attacker->deactivateCombat(kDeactivateDelay);
+    }
+    if (auto target = side.target.resolve()) {
+        if (auto *creature = dyn_cast<Creature>(target.get())) {
+            creature->deactivateCombat(kDeactivateDelay);
         }
     }
 }
@@ -341,25 +400,48 @@ void Combat::releaseParticipants(CombatRound &round) {
 void Combat::pruneInvalidRounds() {
     for (auto it = _rounds.begin(); it != _rounds.end();) {
         CombatRound &round = **it;
-        bool bindingsLive = std::all_of(
-            round.actions.begin(),
-            round.actions.end(),
-            [](const CombatRound::RoundAction &action) {
-                return action.participantBindingsLive() &&
-                       action.remainsInActorQueue() &&
-                       action.action->runtimeDependenciesLive();
-            });
-        bool anyActionFinished = std::any_of(
-            round.actions.begin(), round.actions.end(), isActionFinished);
+        // A command that is cleared or done, or whose objects are gone, is
+        // given up; a live partner keeps its own. A side that took its turn
+        // runs its round out, unless its target is down or gone: then its
+        // round ends now, in full. One that never took its turn leaves at
+        // once.
+        SmallVector<size_t, 2> endedNow;
+        for (size_t index = 0; index < round.actions.size(); ++index) {
+            CombatRound::RoundAction &side = round.actions[index];
+            if (side.state == CombatRound::Finished || side.abandoned) {
+                continue;
+            }
+            bool bindingsLive = side.participantBindingsLive() &&
+                                side.remainsInActorQueue() &&
+                                side.action->runtimeDependenciesLive();
+            // A creature that has died leaves its round at once.
+            auto attacker = side.attacker.resolve();
+            bool attackerDown = attacker && attacker->isDead();
+            if (bindingsLive && !attackerDown && !isActionFinished(side)) {
+                continue;
+            }
+            cancelSide(side);
+            if (!side.tookTurn || !attacker || attackerDown) {
+                releaseSide(side);
+                side.state = CombatRound::Finished;
+                continue;
+            }
+            side.abandoned = true;
+            auto target = side.target.resolve();
+            auto *targetCreature = target ? dyn_cast<Creature>(target.get()) : nullptr;
+            bool targetDown = (!side.target.empty() && !target) ||
+                              (targetCreature && isUnavailableAttackTarget(*targetCreature));
+            if (targetDown) {
+                side.state = CombatRound::Finished;
+                endedNow.push_back(index);
+            }
+        }
+        if (!endedNow.empty()) {
+            finishSides(round, endedNow, false);
+        }
         bool actionsFinished = std::all_of(
             round.actions.begin(), round.actions.end(), isActionFinished);
-
-        if (!bindingsLive ||
-            (round.state != CombatRound::Finished && anyActionFinished)) {
-            cancelRound(round);
-            releaseParticipants(round);
-            it = _rounds.erase(it);
-        } else if (round.state == CombatRound::Finished && actionsFinished) {
+        if (round.allEnded() && actionsFinished) {
             it = _rounds.erase(it);
         } else {
             ++it;
@@ -367,47 +449,85 @@ void Combat::pruneInvalidRounds() {
     }
 }
 
-void Combat::updateRound(CombatRound &round, float dt) {
-    round.time += dt;
+// Advances one creature's side of a round; true when its round has just ended.
+static bool advanceSide(CombatRound::RoundAction &side, float dt) {
+    side.time += dt;
 
-    switch (round.state) {
-    case CombatRound::Pending: {
-        round.state = CombatRound::FirstAction;
-        return;
-    }
-    case CombatRound::FirstAction: {
-        if (isRoundPastFirstAttack(round.time)) {
-            round.state = CombatRound::SecondAction;
+    switch (side.state) {
+    case CombatRound::Pending:
+        side.state = CombatRound::FirstAction;
+        return false;
+    case CombatRound::FirstAction:
+        if (isRoundPastFirstAttack(side.time)) {
+            side.state = CombatRound::SecondAction;
         }
-        return;
-    }
-    case CombatRound::SecondAction: {
-        if (round.time + kRoundTimeEpsilon >= kRoundDuration) {
-            round.state = CombatRound::Finished;
-            finishRound(round);
+        return false;
+    case CombatRound::SecondAction:
+        if (side.time + kRoundTimeEpsilon >= CombatRound::kDuration) {
+            side.state = CombatRound::Finished;
+            return true;
         }
-        return;
-    }
+        return false;
     case CombatRound::Finished:
-        return;
+        return false;
+    }
+    return false;
+}
+
+void Combat::updateRound(CombatRound &round, float dt) {
+    // Sides that end on the same frame end together; a given-up side ends
+    // quietly.
+    SmallVector<size_t, 2> ended;
+    SmallVector<size_t, 2> endedQuietly;
+    for (size_t index = 0; index < round.actions.size(); ++index) {
+        CombatRound::RoundAction &side = round.actions[index];
+        if (side.state == CombatRound::Finished) {
+            continue;
+        }
+        if (advanceSide(side, dt)) {
+            (side.abandoned ? endedQuietly : ended).push_back(index);
+        }
+    }
+    if (!ended.empty()) {
+        finishSides(round, ended, false);
+    }
+    if (!endedQuietly.empty()) {
+        finishSides(round, endedQuietly, true);
     }
 }
 
-void Combat::finishRound(CombatRound &round) {
+void Combat::finishSides(CombatRound &round, const SmallVector<size_t, 2> &sides, bool quiet) {
+    auto ends = [&](size_t index) {
+        return std::find(sides.begin(), sides.end(), index) != sides.end();
+    };
+    // The target of an ended side ends with it, unless it has a side of its
+    // own in the round still to end.
+    auto hasOwnRunningSide = [&](const Object *object) {
+        for (size_t index = 0; index < round.actions.size(); ++index) {
+            const CombatRound::RoundAction &side = round.actions[index];
+            if (!ends(index) && side.state != CombatRound::Finished &&
+                side.attacker.resolve().get() == object) {
+                return true;
+            }
+        }
+        return false;
+    };
+
     SmallSet<Object *, 4> seenObjects;
     SmallVector<RuntimeObjectRef<Object>, 4> objects;
     SmallSet<Creature *, 2> seenAttackers;
     SmallVector<RuntimeObjectRef<Creature>, 2> attackers;
-    for (CombatRound::RoundAction &action : round.actions) {
+    for (size_t index : sides) {
+        CombatRound::RoundAction &action = round.actions[index];
         auto attacker = action.attacker.resolve();
         auto target = action.target.resolve();
-        if (!attacker || (!action.target.empty() && !target)) {
+        if (!attacker || (!action.target.empty() && !target && !action.abandoned)) {
             continue;
         }
         if (seenObjects.insert(attacker.get()).second) {
             objects.emplace_back(attacker);
         }
-        if (target && seenObjects.insert(target.get()).second) {
+        if (target && !hasOwnRunningSide(target.get()) && seenObjects.insert(target.get()).second) {
             objects.emplace_back(target);
         }
         if (isHostileAction(*action.action) &&
@@ -424,6 +544,18 @@ void Combat::finishRound(CombatRound &round) {
         if (auto attacker = reference.resolve()) {
             attacker->finishCombatRound();
         }
+    }
+
+    // A round that ran out after its command was given up runs no scripts
+    // and carries no attack on: its creatures may leave combat.
+    if (quiet) {
+        for (const auto &reference : objects) {
+            std::shared_ptr<Object> object = reference.resolve();
+            if (auto *creature = object ? dyn_cast<Creature>(object.get()) : nullptr) {
+                creature->deactivateCombat(kDeactivateDelay);
+            }
+        }
+        return;
     }
 
     std::shared_ptr<Creature> leader = _game.party().getLeader();
@@ -465,17 +597,18 @@ void Combat::finishRound(CombatRound &round) {
         }
     }
     for (const auto &hand : hands) {
-        continuePlayerAttack(round, hand);
+        continuePlayerAttack(round, sides, hand);
     }
 }
 
-void Combat::continuePlayerAttack(CombatRound &round, const std::shared_ptr<Creature> &hand) {
+void Combat::continuePlayerAttack(CombatRound &round, const SmallVector<size_t, 2> &sides, const std::shared_ptr<Creature> &hand) {
     if (!hand || !_game.isRuntimeObjectLive(*hand) ||
         isUnavailableAttackTarget(*hand) || hand->autoCombat() || hand->isCombatHeld()) {
         return;
     }
 
-    for (CombatRound::RoundAction &action : round.actions) {
+    for (size_t index : sides) {
+        CombatRound::RoundAction &action = round.actions[index];
         if (action.attacker.resolve().get() != hand.get()) {
             continue;
         }

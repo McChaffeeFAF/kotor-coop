@@ -497,6 +497,31 @@ TEST_F(C08Test, a_delayed_command_fires_on_time_while_its_owner_is_held) {
     EXPECT_TRUE(calo->actions().empty());
 }
 
+TEST_F(C08Test, a_delayed_command_fires_after_its_owner_has_died) {
+    // k_pend_ud_cut10: a soldier's death event delays SetDialogPlaceableCamera
+    // by 0.5 s; the cut must still happen with the soldier dead
+    // (design note cutscene_timing).
+    auto footlocker = _game->newPlaceable();
+    auto soldier = creature();
+    soldier->delayAction(_game->newAction<LockObjectAction>(footlocker), 0.5f);
+    TestGameModule::setDead(*soldier, true);
+    run(*soldier, 0.4f);
+    EXPECT_FALSE(footlocker->isLocked());
+    run(*soldier, 0.2f);
+    EXPECT_TRUE(footlocker->isLocked());
+    EXPECT_TRUE(soldier->actions().empty());
+}
+
+TEST_F(C08Test, a_dead_owner_s_queued_actions_are_still_dropped) {
+    auto footlocker = _game->newPlaceable();
+    auto soldier = creature();
+    soldier->addAction(_game->newAction<LockObjectAction>(footlocker));
+    TestGameModule::setDead(*soldier, true);
+    run(*soldier, 0.2f);
+    EXPECT_FALSE(footlocker->isLocked());
+    EXPECT_TRUE(soldier->actions().empty());
+}
+
 TEST_F(C08Test, held_states_expire_with_their_duration) {
     auto target = creature();
     target->applyEffect(std::make_shared<WhirlWindEffect>(), DurationType::Temporary, 1.0f);

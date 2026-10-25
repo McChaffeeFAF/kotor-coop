@@ -46,6 +46,7 @@ namespace {
 // Buttons that leave a panel, as its Close / OK / Cancel do.
 const char *const kBackTags[] {"BTN_BACK", "BTN_Accept", "BTN_OK", "BTN_Cancel", "BTN_CANCEL", "BTN_EXIT"};
 const char *const kSmartCompanionsTag = "CB_SMARTCOMPANIONS";
+const char *const kCameosTag = "CB_CAMEOS";
 const char *const kDefaultTags[] {"BTN_DEFAULT", "BTN_Default"};
 
 // Volume sliders and the settings they drive (0..100).
@@ -94,15 +95,15 @@ void styleToggleLabel(ToggleButton &toggle, bool tsl, const glm::vec3 &baseColor
 // gameplay panel's column, styled as its neighbours. Both layouts are full,
 // so the column makes room: K1 moves its two buttons into the space below
 // them; K2, which has none, closes the gaps between its check boxes.
-OptionsScroll addSmartCompanionsToggle(IGUI &gui, bool disabled, bool scrolls) {
+OptionsScroll addGameplayToggle(IGUI &gui, const char *newTag, const char *text, bool disabled, bool scrolls) {
     OptionsScroll result;
     std::vector<std::shared_ptr<Control>> column;
-    for (const char *tag : {"CB_LEVELUP", "CB_INVERTCAM", "CB_AUTOSAVE", "CB_REVERSE_INGAME", "CB_REVERSE", "CB_DISABLEMOVE"}) {
+    for (const char *tag : {"CB_LEVELUP", "CB_INVERTCAM", "CB_AUTOSAVE", "CB_REVERSE_INGAME", "CB_REVERSE", "CB_DISABLEMOVE", kSmartCompanionsTag}) {
         if (auto control = gui.findControl(tag)) {
             column.push_back(std::move(control));
         }
     }
-    if (column.empty() || gui.findControl(kSmartCompanionsTag)) {
+    if (column.empty() || gui.findControl(newTag)) {
         return result;
     }
     std::stable_sort(column.begin(), column.end(), [](const auto &a, const auto &b) {
@@ -182,11 +183,11 @@ OptionsScroll addSmartCompanionsToggle(IGUI &gui, bool disabled, bool scrolls) {
         }
     }
 
-    auto toggle = std::shared_ptr<Control>(gui.newControl(ControlType::ToggleButton, kSmartCompanionsTag));
+    auto toggle = std::shared_ptr<Control>(gui.newControl(ControlType::ToggleButton, newTag));
     toggle->setBorder(last.border());
     toggle->setHilight(last.hilight());
     toggle->setText(last.text());
-    toggle->setTextMessage("Smarter companions");
+    toggle->setTextMessage(text);
     toggle->setPadding(last.padding());
     toggle->setTintBorderFill(gui.tintBorderFills()); // as loaded controls are
     toggle->setAuthoredExtent(extent);
@@ -477,7 +478,9 @@ void OptionsPanel::onGUILoaded() {
     if (panelStem(_base) == "optgameplay") {
         // A host setting in co-op: a client sees it but cannot change it.
         auto *coop = _game.coop();
-        installScroll(addSmartCompanionsToggle(*_gui, coop && coop->isClient(), !isTSL()));
+        // The extra rows go in one after the other; the last one's scroll window covers them all.
+        addGameplayToggle(*_gui, kSmartCompanionsTag, "Smarter companions", coop && coop->isClient(), !isTSL());
+        installScroll(addGameplayToggle(*_gui, kCameosTag, "Cameos", coop && coop->isClient(), !isTSL()));
     }
 
     if (panelStem(_base) == "optgraphics") {
@@ -549,7 +552,7 @@ void OptionsPanel::onGUILoaded() {
     }
 
     // Check boxes are toggle buttons; each remembers its setting.
-    std::vector<const char *> toggleTags {kSmartCompanionsTag, "CB_BLOOM", "CB_AMBIENTOCC", "CB_HIRESSHADOWS", "CB_SHARPEN", "CB_INVERTCAM", "CB_LEVELUP", "CB_AUTOSAVE", "CB_REVERSE", "CB_DISABLEMOVE",
+    std::vector<const char *> toggleTags {kSmartCompanionsTag, kCameosTag, "CB_BLOOM", "CB_AMBIENTOCC", "CB_HIRESSHADOWS", "CB_SHARPEN", "CB_INVERTCAM", "CB_LEVELUP", "CB_AUTOSAVE", "CB_REVERSE", "CB_DISABLEMOVE",
                                           "CB_ENEMYSIGHTED", "CB_PARTYKILLED", "CB_ACTIONMENU", "CB_ENDROUND", "CB_TRIGGERS",
                                           "CB_MINESIGHTED", "CB_SHADOWS", "CB_GRASS", "CB_FRAMEBUFF", "CB_VSYNC",
                                           "CB_SOFTSHADOWS", "CB_FORCESOFTWARE", "CB_REVBUTTONS",
@@ -749,6 +752,7 @@ bool OptionsPanel::toggleDefault(const std::string &tag) const {
     if (tag == "CB_HIRESSHADOWS") return graphics.shadowResolution > 2048;
     if (tag == "CB_SHARPEN") return graphics.sharpen;
     if (tag == kSmartCompanionsTag) return _game.options().game.smartCompanions;
+    if (tag == kCameosTag) return true; // on unless the player turned it off
     for (const auto &feature : graphics::graphicsFeatureToggles()) {
         if (tag == feature.settingTag) return graphics.*feature.field;
     }

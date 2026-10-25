@@ -551,23 +551,22 @@ TEST(K1HUDPass2, effect_icon_rows_clear_the_toggles_and_portraits) {
     }
 }
 
-TEST(K1HUDPass2, k1_equipment_set_toggle_maps_the_weapon_slots) {
+TEST(K1HUDPass2, k1_equipment_second_set_has_its_own_weapon_slots) {
     using Slot = Equipment::Slot;
-    EXPECT_EQ(Slot::WeapL, Equipment::k1SetSlot(Slot::WeapL, false));
-    EXPECT_EQ(Slot::WeapR, Equipment::k1SetSlot(Slot::WeapR, false));
-    EXPECT_EQ(Slot::WeapL2, Equipment::k1SetSlot(Slot::WeapL, true));
-    EXPECT_EQ(Slot::WeapR2, Equipment::k1SetSlot(Slot::WeapR, true));
-    for (auto slot : {Slot::Head, Slot::Body, Slot::Belt, Slot::Implant}) {
-        EXPECT_EQ(slot, Equipment::k1SetSlot(slot, true));
+    auto left = Equipment::k1SecondSetExtent(Slot::WeapL2);
+    auto right = Equipment::k1SecondSetExtent(Slot::WeapR2);
+    // K1 equip layout (640x480): the pair sits under the portrait (55..159 x
+    // 155..260) and above the vitality and defense blocks (from y 304); the
+    // slot art keeps an 8 px transparent margin inside its control.
+    auto core = [](Control::Extent e) { return Control::Extent(e.left + 8, e.top + 8, e.width - 16, e.height - 16); };
+    for (auto extent : {left, right}) {
+        EXPECT_FALSE(overlaps(core(extent), Control::Extent(55, 155, 104, 105)));
+        EXPECT_FALSE(overlaps(core(extent), Control::Extent(55, 304, 104, 92)));
+        EXPECT_GE(extent.left, 40);
+        EXPECT_LE(extent.left + extent.width, 175);
     }
-    // K1 equip layout (640x480): between BTN_CHANGE2 and BTN_EQUIP, clear of
-    // both and of the attack panel.
-    auto toggle = Equipment::k1WeaponSetToggleExtent();
-    EXPECT_FALSE(overlaps(toggle, Control::Extent(140, 410, 28, 28)));
-    EXPECT_FALSE(overlaps(toggle, Control::Extent(247, 410, 146, 28)));
-    EXPECT_FALSE(overlaps(toggle, Control::Extent(157, 290, 256, 118)));
-    EXPECT_LE(toggle.top + toggle.height, 480);
-    EXPECT_TRUE(isK1Art(Equipment::kK1WeaponSetIcon));
+    EXPECT_FALSE(overlaps(core(left), core(right)));
+    EXPECT_LT(left.left, right.left); // left hand on the left
 }
 
 TEST(K1HUDPass2, weapon_swap_key_defaults_to_h_and_is_free) {

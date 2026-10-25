@@ -17,6 +17,7 @@
 
 #include "reone/game/effect/entangle.h"
 
+#include "reone/game/combatfeedback.h"
 #include "reone/game/object/creature.h"
 
 namespace reone {
@@ -35,6 +36,7 @@ bool EntangleEffect::onApply(Object &object, const EffectInstance &instance) {
     if (creature->hasEffectImmunity(
             ImmunityType::Entangle,
             creator ? dyn_cast<Creature>(creator.get()) : nullptr)) {
+        addEffectImmunityFeedback(creature->game(), creator.get(), *creature, ImmunityType::Entangle);
         return false;
     }
     creature->setMovementType(Creature::MovementType::None);

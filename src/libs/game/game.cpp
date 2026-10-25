@@ -17,6 +17,9 @@
 
 #include "reone/game/game.h"
 
+#include "reone/game/autolevel.h"
+#include "reone/input/focus.h"
+
 #include "reone/game/coopsession.h"
 #include "reone/game/savedgame.h"
 #include "reone/game/savedruntime.h"
@@ -683,6 +686,7 @@ void Game::initConsole() {
     registerConsoleCommand("startconversation", "start a conversation with the selected object or a DLG resref", &Game::consoleStartConversation);
     // Presentation probe: the recorded sound cues, one JSON line. Kept out of
     // dumpstate, whose body must match across runs; cue choice is cosmetic.
+    registerCutsceneAuditCommand();
     _console.registerCommand("soundcues", "print the recorded sound cues as JSON", [this](const ConsoleArgs &args) {
         std::string out("[");
         for (const auto &cue : _soundCues) {
@@ -799,9 +803,11 @@ void Game::initConsole() {
     registerConsoleCommand("moveto", "walk a creature to a point through the pathfinder: moveto x y [z] [run=1] [@id|tag]", &Game::consoleMoveTo);
     registerConsoleCommand("movetoobject", "walk a creature to an object through the pathfinder: movetoobject id|tag [run=1] [distance] [@id|tag]", &Game::consoleMoveToObject);
     registerConsoleCommand("click", "click an object as the player does, select then act: click id|tag [now|attack]", &Game::consoleClick);
+    registerConsoleCommand("targetmenu", "list the target menu the leader gets on an object, or pick an entry as the menu does: targetmenu id|tag [pick=N]", &Game::consoleTargetMenu);
     registerConsoleCommand("instantdoors", "harness only: a transition door click leaves at once, with no walk to the door: instantdoors [1|0]", &Game::consoleInstantDoors);
     registerConsoleCommand("clearactions", "clear a creature's action queue: clearactions [@id|tag]", &Game::consoleClearActions);
     registerConsoleCommand("cancelcombat", "Cancel Combat as the HUD button does: cancelcombat [@id|tag]", &Game::consoleCancelCombat);
+    registerConsoleCommand("stealth", "enter or leave Stealth Mode as the Stealth key does (solo mode is turned on as if the player said yes): stealth [1|0] [@id|tag]", &Game::consoleStealth);
     registerConsoleCommand("autocombat", "toggle or set a character's auto-combat: autocombat [1|0] [@id|tag]", &Game::consoleAutoCombat);
     registerConsoleCommand("waitidle", "hold command execution until a creature's action queue is empty; prints nothing: waitidle [@id|tag] [maxframes=600]", &Game::consoleWaitIdle);
     registerConsoleCommand("idlestatus", "print whether a creature's action queue is empty: idlestatus [@id|tag]", &Game::consoleIdleStatus);
@@ -835,7 +841,7 @@ void Game::initConsole() {
     registerConsoleCommand("store", "trade through the store screen: store [status|open <tag>|list [buy|sell]|buy <item> [n]|sell <item> [n]|close]", &Game::consoleStore);
     registerConsoleCommand("upgrade", "install or remove an item upgrade through the upgrade bench, then Assemble: upgrade [list|open [item]|<item> <upgrade>|remove <item> <upgrade>]", &Game::consoleUpgrade);
     registerConsoleCommand("credits", "the end credits: credits [status|start|skip]", &Game::consoleCredits);
-    registerConsoleCommand("guiclick", "click a control of the current screen as the mouse does: guiclick <tag> [clicks=1|2]", &Game::consoleGuiClick);
+    registerConsoleCommand("guiclick", "click a control of the current screen, or of the confirmation pop-up when one is up, as the mouse does: guiclick <tag> [clicks=1|2]", &Game::consoleGuiClick);
     registerConsoleCommand("guidump", "print named controls of the current screen: guidump <tag>...", &Game::consoleGuiDump);
     registerConsoleCommand("guishow", "show or hide a control of the current screen: guishow <tag> 0|1", &Game::consoleGuiShow);
     registerConsoleCommand("key", "press a key as the keyboard does (keymap applies): key <name> [down|up]", &Game::consoleKey);
@@ -1007,6 +1013,16 @@ bool Game::handle(const input::Event &rawEvent) {
     }
     if (_confirmPopup && _confirmPopup->isVisible()) {
         _confirmPopup->handle(rawEvent);
+        // A release belongs to whatever saw the press: swallowing it here left
+        // mouse-look (and the hidden pointer) stuck on once the pop-up closed.
+        if (input::FocusTracker::reachesGameUnderModal(rawEvent.type)) {
+            handleTranslated(rawEvent);
+        } else if (input::FocusTracker::movesPointerUnderModal(rawEvent.type)) {
+            // The game draws the pointer: it follows the mouse over the pop-up
+            // too. Swallowing the motion froze it where it was when the pop-up
+            // came up (a player joining: the host's Accept / Decline).
+            handleMouseMotion(rawEvent.motion);
+        }
         return true;
     }
 
@@ -1036,6 +1052,24 @@ bool Game::handle(const input::Event &rawEvent) {
     }
 
     return handleTranslated(event);
+}
+
+bool Game::isPopupVisible() const {
+    return _confirmPopup && _confirmPopup->isVisible();
+}
+
+bool Game::relativeMouseMode() const {
+    bool screenUsesIt = _screen == Screen::InGame || _screen == Screen::Turret;
+    return input::FocusTracker::allowRelativeMouse(_relativeMouseMode && screenUsesIt && !_movie, isPopupVisible(), true);
+}
+
+void Game::releaseHeldInput(const std::vector<input::Event> &releases) {
+    for (auto &event : releases) {
+        if (isPopupVisible()) {
+            _confirmPopup->handle(event);
+        }
+        handleTranslated(event);
+    }
 }
 
 bool Game::handleTranslated(const input::Event &event) {
@@ -1225,6 +1259,7 @@ void Game::update(float frameTime) {
     }
     presentInterpolation();
     updateCamera(frameDt);
+    auditCutsceneFrame();
     bool updModule = !_movie && _module && worldRunsOnScreen();
     if (updModule && !_paused) {
         _floatingText.update(frameDt);
@@ -1274,11 +1309,17 @@ void Game::tick(float dt) {
     // this tick keeps its previous transform for render interpolation.
     scene::interp::TickScope interpTick;
     ++_tickCount;
+    // Cleared at the conversation step, and on every way out of the tick.
+    struct ConversationStepScope {
+        bool &pending;
+        ~ConversationStepScope() { pending = false; }
+    } conversationStepScope {_conversationStepPending};
     if (_coop && _coop->isClient()) {
         // A co-op client does not simulate: it plays back the host's state.
         tickCoopClient(dt);
         return;
     }
+    _conversationStepPending = true;
     // The screen fade advances once per tick, before this tick's scripts can
     // replace its request, so every frame rate sees the same fade state.
     {
@@ -1316,6 +1357,16 @@ void Game::tick(float dt) {
     }
     processAutosaveOnEnter();
     processCheckpointOnEnter();
+    // Options > Gameplay > Auto Level Up, single player only: companions take
+    // their pending levels by themselves with the Recommended picks.
+    if (!_coop && _module && _screen == Screen::InGame && _tickCount % 30 == 0 &&
+        _userSettings.getBool(kAutoLevelUpSetting, false)) {
+        autoLevelPartyCompanions(*this);
+    }
+
+    if (_tickCount % 15 == 0) {
+        _cameos.update(*this);
+    }
 
     if (_screen == Screen::PazaakBoard && _pazaakSession) {
         static constexpr float kPazaakOpponentEventDelay = 0.45f;
@@ -1383,6 +1434,7 @@ void Game::tick(float dt) {
     }
 
     // Conversation timing: when an entry ends decides when its scripts run.
+    _conversationStepPending = false;
     if (_screen == Screen::Conversation && _conversation && !_movie) {
         _conversation->updateSimulation(dt);
     }
@@ -3391,6 +3443,13 @@ int Game::scaleDamageForDifficulty(
     return applyMinHP1(_services.game.difficultyOptions, scaled, target.currentHitPoints());
 }
 
+std::shared_ptr<Object> Game::conversationOwner() const {
+    if (_screen != Screen::Conversation || !_conversation) {
+        return nullptr;
+    }
+    return _conversation->inspectionState().owner;
+}
+
 void Game::setAutoCombat(Creature &creature, bool on) {
     creature.setAutoCombat(on);
     if (on) {
@@ -3558,7 +3617,7 @@ void Game::beginRuntimeObjectGraphReplacement(
     if (_stagedRuntimeObjectGraph) {
         throw ValidationException("Nested runtime object graph replacement");
     }
-    _stagedRuntimeObjectGraph.emplace();
+    _stagedRuntimeObjectGraph = StagedRuntimeObjectGraph {};
     _stagedRuntimeObjectGraph->initialNextObjectId = _nextObjectId;
 
     _stagedRuntimeObjectGraph->obsoleteGraph =
@@ -4139,8 +4198,11 @@ void Game::renderGUI() {
     }
     if (_confirmPopup && _confirmPopup->isVisible()) {
         _confirmPopup->render();
+        // Over a pop-up the pointer is the plain one, whatever the world
+        // under it last asked for (a hidden trigger cursor draws nothing).
+        setCursorType(CursorType::Default);
     }
-    _pointer->render(_options.graphics, _relativeMouseMode);
+    _pointer->render(_options.graphics, relativeMouseMode());
     renderDeveloperOverlay();
 }
 
@@ -4672,7 +4734,9 @@ void Game::stopMovement() {
     if (camera) {
         camera->stopMovement();
     }
-    _module->player().stopMovement();
+    if (_module->hasPlayer()) {
+        _module->player().stopMovement();
+    }
 }
 
 void Game::scheduleModuleTransition(const std::string &moduleName, const std::string &entry) {
@@ -4879,6 +4943,12 @@ StringTokenSubject Game::stringTokenSubject() const {
         }
         return keymapTable->getString(index, "character");
     };
+    subject.tsl = isTSL();
+    if (isTSL()) {
+        // Nar Shaddaa's bounty on the player: 500 credits a point of the global.
+        static constexpr int kBountyCreditsPerPoint = 500;
+        subject.bounty = getGlobalNumber("300NAR_Bounty") * kBountyCreditsPerPoint;
+    }
     auto player = _party.player();
     if (!player) {
         return subject;
@@ -4960,6 +5030,14 @@ std::string Game::substituteCustomTokens(std::string str) const {
 std::string Game::substituteCustomToken(std::string str, int token, std::string value) const {
     auto customTokens = _customTokens;
     customTokens[token] = std::move(value);
+    return resolveTokens(str, customTokens);
+}
+
+std::string Game::substituteCustomTokens(std::string str, const std::map<int, std::string> &tokens) const {
+    auto customTokens = _customTokens;
+    for (const auto &[token, value] : tokens) {
+        customTokens[token] = value;
+    }
     return resolveTokens(str, customTokens);
 }
 
@@ -6335,6 +6413,11 @@ void Game::startDialog(const std::shared_ptr<Object> &owner, const std::string &
     if (admission && !_globalFade.isCurrentDialog(admission)) {
         return;
     }
+    if (_coop && _coop->holdConversation(owner, resRef, admission)) {
+        // Co-op host: a module's opening conversation waits for guests still
+        // loading the module; the session starts it when they are in.
+        return;
+    }
     std::shared_ptr<resource::Dialog> dialog;
     try {
         if (_services.resource.gffs.get(resRef, ResType::Dlg)) {
@@ -6359,6 +6442,10 @@ void Game::startDialog(const std::shared_ptr<Object> &owner, const std::string &
         return;
     }
 
+    if (!computerConversation) {
+        // Computers are a mundane task (TLK 38064); a conversation ends Stealth Mode.
+        endStealthForConversation();
+    }
     stopMovement();
     setRelativeMouseMode(false);
     setCursorType(CursorType::Default);
@@ -6535,7 +6622,144 @@ void Game::awardPlotXPByIndex(int plotIndex, float fraction) {
     _party.awardXP(amount, XPSource::Plot);
 }
 
+void Game::registerCutsceneAuditCommand() {
+    _console.registerCommand("cutsceneaudit", "cutsceneaudit on|off|stats: report visible scripted jumps in conversations", [this](const ConsoleArgs &args) {
+        auto &audit = _cutsceneAudit;
+        auto mode = args[1];
+        if (mode && *mode == "on") {
+            audit = CutsceneAudit();
+            audit.enabled = true;
+            if (auto dir = args[2]) {
+                audit.captureDir = std::string(*dir);
+            }
+        } else if (mode && *mode == "off") {
+            audit.enabled = false;
+            audit.pending.clear();
+        }
+        _console.printLine(str(boost::format("{\"enabled\":%s,\"jumps\":%d,\"cut\":%d,\"fade\":%d,\"offscreen\":%d,\"visible\":%d}") %
+                               (audit.enabled ? "true" : "false") % audit.jumps % audit.hiddenByCut % audit.hiddenByFade %
+                               audit.offscreen % audit.visible));
+    });
+}
+
+bool Game::conversationPauseQueued() const {
+    if (!_module || !_module->area()) {
+        return false;
+    }
+    for (const auto &object : _module->area()->objects()) {
+        if (!object) {
+            continue;
+        }
+        for (const auto &action : object->actions()) {
+            if (action && action->type() == ActionType::PauseConversation && !action->isCompleted()) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void Game::noteScriptedJump(const Object &actor, const glm::vec3 &from, const glm::vec3 &to) {
+    if (!_cutsceneAudit.enabled || _screen != Screen::Conversation) {
+        return;
+    }
+    CutsceneAudit::Jump jump;
+    jump.tick = _tickCount;
+    jump.tag = actor.tag();
+    jump.from = from;
+    jump.to = to;
+    _cutsceneAudit.pending.push_back(std::move(jump));
+}
+
+void Game::auditCutsceneFrame() {
+    // Presentation only: reads the camera that is about to render and the
+    // jumps since the last frame; changes nothing.
+    auto &audit = _cutsceneAudit;
+    if (!audit.enabled) {
+        return;
+    }
+    Camera *camera = getActiveCamera();
+    if (!camera || !camera->sceneNode()) {
+        audit.pending.clear();
+        audit.havePose = false;
+        return;
+    }
+    const glm::mat4 &transform = camera->sceneNode()->absoluteTransform();
+    glm::vec3 eye(transform[3]);
+    glm::vec3 forward(-glm::vec3(transform[2]));
+    if (glm::dot(forward, forward) > 0.0f) {
+        forward = glm::normalize(forward);
+    }
+    int cameraId = 0;
+    if (_screen == Screen::Conversation && _conversation) {
+        _conversation->getCamera(cameraId);
+    }
+    int type = static_cast<int>(_cameraType);
+    static const float kCutCos = std::cos(glm::radians(25.0f));
+    static const float kViewCos = std::cos(glm::radians(50.0f));
+    bool cut = !audit.havePose || type != audit.cameraType || cameraId != audit.cameraId ||
+               glm::distance(eye, audit.eye) > 1.0f || glm::dot(forward, audit.forward) < kCutCos;
+    float fade = std::max(_globalFade.renderOpacity(tickAlpha()), _dialogFade.renderOpacity(tickAlpha()));
+    auto seen = [](glm::vec3 point, const glm::vec3 &from, const glm::vec3 &dir) {
+        point.z += 1.0f;
+        glm::vec3 d(point - from);
+        float length = glm::length(d);
+        if (length < 0.1f) {
+            return true;
+        }
+        return length < 40.0f && glm::dot(d / length, dir) > kViewCos;
+    };
+    for (const auto &jump : audit.pending) {
+        if (glm::distance(jump.from, jump.to) < 0.5f) {
+            continue; // a jump on the spot shows nothing
+        }
+        ++audit.jumps;
+        bool fromSeen = audit.havePose && seen(jump.from, audit.eye, audit.forward);
+        bool toSeen = seen(jump.to, eye, forward);
+        const char *verdict;
+        if (fade >= 0.75f) {
+            verdict = "hidden-fade";
+            ++audit.hiddenByFade;
+        } else if (cut) {
+            verdict = "hidden-cut";
+            ++audit.hiddenByCut;
+        } else if (!fromSeen && !toSeen) {
+            verdict = "offscreen";
+            ++audit.offscreen;
+        } else {
+            verdict = "VISIBLE";
+            ++audit.visible;
+            if (!audit.captureDir.empty() && !audit.pendingCapture) {
+                audit.pendingCapture = str(boost::format("%s/visible_%06u_%s.tga") % audit.captureDir % jump.tick % jump.tag);
+            }
+        }
+        std::string where;
+        if (_screen == Screen::Conversation && _conversation) {
+            auto state = _conversation->inspectionState();
+            if (state.dialog) {
+                where = state.dialog->resRef;
+                const auto &entries = state.dialog->entries;
+                if (state.entry && !entries.empty() && state.entry >= entries.data() && state.entry < entries.data() + entries.size()) {
+                    where += str(boost::format(" E%d") % (state.entry - entries.data()));
+                }
+            }
+        }
+        info(str(boost::format("Cutscene audit: tick %u jump %s %s (%.1f, %.1f) -> (%.1f, %.1f) in %s, camera %d/%d%s, fade %.2f") %
+                 jump.tick % jump.tag % verdict % jump.from.x % jump.from.y % jump.to.x % jump.to.y % where % type %
+                 cameraId % (cut ? " cut" : "") % fade));
+    }
+    audit.pending.clear();
+    audit.havePose = true;
+    audit.cameraType = type;
+    audit.cameraId = cameraId;
+    audit.eye = eye;
+    audit.forward = forward;
+}
+
 bool Game::setDialogPlaceableCamera(int cameraId) {
+    debug(str(boost::format("Cutscene: tick %u placeable camera %d (conversation %s)") % _tickCount % cameraId %
+              (isConversationActive() ? "active" : "inactive")),
+          LogChannel::Conversation);
     if (!isConversationActive() || !_conversation || !_module || !_module->area()) {
         return false;
     }
@@ -6912,14 +7136,14 @@ void Game::consoleCamStatus(const ConsoleArgs &args) {
 }
 
 void Game::consoleWarp(const ConsoleArgs &args) {
-    consoleCheckUsage(args, 1, 1, "module");
+    consoleCheckUsage(args, 1, 2, "module [entry waypoint]");
     // Gallery states share an engine process for speed. A warp is their scene
     // boundary, so fixture-only HUD state must not bleed into the next image.
     _captureHUDPresentation = false;
     if (_hud) {
         _hud->clearCapturePresentation();
     }
-    loadModule(std::string(args[1].value()));
+    loadModule(std::string(args[1].value()), args.size() > 2 ? std::string(args[2].value()) : std::string());
 }
 
 void Game::consoleOpenMenu(const ConsoleArgs &args) {

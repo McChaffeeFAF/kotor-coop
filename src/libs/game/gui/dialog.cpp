@@ -17,6 +17,7 @@
 
 #include "reone/game/gui/dialog.h"
 
+#include <algorithm>
 #include <cmath>
 
 #include "reone/audio/mixer.h"
@@ -506,8 +507,32 @@ void DialogGUI::loadCurrentSpeaker() {
                                  _game.substituteCustomTokens(_currentEntry->text));
     setSpeakerAndListener(speaker, listener);
 
+    // Whoever talked before and is not this entry's speaker stops: the
+    // previous speaker may not be the one above when a reply list came
+    // between (it makes the player character the speaker).
+    stopTalkers(speaker);
     if (auto speakerCreature = std::dynamic_pointer_cast<Creature>(speaker)) {
         speakerCreature->startTalking(_lipAnimation);
+        auto talker = std::find_if(_talkers.begin(), _talkers.end(), [&](const auto &ref) {
+            return ref.resolve() == speakerCreature;
+        });
+        if (talker == _talkers.end()) {
+            _talkers.push_back(speakerCreature);
+        }
+    }
+}
+
+void DialogGUI::stopTalkers(const std::shared_ptr<Object> &except) {
+    for (auto it = _talkers.begin(); it != _talkers.end();) {
+        auto creature = it->resolve();
+        if (creature && creature == except) {
+            ++it;
+            continue;
+        }
+        if (creature) {
+            creature->stopTalking();
+        }
+        it = _talkers.erase(it);
     }
 }
 
@@ -907,12 +932,14 @@ void DialogGUI::onFinish() {
     releaseHeldCutParticipants();
     restoreSceneEquipment();
 
-    // Make current speaker stop talking, if any
+    // Make current speaker stop talking, if any, and everyone else this
+    // conversation set talking.
     auto speakerCreature =
         std::dynamic_pointer_cast<Creature>(_currentSpeaker.resolve());
     if (speakerCreature) {
         speakerCreature->stopTalking();
     }
+    stopTalkers();
 }
 
 void DialogGUI::holdCutParticipant(const std::shared_ptr<Creature> &creature) {

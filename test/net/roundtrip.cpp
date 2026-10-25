@@ -219,9 +219,15 @@ TEST(NetRoundTrip, snapshot_with_every_field_at_an_extreme) {
     e.state.locked = true;
     e.state.doorState = 3;
     e.state.doorTransition = 2;
-    e.state.flags = 0x3f;
+    e.state.flags = 0xff; // every flag, kFlagStealthed (protocol 9) and kFlagAutoCombat (protocol 11) included
     e.state.attackTarget = UINT32_MAX;
+    e.state.faction = kNoFaction;
     s.entities.push_back(e);
+    EntityRecord faction;
+    faction.fields = kFieldFaction;
+    faction.state.id = 2;
+    faction.state.faction = static_cast<uint8_t>(kMaxFactions - 1);
+    s.entities.push_back(faction);
     EntityRecord removed;
     removed.fields = kFieldRemoved;
     removed.state.id = 1;
@@ -691,6 +697,42 @@ TEST(NetRoundTrip, minigame_control_at_its_limits) {
     EXPECT_LE(encode(c).size(), kMaxClientMessageBytes);
 }
 
+TEST(NetRoundTrip, steer_moves_a_guest_s_creature_directly) {
+    EXPECT_GE(kProtocolVersion, 11);
+    EXPECT_EQ(130, static_cast<int>(MessageType::Steer));
+    Steer moving;
+    moving.seq = UINT32_MAX;
+    moving.actor = 0xfedcba98u;
+    moving.moving = true;
+    moving.facing = -3.1f;
+    moving.run = false;
+    expectRoundTrip(moving, "moving walk");
+    expectRoundTrip(Steer {}, "stop");
+    Steer back;
+    ASSERT_TRUE(decode(encode(moving), back));
+    EXPECT_EQ(moving.seq, back.seq);
+    EXPECT_EQ(moving.actor, back.actor);
+    EXPECT_TRUE(back.moving);
+    EXPECT_FLOAT_EQ(-3.1f, back.facing);
+    EXPECT_FALSE(back.run);
+    EXPECT_TRUE(isClientMessage(MessageType::Steer));
+    EXPECT_FALSE(isHostMessage(MessageType::Steer));
+    EXPECT_STREQ("steer", messageTypeName(MessageType::Steer));
+    ASSERT_TRUE(peekType(encode(moving)));
+    EXPECT_EQ(MessageType::Steer, *peekType(encode(moving)));
+    EXPECT_FALSE(peekType(std::vector<uint8_t> {131})) << "only 130 is taken";
+
+    auto refused = [&](const char *what, float facing) {
+        Steer c;
+        c.moving = true;
+        c.facing = facing;
+        EXPECT_FALSE(decode(encode(c), back)) << what;
+    };
+    refused("facing NaN", std::numeric_limits<float>::quiet_NaN());
+    refused("facing infinite", std::numeric_limits<float>::infinity());
+    refused("facing far beyond a few turns", 1000.0f);
+}
+
 TEST(NetRoundTrip, minigame_control_refuses_values_a_player_could_not_produce) {
     MiniGameControl out;
     auto refused = [&](const char *what, auto change) {
@@ -866,6 +908,28 @@ TEST(NetCoverage, notice_offer_event_and_ready_values_decode_only_in_their_range
     }
 }
 
+TEST(NetRoundTrip, reputation_table_at_its_limits) {
+    ReputationTable empty;
+    expectRoundTrip(empty, "empty reputation table");
+
+    ReputationTable table;
+    table.values.assign(kMaxFactions, std::vector<uint8_t>(kMaxFactions, 100));
+    table.values[0][1] = 0;
+    table.values[1][0] = 0;
+    expectRoundTrip(table, "largest reputation table");
+    ReputationTable back;
+    ASSERT_TRUE(decode(encode(table), back));
+    EXPECT_EQ(table.values, back.values);
+
+    // Values past 100, more factions than the limit: never from a host.
+    auto bytes = encode(table);
+    bytes[2] = 101;
+    EXPECT_FALSE(decode(bytes, back));
+    std::vector<uint8_t> oversized {static_cast<uint8_t>(MessageType::ReputationTable), static_cast<uint8_t>(kMaxFactions + 1)};
+    oversized.resize(2 + (kMaxFactions + 1) * (kMaxFactions + 1), 50);
+    EXPECT_FALSE(decode(oversized, back));
+}
+
 TEST(NetCoverage, a_message_type_byte_is_a_message_exactly_when_the_protocol_names_it) {
     // Every named type is a host message, a client message or both, and nothing unnamed is either.
     int named = 0;
@@ -879,5 +943,316 @@ TEST(NetCoverage, a_message_type_byte_is_a_message_exactly_when_the_protocol_nam
         EXPECT_NE(std::string("unknown"), messageTypeName(*type)) << "type " << value;
         EXPECT_TRUE(isHostMessage(*type) || isClientMessage(*type)) << messageTypeName(*type) << " goes nowhere";
     }
-    EXPECT_GE(named, 29);
+    EXPECT_GE(named, 30);
+    EXPECT_TRUE(isHostMessage(MessageType::ReputationTable));
+    EXPECT_FALSE(isClientMessage(MessageType::ReputationTable));
+}
+
+TEST(NetCoverage, protocol_9_carries_factions_and_stealth_without_colliding) {
+    // Factions and Stealth Mode were each protocol 8 on their own branches.
+    EXPECT_GE(kProtocolVersion, 9);
+    EXPECT_EQ(1 << 11, static_cast<int>(kFieldFaction));
+    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask)); // protocol 11 added kFieldLook, 13 kFieldProgress
+    EXPECT_EQ(120, static_cast<int>(MessageType::ReputationTable));
+    EXPECT_EQ(1 << 6, static_cast<int>(kFlagStealthed));
+    EXPECT_EQ(33, static_cast<int>(CommandType::Stealth));
+    EXPECT_EQ(40, static_cast<int>(CommandReject::StealthUnavailable));
+    EXPECT_EQ(41, static_cast<int>(CommandReject::StealthInCombat));
+
+    // A stealthed creature with a faction: both survive one snapshot.
+    Snapshot s;
+    s.tick = 5;
+    s.worldFields = 0;
+    EntityRecord e;
+    e.fields = kFieldFlags | kFieldFaction;
+    e.state.id = 7;
+    e.state.flags = kFlagVisible | kFlagStealthed;
+    e.state.faction = 3;
+    s.entities.push_back(e);
+    Snapshot back;
+    ASSERT_TRUE(decode(encode(s), back));
+    ASSERT_EQ(1u, back.entities.size());
+    EXPECT_EQ(e.state.flags, back.entities[0].state.flags);
+    EXPECT_EQ(3, back.entities[0].state.faction);
+}
+
+TEST(NetCoverage, auto_combat_flag_and_the_bench_refusal_round_trip) {
+    EXPECT_GE(kProtocolVersion, 11);
+    EXPECT_EQ(1 << 7, static_cast<int>(kFlagAutoCombat));
+    EXPECT_EQ(42, static_cast<int>(CommandReject::ItemEquippedByPlayer));
+    EXPECT_STREQ("item_equipped_by_player", commandRejectName(CommandReject::ItemEquippedByPlayer));
+
+    // Auto-combat on a stealthed creature: every flag bit survives.
+    Snapshot s;
+    s.tick = 5;
+    EntityRecord e;
+    e.fields = kFieldFlags;
+    e.state.id = 7;
+    e.state.flags = kFlagVisible | kFlagStealthed | kFlagAutoCombat;
+    s.entities.push_back(e);
+    Snapshot back;
+    ASSERT_TRUE(decode(encode(s), back));
+    ASSERT_EQ(1u, back.entities.size());
+    EXPECT_EQ(e.state.flags, back.entities[0].state.flags);
+
+    CommandResult refused;
+    refused.seq = 3;
+    refused.reason = CommandReject::ItemEquippedByPlayer;
+    CommandResult out;
+    ASSERT_TRUE(decode(encode(refused), out));
+    EXPECT_EQ(CommandReject::ItemEquippedByPlayer, out.reason);
+    refused.reason = static_cast<CommandReject>(43);
+    EXPECT_FALSE(decode(encode(refused), out)) << "nothing past the last named refusal";
+}
+
+TEST(NetCoverage, a_creatures_look_round_trips) {
+    EXPECT_GE(kProtocolVersion, 11);
+    EXPECT_EQ(1 << 12, static_cast<int>(kFieldLook));
+
+    Snapshot s;
+    s.tick = 5;
+    s.worldFields = 0;
+    EntityRecord e;
+    e.fields = kFieldLook;
+    e.state.id = 7;
+    e.state.look.playerName = "John";
+    e.state.look.colour = 3;
+    e.state.look.headRow = 12;
+    e.state.look.bodyVariation = 2;
+    e.state.look.textureVariation = 4;
+    e.state.look.slots = {{3, "g_i_gloves01"}, {10, "g_i_belt01"}};
+    s.entities.push_back(e);
+    EntityRecord plain;
+    plain.fields = kFieldLook;
+    plain.state.id = 8;
+    plain.state.look.playerName = "Host";
+    s.entities.push_back(plain);
+    expectRoundTrip(s, "look");
+
+    Snapshot back;
+    ASSERT_TRUE(decode(encode(s), back));
+    ASSERT_EQ(2u, back.entities.size());
+    EXPECT_EQ(e.state.look, back.entities[0].state.look);
+    EXPECT_EQ(-1, back.entities[1].state.look.headRow);
+    EXPECT_TRUE(back.entities[1].state.look.slots.empty());
+}
+
+TEST(NetCoverage, a_look_with_too_many_slots_or_bad_values_is_rejected) {
+    auto build = [](const EntityLook &look) {
+        Snapshot s;
+        s.tick = 1;
+        s.worldFields = 0;
+        EntityRecord e;
+        e.fields = kFieldLook;
+        e.state.id = 1;
+        e.state.look = look;
+        s.entities.push_back(e);
+        return encode(s);
+    };
+    Snapshot out;
+    EntityLook ok;
+    ok.playerName = "A";
+    EXPECT_TRUE(decode(build(ok), out));
+    EntityLook badBody = ok;
+    badBody.bodyVariation = 26;
+    EXPECT_FALSE(decode(build(badBody), out));
+    EntityLook badHead = ok;
+    badHead.headRow = -2;
+    EXPECT_FALSE(decode(build(badHead), out));
+    EntityLook many = ok;
+    for (size_t i = 0; i < kMaxLookSlots + 4; ++i) {
+        many.slots.push_back({static_cast<uint8_t>(i), "x"});
+    }
+    // The encoder caps the list, so the decoder sees the maximum.
+    ASSERT_TRUE(decode(build(many), out));
+    EXPECT_EQ(kMaxLookSlots, out.entities[0].state.look.slots.size());
+    auto truncated = build(many);
+    truncated.resize(truncated.size() - 3);
+    EXPECT_FALSE(decode(truncated, out));
+}
+
+TEST(NetCoverage, protocol_11_carries_control_scenes_and_presence_without_colliding) {
+    // Guest control, co-op scenes and presence were each protocol 10 on their own branches.
+    // 12 adds a stand-in template to the template field (design note companion_standins), no new ids.
+    // 13 was two branch builds: the host's level-up state (kFieldProgress, design note guest_npc_scripts)
+    // and MapState (id 170), the shared area map; 14 carries both (pinned below).
+    EXPECT_EQ(14, kProtocolVersion);
+
+    // Entity fields: one bit each, all inside the mask, the mask exactly the fields.
+    const uint16_t fields[] = {kFieldIdentity, kFieldPosition, kFieldFacing, kFieldAnim, kFieldVitals, kFieldWeapons, kFieldOpenLock,
+                               kFieldDoor, kFieldFlags, kFieldRemoved, kFieldTarget, kFieldFaction, kFieldLook, kFieldProgress};
+    uint32_t fieldBits = 0;
+    for (auto f : fields) {
+        EXPECT_TRUE(f != 0 && (f & (f - 1)) == 0) << "field " << f << " is not one bit";
+        EXPECT_EQ(0u, fieldBits & f) << "field bit " << f << " taken twice";
+        fieldBits |= f;
+    }
+    EXPECT_EQ(1 << 12, static_cast<int>(kFieldLook));
+    EXPECT_EQ(1 << 13, static_cast<int>(kFieldProgress));
+    EXPECT_EQ(fieldBits, static_cast<uint32_t>(kFieldAllMask));
+    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask));
+
+    // Entity flags: all eight bits, stealth 6 and auto-combat 7.
+    const uint8_t flags[] = {kFlagVisible, kFlagSelectable, kFlagInCombat, kFlagInConversation, kFlagPartyMember, kFlagPlayer, kFlagStealthed, kFlagAutoCombat};
+    uint32_t flagBits = 0;
+    for (auto f : flags) {
+        EXPECT_EQ(0u, flagBits & f) << "flag bit " << static_cast<int>(f) << " taken twice";
+        flagBits |= f;
+    }
+    EXPECT_EQ(0xffu, flagBits);
+    EXPECT_EQ(1 << 6, static_cast<int>(kFlagStealthed));
+    EXPECT_EQ(1 << 7, static_cast<int>(kFlagAutoCombat));
+
+    // Messages: 120 factions, 130 steering, nothing in between or after.
+    EXPECT_EQ(120, static_cast<int>(MessageType::ReputationTable));
+    EXPECT_EQ(130, static_cast<int>(MessageType::Steer));
+    for (int value = 121; value <= 140; ++value) {
+        if (value == 130) {
+            continue;
+        }
+        EXPECT_FALSE(peekType(std::vector<uint8_t> {static_cast<uint8_t>(value)})) << value;
+    }
+
+    // Refusals: 40-42 named and distinct, nothing past 42.
+    EXPECT_EQ(40, static_cast<int>(CommandReject::StealthUnavailable));
+    EXPECT_EQ(41, static_cast<int>(CommandReject::StealthInCombat));
+    EXPECT_EQ(42, static_cast<int>(CommandReject::ItemEquippedByPlayer));
+    EXPECT_STREQ("stealth_unavailable", commandRejectName(CommandReject::StealthUnavailable));
+    EXPECT_STREQ("stealth_in_combat", commandRejectName(CommandReject::StealthInCombat));
+    EXPECT_STREQ("item_equipped_by_player", commandRejectName(CommandReject::ItemEquippedByPlayer));
+    CommandResult refused;
+    refused.seq = 1;
+    refused.reason = static_cast<CommandReject>(43);
+    CommandResult result;
+    EXPECT_FALSE(decode(encode(refused), result));
+
+    // One guest's stand-in with everything at once: stealthed, on auto-combat,
+    // a faction and a look; and a steer naming it.
+    Snapshot s;
+    s.tick = 9;
+    s.worldFields = 0;
+    EntityRecord e;
+    e.fields = kFieldFlags | kFieldFaction | kFieldLook;
+    e.state.id = 617;
+    e.state.flags = kFlagVisible | kFlagPlayer | kFlagStealthed | kFlagAutoCombat;
+    e.state.faction = 2;
+    e.state.look.playerName = "John";
+    e.state.look.colour = 1;
+    e.state.look.headRow = 5;
+    e.state.look.slots = {{10, "g_i_belt01"}};
+    s.entities.push_back(e);
+    expectRoundTrip(s, "combined");
+    Snapshot back;
+    ASSERT_TRUE(decode(encode(s), back));
+    ASSERT_EQ(1u, back.entities.size());
+    EXPECT_EQ(e.state.flags, back.entities[0].state.flags);
+    EXPECT_EQ(2, back.entities[0].state.faction);
+    EXPECT_EQ(e.state.look, back.entities[0].state.look);
+
+    Steer steer;
+    steer.seq = 4;
+    steer.actor = 617;
+    steer.moving = true;
+    steer.facing = 1.0f;
+    Steer steerBack;
+    ASSERT_TRUE(decode(encode(steer), steerBack));
+    EXPECT_EQ(617u, steerBack.actor);
+}
+
+TEST(NetRoundTrip, map_state_at_its_limits) {
+    MapState empty;
+    expectRoundTrip(empty, "empty map state");
+
+    MapState state;
+    state.area = kLongest;
+    state.columns = 89;
+    state.rows = 44;
+    state.cells.assign((89 * 44 + 7) / 8, 0xA5);
+    state.notes = {"wp_a", "wp_b"};
+    expectRoundTrip(state, "map state");
+    MapState back;
+    ASSERT_TRUE(decode(encode(state), back));
+    EXPECT_EQ(state.cells, back.cells);
+    EXPECT_EQ(state.notes, back.notes);
+
+    MapState largest;
+    largest.area = "a";
+    largest.columns = kMaxMapColumns;
+    largest.rows = kMaxMapRows;
+    largest.cells.assign(kMaxMapColumns * kMaxMapRows / 8, 0xFF);
+    for (size_t i = 0; i < kMaxMapNotes; ++i) {
+        largest.notes.push_back(kLongest);
+    }
+    expectRoundTrip(largest, "largest map state");
+    EXPECT_LT(encode(largest).size(), kMaxHostMessageBytes);
+
+    // A grid past the limit, or a note list past it: never from a host.
+    auto tooWide = state;
+    tooWide.columns = kMaxMapColumns + 1;
+    EXPECT_FALSE(decode(encode(tooWide), back));
+    auto bytes = encode(state);
+    bytes.push_back(0);
+    EXPECT_FALSE(decode(bytes, back));
+    EXPECT_TRUE(isHostMessage(MessageType::MapState));
+    EXPECT_FALSE(isClientMessage(MessageType::MapState));
+}
+
+TEST(NetCoverage, protocol_14_carries_level_up_state_and_the_shared_map_without_colliding) {
+    // Guest NPC scripts (kFieldProgress) and the shared map (MapState) were each
+    // protocol 13 on their own branches; the merged build (alpha-0.4.9) is 14.
+    EXPECT_EQ(14, kProtocolVersion);
+
+    // Entity fields: bit 13 is the level-up state, and the mask ends there.
+    EXPECT_EQ(1 << 13, static_cast<int>(kFieldProgress));
+    EXPECT_EQ(0, static_cast<int>(kFieldProgress & (kFieldLook | kFieldFaction | kFieldTarget | kFieldRemoved)));
+    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask));
+    EXPECT_EQ(1, static_cast<int>(kProgressLevelUp));
+
+    // Messages: 170 is the map, host to client only; 130 steering is unchanged,
+    // and nothing else between 131 and 200 decodes as a type.
+    EXPECT_EQ(170, static_cast<int>(MessageType::MapState));
+    EXPECT_EQ(130, static_cast<int>(MessageType::Steer));
+    EXPECT_TRUE(isHostMessage(MessageType::MapState));
+    EXPECT_FALSE(isClientMessage(MessageType::MapState));
+    EXPECT_STREQ("map_state", messageTypeName(MessageType::MapState));
+    for (int value = 131; value <= 200; ++value) {
+        bool named = peekType(std::vector<uint8_t> {static_cast<uint8_t>(value)}).has_value();
+        EXPECT_EQ(value == 170, named) << value;
+    }
+
+    // Rejects: neither branch added one; anything past 42 still fails to decode.
+    CommandResult refused;
+    refused.seq = 1;
+    refused.reason = static_cast<CommandReject>(43);
+    CommandResult result;
+    EXPECT_FALSE(decode(encode(refused), result));
+
+    // A creature with a look and a level due, beside a map of the same area.
+    Snapshot s;
+    s.tick = 11;
+    s.worldFields = 0;
+    EntityRecord e;
+    e.fields = kFieldLook | kFieldProgress;
+    e.state.id = 618;
+    e.state.look.playerName = "John";
+    e.state.look.colour = 2;
+    e.state.progress = kProgressLevelUp;
+    s.entities.push_back(e);
+    expectRoundTrip(s, "combined 14");
+    Snapshot back;
+    ASSERT_TRUE(decode(encode(s), back));
+    ASSERT_EQ(1u, back.entities.size());
+    EXPECT_EQ(kProgressLevelUp, back.entities[0].state.progress);
+    EXPECT_EQ(e.state.look, back.entities[0].state.look);
+
+    MapState map;
+    map.area = "end_m01aa";
+    map.columns = 8;
+    map.rows = 2;
+    map.cells = {0x0F, 0xF0};
+    map.notes = {"wp_end_map01"};
+    MapState mapBack;
+    ASSERT_TRUE(decode(encode(map), mapBack));
+    EXPECT_EQ(map.cells, mapBack.cells);
+    EXPECT_EQ(map.notes, mapBack.notes);
 }

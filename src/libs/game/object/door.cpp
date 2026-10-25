@@ -511,7 +511,7 @@ void Door::onOpen(uint32_t triggererId) {
         return;
     }
     if (auto *coop = _game.coop()) {
-        triggererId = coop->scriptActor(triggererId); // a player's creature counts as the PC
+        triggererId = coop->scriptActor(triggererId, _onOpen); // a player's creature counts as the PC
     }
     setLastEntered(triggererId);
     _game.scriptRunner().run(
@@ -528,7 +528,7 @@ void Door::onFailToOpen(const Object &triggerer) {
     }
     uint32_t clicker = triggerer.id();
     if (auto *coop = _game.coop()) {
-        clicker = coop->scriptActor(clicker);
+        clicker = coop->scriptActor(clicker, _onFailToOpen);
     }
     setLastEntered(clicker);
     if (_onFailToOpen.empty()) {
@@ -565,7 +565,7 @@ void Door::runClickScript(uint32_t clickerId) {
         return;
     }
     if (auto *coop = _game.coop()) {
-        clickerId = coop->scriptActor(clickerId); // a player's creature counts as the PC
+        clickerId = coop->scriptActor(clickerId, _onClick); // a player's creature counts as the PC
     }
     setLastEntered(clickerId);
     _game.scriptRunner().run(

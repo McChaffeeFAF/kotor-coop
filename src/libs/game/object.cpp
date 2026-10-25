@@ -690,8 +690,61 @@ void Object::removeRandomWalks(const Action &incoming) {
     }
 }
 
+void Object::markScriptAction(Action &action) const {
+    // A story script driving this object (AssignCommand, an Action routine,
+    // DelayCommand). The auto-combat round a player's hand asks the AI for
+    // is the AI's, not a story's.
+    if (_game.inScriptRoutine() && !action.isUserAction() && _game.autoCombatScriptCaller() != _id) {
+        action.setScriptAction(true);
+    }
+}
+
+bool Object::isScriptSequenceType(ActionType type) {
+    switch (type) {
+    // Fighting, following and wandering: what the AI and fight scripts queue,
+    // which a player may take over at any time.
+    case ActionType::AttackObject:
+    case ActionType::CastSpell:
+    case ActionType::CastSpellAtObject:
+    case ActionType::CastSpellAtLocation:
+    case ActionType::UseFeat:
+    case ActionType::UseTalentOnObject:
+    case ActionType::UseTalentAtLocation:
+    case ActionType::Heal:
+    case ActionType::Taunt:
+    case ActionType::Follow:
+    case ActionType::FollowLeader:
+    case ActionType::FollowOwner:
+    case ActionType::ForceFollowObject:
+    case ActionType::RandomWalk:
+    case ActionType::Rest:
+    case ActionType::Sit:
+    case ActionType::EquipMostDamagingMelee:
+    case ActionType::EquipMostDamagingRanged:
+    case ActionType::EquipMostEffectiveArmor:
+    case ActionType::SwitchWeapons:
+        return false;
+    default:
+        return true;
+    }
+}
+
+bool Object::hasScriptSequence() const {
+    for (const auto &action : _actions) {
+        if (action->isScriptAction() && !action->isCompleted() && !action->isCancelled() && isScriptSequenceType(action->type())) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool Object::scriptDrivenSince(uint64_t tick) const {
+    return hasScriptSequence() || (_scriptActionTick && _scriptActionTick >= tick);
+}
+
 void Object::addAction(std::shared_ptr<Action> action) {
     if (!isRuntimeLive()) return;
+    markScriptAction(*action);
     if (auto conversation = dyn_cast<StartConversationAction>(action)) {
         conversation->admit();
     }
@@ -711,6 +764,7 @@ bool Object::cancelLastQueuedAction() {
 
 void Object::addActionOnTop(std::shared_ptr<Action> action) {
     if (!isRuntimeLive()) return;
+    markScriptAction(*action);
     if (auto conversation = dyn_cast<StartConversationAction>(action)) {
         conversation->admit();
     }
@@ -720,6 +774,7 @@ void Object::addActionOnTop(std::shared_ptr<Action> action) {
 
 void Object::delayAction(std::shared_ptr<Action> action, float seconds) {
     if (!isRuntimeLive()) return;
+    markScriptAction(*action);
     DelayedAction delayed;
     delayed.action = std::move(action);
     delayed.timer = std::make_unique<Timer>(seconds);
@@ -729,6 +784,11 @@ void Object::delayAction(std::shared_ptr<Action> action, float seconds) {
 void Object::updateActions(float dt) {
     if (isDead()) {
         clearAllActions(/*force=*/true);
+        // A DelayCommand is a timed event of its owner, not an action: it
+        // still fires once the owner has died. The Endar Spire soldiers'
+        // death events (k_pend_ud_cut*) cut the conversation to the next
+        // placeable camera this way while the player is moved.
+        updateDelayedActions(dt);
         return;
     }
     removeCompletedActions();
@@ -759,7 +819,7 @@ void Object::updateDelayedActions(float dt) {
         [](const DelayedAction &delayed) { return delayed.timer->elapsed(); });
     _delayed.erase(delayedToRemove, _delayed.end());
 
-    if (!canExecuteActions()) {
+    if (!canExecuteActions() || isDead()) {
         // A DelayCommand is a timed event, not an action: it fires on time
         // while its owner is held. k_ptar_calocut's delayed EffectDeath on
         // a horrified Calo waited forever on the queue, and the Ebon Hawk's
@@ -808,6 +868,10 @@ void Object::executeActions(float dt) {
         return;
     }
     _executingAction = action;
+    action->noteStarted(std::max<uint64_t>(_game.tickCount(), 1));
+    if (action->isScriptAction() && isScriptSequenceType(action->type())) {
+        _scriptActionTick = _game.tickCount();
+    }
     try {
         action->execute(action, *this, dt);
     } catch (...) {

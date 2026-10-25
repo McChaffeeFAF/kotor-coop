@@ -46,7 +46,7 @@ TEST(ArrayRef, std_array) {
 
 TEST(ArrayRef, std_vector) {
     std::vector<int> vec {1, 2};
-    check(vec, &vec[0], &vec[vec.size()]);
+    check(vec, vec.data(), vec.data() + vec.size());
 }
 
 TEST(ArrayRef, smallvector) {

@@ -9,12 +9,14 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
 
 #include <boost/json.hpp>
 #include <glm/vec3.hpp>
+#include <glm/vec2.hpp>
 
 #include "reone/net/protocol.h"
 #include "reone/net/transport.h"
@@ -24,10 +26,13 @@
 #include "coopflow.h"
 #include "coopminigame.h"
 #include "dedicated.h"
+#include "globalfade.h"
 #include "coopidmap.h"
+#include "coopjoinqueue.h"
 #include "guestbenchscreen.h"
 #include "visualeffectpresenter.h"
 
+#include "reone/game/coopcast.h"
 #include "reone/game/coopchat.h"
 
 namespace reone {
@@ -72,6 +77,7 @@ struct CoopConfig {
     // Host options (co-op design notes)
     bool hostOnlyTransitions {false}; // only the host's exit moves the party
     bool hostOnlyTrading {false};     // Story Mode: only the host may open stores
+    bool hostOnlyScenes {true};       // only the host's character starts scripted conversations and cutscenes (both modes)
     bool noPause {false};             // "No pause in co-op"
     float pauseCooldown {0.0f};       // seconds between one player's pauses
     float enemyScaling {1.0f};        // strength of the per-player enemy curve; 0 off
@@ -128,6 +134,7 @@ struct CoopLaunch {
     std::filesystem::path executablePath;
     bool hostOnlyTransitions {false};
     bool hostOnlyTrading {false};
+    bool hostOnlyScenes {true};
     bool noPause {false};
     float pauseCooldown {0.0f};
     float enemyScaling {1.0f};
@@ -200,8 +207,28 @@ public:
     void onVisualEffectBegin(const std::shared_ptr<VisualEffectPresenter::Request> &request);
     /** Host: a projectile left a weapon. */
     void onProjectileFired(const Creature &attacker, const Object &target, bool offhand, bool miss);
+    /**
+     * Host: a conversation is starting (Game::startDialog). Right after a module load, while a
+     * guest is still loading that module, it waits (true: not started now) until every guest
+     * has its first state or kConversationHoldSeconds pass, so nobody misses its first line.
+     */
+    bool holdConversation(const std::shared_ptr<Object> &owner, const std::string &resRef, const GlobalFade::DialogTicket &admission);
+    /** Host: a conversation waits for guests to load (statusJson "heldConversation"). */
+    bool conversationHeld() const { return _heldConversation.active; }
     /** Host: a movie started; clients play the same one from their install. */
     void onMovieStarted(const std::string &name);
+    /**
+     * Host: a script jumped actor (JumpToLocation, JumpToObject and their
+     * Action forms) from `from` to its new position. In Free Mode, a jump of
+     * the host's leader in a shared scene takes the guests in the area along
+     * (docs/guest_scenes.md).
+     */
+    void onScriptedJump(const Object &actor, const glm::vec3 &from, const glm::vec3 &to);
+    /** Host: guests moved by scene jumps, and guests pulled out of sealed spots, this session. */
+    uint64_t guestSceneJumps() const { return _guestSceneJumps; }
+    uint64_t guestsPulledAlong() const { return _guestsPulledAlong; }
+    /** Client: reputation tables received from the host and applied. */
+    uint64_t reputationTablesApplied() const { return _reputationTablesApplied; }
 
     /**
      * The pause key (design, "Pause"): any player pauses for everyone and any
@@ -284,6 +311,17 @@ public:
 
     /** Host: a player's stand-in (design item 12): outside the party, driven by its player. */
     bool isStandIn(uint32_t creatureId) const;
+
+    /**
+     * Host: a Shepard cameo (cameo.h) goes out to guests as a stand-in-like
+     * entity (the same look, no owner). Forget it when it is removed.
+     */
+    void hostRegisterCameo(uint32_t creatureId);
+    void hostForgetCameo(uint32_t creatureId);
+    /** Host: a guest plays John Shepard in this module (the cameo yields to them). */
+    bool hostGuestPlaysShepard(const std::string &module) const;
+    /** An item a Story Mode stand-in carries or wears: never the party's, it goes with the stand-in. */
+    bool isStandInItem(uint32_t itemId) const;
 
     /**
      * Host: a module snapshot (a save, or leaving the module) is about to be
@@ -393,9 +431,16 @@ public:
      * Host: the object a door or trigger script sees as the one entering or
      * opening. A player-controlled creature (a companion, stand-in or guest)
      * counts as the PC, as the party leader does in KotOR 2, so scripts that
-     * test GetFirstPC fire for it.
+     * test GetFirstPC fire for it. A script that names the creature's tag
+     * (GetTag(GetEnteringObject()) == "t3m4") sees the creature itself.
      */
-    uint32_t scriptActor(uint32_t objectId) const;
+    uint32_t scriptActor(uint32_t objectId, const std::string &script = std::string()) const;
+    /**
+     * Host, option hostOnlyScenes: a player's creature (not the host's own) entering or
+     * clicking a trigger whose script starts a conversation or a cutscene does not run it;
+     * the scene starts when the host's character arrives.
+     */
+    bool hostHoldsScene(uint32_t objectId, const std::string &script) const;
     /** Client: the host says this local creature is in combat. */
     bool clientInCombat(uint32_t localId) const;
     /** Host test seam: a guest's credits. */
@@ -425,6 +470,11 @@ public:
     std::shared_ptr<Object> benchHolder() const;
     /** Client: send one of the bench screen's requests. False when no bench is open. */
     bool clientBenchRequest(const BenchRequest &request);
+    /**
+     * Host, Story Mode: a guest's character has this item equipped now, so the host's own
+     * bench leaves it alone (wearer: that player's name). Free Mode benches never share items.
+     */
+    bool hostItemWornByGuest(uint32_t itemId, std::string &wearer) const;
     /** Where this player's guest character file lives. */
     std::filesystem::path guestPath() const;
 
@@ -454,12 +504,26 @@ public:
     struct MapMarker {
         std::shared_ptr<Object> object;
         bool player {false}; // a player's character; else a party member
+        uint8_t colour {0};  // the player's chat colour index (players only)
     };
     /**
      * Host: the characters connected clients control. Client: the host's
      * party and the players' characters, less the one this client controls.
      */
     std::vector<MapMarker> mapMarkers() const;
+
+    /** A creature a player plays, for name tags and the HUD portraits of guest characters. */
+    struct Presence {
+        std::shared_ptr<Object> object;
+        std::string name;
+        uint8_t colour {0};    // the player's chat colour index
+        bool own {false};      // the creature this screen's player controls
+        bool outsideParty {false}; // a stand-in or guest character: gets a HUD portrait
+    };
+    /** Every player's character in the loaded area, on this screen's own objects. */
+    std::vector<Presence> presences() const;
+    /** Fill a creature's look for the wire: the player (if any), and a stand-in's whole look. */
+    void hostFillLook(const Creature &creature, net::EntityLook &look) const;
 
     boost::json::object statusJson() const;
     /** Client: every replicated object as its host state and local binding. */
@@ -488,6 +552,7 @@ private:
         std::string preferredTag;
         net::SlotAssign slot;
         uint32_t moduleGeneration {0};
+        uint32_t loadedGeneration {0}; // the module visit this client acknowledged a state of: it has loaded it
         CoopRateLimiter limiter;
         std::deque<net::Command> pending;
         uint32_t violations {0};
@@ -523,6 +588,7 @@ private:
         bool trusted {false};  // came back with the token of a join the host approved: no prompt
         bool replaced {false}; // dropped because the same player reconnected: its token stays
         bool approved {false}; // the host let this player in (see hostMarkApproved)
+        uint64_t requestOrder {0}; // when its join request's message arrived (slot request, Free Mode character)
         enum class Approval {
             None,
             Pending,
@@ -537,6 +603,16 @@ private:
         // this module visit (a conversation, a save), so a respawn keeps wounds.
         uint32_t standIn {0};
         int standInHp {0};
+        // Where this player's character (stand-in or guest) stood when it last went away for
+        // a scene or a save in this module visit, and where the leader stood then: it comes
+        // back there while that spot still joins the leader (docs/guest_scenes.md).
+        struct AwaySpot {
+            bool valid {false};
+            glm::vec3 position {0.0f};
+            float facing {0.0f};
+            glm::vec3 leader {0.0f};
+        };
+        AwaySpot away;
         net::SlotAssign slotSent; // the slot as this client was last told it
         bool slotSentValid {false};
         // Completeness: the inventory and sheet this client was last sent,
@@ -562,6 +638,33 @@ private:
         bool pazaakPlaying {false};
         uint32_t terminalControl {0}; // the handed-over terminal whose session this guest runs now
         uint64_t terminalStartTick {0};
+        std::vector<uint8_t> reputationSent; // the reputation table this client was last sent
+        std::vector<uint8_t> mapSent;        // the shared-map message this client was last sent
+        // Direct steering (net::Steer): the movement keys as last received,
+        // applied each tick until a stop or until they stop coming.
+        net::Steer steer;
+        bool steerSeen {false};
+        uint64_t steerTick {0};     // host tick the last moving update arrived
+        bool steerApplied {false};  // the creature moved under steering last tick
+        CoopRateLimiter steerLimiter;
+        uint64_t steersReceived {0};
+        uint64_t steersDropped {0};  // over the rate, stale or for a creature that is not theirs
+        uint64_t steersStale {0};
+        uint64_t steersRateLimited {0};
+        uint64_t steersForeign {0};
+        std::map<std::string, uint64_t> steerRefused; // ticks a steer could not move the creature, by reason
+        uint64_t steerTicks {0};     // ticks a creature moved under steering
+        uint64_t slotResendTick {0}; // the last time a stale actor id made the host repeat the slot
+        // Stand-ins this player had earlier in this module visit: a steer or
+        // command still naming one (in flight across a respawn) is for the new one.
+        std::vector<uint32_t> pastStandIns;
+        // Who this player's stand-in is (coopcast.h), decided once per module
+        // visit, and the template it was built from (empty for a clone).
+        CoopCastChoice cast;
+        std::string castModule;
+        std::string castTemplate;
+        int castLevel {0};
+        std::set<std::string> shepardPlanets; // planets the generic character has greeted this player on
     };
 
     struct Replica {
@@ -571,6 +674,11 @@ private:
         float previousFacing {0.0f};
         bool interpolate {false};
         bool spawned {false}; // created by the client from its template
+        // The clip: the host tick its time was sent for, whether the local model plays it, and
+        // the tick a late start was last tried (a model that was not ready when it came).
+        uint32_t animTick {0};
+        bool animShown {false};
+        uint32_t animTried {0};
     };
 
     struct ClientProjectile {
@@ -608,7 +716,15 @@ private:
     std::map<uint64_t, RejoinToken> _rejoinTokens;
     /** The order tokens were issued in, oldest first, for evicting when the table is full. */
     std::deque<uint64_t> _rejoinTokenOrder;
-    uint32_t _joinPromptClient {0}; // the client the visible Accept / Decline prompt is about
+    // Join requests waiting for the host's Accept / Decline, oldest first, and
+    // the one prompt up for them; prompts something else took down unanswered
+    // (a screen change, a message box) are counted and asked again first.
+    CoopJoinQueue _joinQueue;
+    uint64_t _nextRequestOrder {1};
+    std::chrono::steady_clock::time_point _joinClockStart {std::chrono::steady_clock::now()};
+    double joinClock() const;
+    /** Queue a client's pending join request (once), oldest first. */
+    void hostQueueJoin(const HostClient &client);
     // Ready check (area exits)
     CoopReadyCheck _ready;
     uint32_t _nextReadyId {1};
@@ -642,9 +758,46 @@ private:
     };
     std::vector<HostVfx> _hostVfx;
     uint32_t _nextVfxHandle {1};
+    // A conversation held at a module load until guests have loaded (holdConversation).
+    struct HeldConversation {
+        bool active {false};
+        bool hadOwner {false};
+        std::weak_ptr<Object> owner;
+        std::string resRef;
+        GlobalFade::DialogTicket admission;
+        std::chrono::steady_clock::time_point since;
+    };
+    HeldConversation _heldConversation;
+    bool _releasingConversation {false};
+    uint64_t _conversationsHeld {0};
+    std::chrono::steady_clock::time_point _moduleChangedAt;
+    bool hostGuestsLoading() const;
+    void hostUpdateHeldConversation();
     // Stand-ins: stand-in id -> the solo character it copies
     std::map<uint32_t, uint32_t> _standInSource;
+    // Stand-ins built from a template (a companion copy, a character of the
+    // place): stand-in id -> the template, which the client builds it from too.
+    std::map<uint32_t, std::string> _standInTemplate;
+    std::set<std::string> _clientShepardPlanets; // client: planets the generic character has greeted on here
     std::string _standInPause; // why stand-ins are away now (status); empty when they may be out
+    // Guest scenes (coopscene.cpp): the last host tick a shared scene was
+    // running, whether one ran on the previous tick, and the counters.
+    uint64_t _sceneTick {0};
+    bool _sceneWasOn {false};
+    uint64_t _guestSceneJumps {0};
+    uint64_t _guestsPulledAlong {0};
+    // Factions (coopscene.cpp): host, the table as last encoded and when it
+    // was checked; client, the host's table, applied again after each load.
+    std::vector<uint8_t> _reputationBytes;
+    uint64_t _reputationCheckTick {0};
+    std::optional<net::ReputationTable> _hostReputation;
+    // Shared map (coopmap.cpp): host, the message as last encoded and when it
+    // was checked; client, the host's latest, applied whenever its area is loaded.
+    std::vector<uint8_t> _mapBytes;
+    uint64_t _mapCheckTick {0};
+    std::optional<net::MapState> _hostMap;
+    uint64_t _mapsApplied {0};
+    uint64_t _reputationTablesApplied {0};
     struct SnapshotHp {
         int base {0};
         int current {0};
@@ -725,9 +878,30 @@ private:
     uint32_t _pcSpeaker {0};                     // host: a guest's creature running a handed-over terminal
     bool _clientTerminal {false};
     bool _forcePrompts {false};
-    bool _steering {false};     // client: movement keys held, MoveTo commands going out
-    float _steerTimer {0.0f};
-    uint64_t _steerCommands {0};                // client: this player makes the terminal's choices
+    bool _steering {false};     // client: movement keys held, Steer updates going out
+    float _steerTimer {0.0f};   // client: seconds since the last Steer went out
+    float _steerFacing {0.0f};  // client: the direction last sent
+    bool _steerRun {true};
+    float _steerHeld {0.0f};    // client: seconds the keys have been held
+    uint32_t _steerSeq {0};
+    uint64_t _steerCommands {0}; // client: Steer messages sent
+    uint64_t _inputDropped {0};  // client: ticks the keys were held with nothing to drive
+    std::string _inputDroppedWhy;
+    float _noControlNoticeTimer {0.0f};
+    // Client: the creature this player controls is drawn from the newest
+    // state received (not the jitter-delayed one), plus a short prediction
+    // while the keys are held. Presentation only; the host stays authoritative.
+    uint32_t _ownTick {0};
+    uint32_t _ownId {0};
+    net::Vec3 _ownPrevious;
+    float _ownPreviousFacing {0.0f};
+    bool _ownInterpolate {false};
+    glm::vec2 _predictOffset {0.0f};
+    bool _predictShown {false};
+    float _ownSpeed {0.0f}; // measured from the host's states, m/s
+    net::Vec3 _ownSpeedFrom;
+    uint32_t _ownSpeedTick {0};
+    uint64_t _ownEarly {0}; // states of the own creature shown ahead of the jitter buffer
     std::string _terminalRead;                   // client: the info-only terminal last opened here
 
     // Client
@@ -877,6 +1051,12 @@ private:
     std::shared_ptr<Creature> hostSpawnStandIn(HostClient &client, const Creature &source, int index);
     void hostDespawnStandIn(HostClient &client, bool remember);
     std::shared_ptr<Object> clientSpawnStandIn(Replica &replica);
+    // Who a stand-in is (coopcast.h): the decision, what it rests on, the build.
+    CoopCastInput hostCastInput(const HostClient &client) const;
+    const CoopCastChoice &hostDecideCast(HostClient &client);
+    std::shared_ptr<Creature> hostBuildCastStandIn(HostClient &client, const CoopCastChoice &cast, std::string &templ);
+    int hostPartyLevel() const;
+    void hostReleaseStandInIds(uint32_t id);
     // Completeness (coopinventory.cpp)
     net::CommandReject hostCompanionCommand(HostClient &client, const net::Command &command, bool &handled);
     void hostSendInventories();
@@ -919,8 +1099,26 @@ private:
     void hostSendBench(HostClient &client, bool open);
     net::CommandReject hostBenchCommand(HostClient &client, const net::Command &command, bool &handled);
     void clientHandleBench(const net::BenchView &view);
+    /** Story Mode benches: a player other than client (null: the host) wears this item now. */
+    bool hostOtherPlayerWears(const HostClient *client, uint32_t itemId, std::string &wearer) const;
     void hostSendGuestInventory(HostClient &client);
     void hostSendRoster();
+    // Guest scenes and factions (coopscene.cpp)
+    bool hostSharedScene() const;
+    void hostUpdateScenes();
+    void hostMoveGuestsWith(const Creature &leader, const glm::vec3 &destination);
+    void hostPullAlongSealedGuests(const Creature &leader);
+    /** A player's character goes away for a scene or a save: remember its spot. */
+    void hostRememberAwaySpot(HostClient &client, const Creature &creature);
+    /** Coming back: the remembered spot when still valid and joined to the leader (true), else nothing changes. */
+    bool hostPlaceAtAwaySpot(HostClient &client, Creature &creature, const Creature &leader);
+    /** Players' characters that came back where they stood after a scene or a save, this session. */
+    uint64_t _guestsReturned {0};
+    void hostSendReputation();
+    // Shared map (coopmap.cpp)
+    void hostSendMap();
+    void clientApplyMap();
+    void clientApplyReputation();
     bool hostOfferGuest(HostClient &client, const std::shared_ptr<Object> &npc);
     // Would npc's conversation, as things stand, reach its store (or Pazaak)
     // node? Its Active conditions run with the client's creature as the PC
@@ -944,6 +1142,12 @@ private:
     void clientHandleStore(const net::StoreView &view);
     void clientSaveGuest() const;
     void clientSteer(float dt);
+    void clientSendSteer(bool moving, float facing, bool run, bool reliable);
+    void clientResolveControlled();
+    void clientApplyOwnState();
+    void clientUpdatePrediction(float dt);
+    void hostHandleSteer(HostClient &client, const net::Steer &steer);
+    void hostApplySteering();
     void clientAfterWelcomeFree();
 public:
     /** Client: open character generation for this player's guest character. */
@@ -968,6 +1172,8 @@ private:
     void hostResendSnapshots();
     void hostDropClient(net::ConnectionId connection, const std::string &reason);
     void hostPromptJoin();
+    /** How often a player whose join request waits hears that it still does. */
+    static constexpr double kJoinReminderSeconds = 60.0;
     void hostUpdateServiceLock();
     void hostPartyDefeated();
     void hostCollectVfxEnds();
@@ -983,6 +1189,10 @@ private:
     void clientUpdateReconnect();
     void clientSendHello();
     void clientApplyEntity(const net::EntityRecord &record);
+    /** A replica whose clip never reached its model (bound, or loaded, late): start it at the host's time now. */
+    void clientStartMissedAnimations(uint32_t tick);
+    uint32_t _applyingTick {0};
+    uint64_t _lateAnimations {0};
     std::shared_ptr<Object> clientBind(Replica &replica);
     void clientApplyWorld(uint16_t fields, const net::WorldState &world);
     void clientApplyEvent(const net::NetEvent &event);
@@ -1002,6 +1212,13 @@ private:
  */
 std::string coopBuildVersion(const std::filesystem::path &executable);
 
+/**
+ * Client: what the player is told when its movement keys or a click have
+ * nothing to drive (playtest 2026-10-22 row 13), or null when they do.
+ * controlled is the host id the slot names, hasActor whether it is here.
+ */
+const char *coopNoControlNotice(uint32_t controlled, bool hasActor);
+
 /** Free Mode: a new guest character from what character generation made. */
 net::GuestCharacter coopGuestFromCharacter(Game &game, const Character &character);
 
@@ -1011,6 +1228,11 @@ net::GuestCharacter coopGuestFromCharacter(Game &game, const Character &characte
  * cannot start. Nothing is created for CoopRole::None.
  */
 std::shared_ptr<CoopSession> startCoopSession(Game &game, const CoopLaunch &launch, std::string &error);
+
+/** The shared area map as the host sends it (coopmap.cpp): the explored grid and the enabled map notes. */
+net::MapState coopMapState(Area &area);
+/** A client applies the host's map to its own copy of the same area; false if the area or grid size differs. */
+bool coopApplyMapState(Area &area, const net::MapState &state);
 
 } // namespace game
 

@@ -232,6 +232,7 @@ void CoopSession::hostHandleGuest(HostClient &client, const GuestCharacter &gues
     if (known != _guests.end() && owner != _guestOwners.end() && client.rejoinToken && owner->second == client.rejoinToken) {
         // A rejoin with the token the record belongs to: the host's copy is the current one.
         client.guestReceived = true;
+        client.requestOrder = _nextRequestOrder++;
         info("Co-op: " + client.name + " rejoins as " + known->second.name);
         return;
     }
@@ -249,6 +250,7 @@ void CoopSession::hostHandleGuest(HostClient &client, const GuestCharacter &gues
     _guests[client.name] = guest;
     _guestOwners[client.name] = client.rejoinToken;
     client.guestReceived = true;
+    client.requestOrder = _nextRequestOrder++;
     hostTrimAbsentGuests();
     info("Co-op: " + client.name + " brings " + guest.name + " (" + std::to_string(guest.items.size()) + " items, " +
          std::to_string(guest.credits) + " credits)");
@@ -279,6 +281,7 @@ void CoopSession::hostUpdateGuests() {
                 client.approvalTag.clear();
                 client.approvalName = character + ", their own character";
                 info("Co-op: " + client.name + " wants to join as " + client.approvalName + "; waiting for the host");
+                hostQueueJoin(client);
             }
         }
         if (client.approval == HostClient::Approval::Declined) {
@@ -396,18 +399,25 @@ std::shared_ptr<Creature> CoopSession::hostSpawnGuest(HostClient &client, const 
         warn(std::string("Co-op: cannot build a guest's character: ") + e.what());
         return nullptr;
     }
-    bool placed = false;
+    // Back after a scene or a save: where it stood, while that spot still
+    // joins the leader; else beside the leader.
+    bool returned = hostPlaceAtAwaySpot(client, *creature, leader);
+    bool placed = returned;
     for (const auto &offset : coopStandInOffsets(leader.getFacing(), index)) {
+        if (placed) {
+            break;
+        }
         creature->setPosition(leader.position() + glm::vec3(offset, 0.0f));
         if (area.landObject(*creature)) {
             placed = true;
-            break;
         }
     }
     if (!placed) {
         creature->setPosition(leader.position());
     }
-    creature->setFacing(leader.getFacing());
+    if (!returned) {
+        creature->setFacing(leader.getFacing());
+    }
     area.add(creature);
     client.guestId = creature->id();
     client.guestSyncTick = _game.tickCount();
@@ -482,6 +492,7 @@ void CoopSession::hostDespawnGuest(HostClient &client) {
     auto creature = _game.getObjectById<Creature>(id);
     auto module = _game.module();
     if (creature && module && module->area()) {
+        hostRememberAwaySpot(client, *creature);
         creature->clearAllActions();
         module->area()->destroyObject(*creature);
         flushDestroyedObjects(*module->area());

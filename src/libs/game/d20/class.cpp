@@ -55,6 +55,15 @@ void CreatureClass::load(const TwoDA &twoDa, int row) {
     _skillPointBase = twoDa.getInt(row, "skillpointbase");
     _forceDie = twoDa.getInt(row, "forcedie", 0);
     _spellCaster = twoDa.getInt(row, "spellcaster", 0) != 0;
+    std::string primary(boost::to_upper_copy(twoDa.getString(row, "primaryabil")));
+    static const std::pair<const char *, Ability> kAbilities[] {
+        {"STR", Ability::Strength}, {"DEX", Ability::Dexterity}, {"CON", Ability::Constitution},
+        {"INT", Ability::Intelligence}, {"WIS", Ability::Wisdom}, {"CHA", Ability::Charisma}};
+    for (const auto &[label, ability] : kAbilities) {
+        if (primary == label) {
+            _primaryAbility = ability;
+        }
+    }
 
     _defaultAttributes.addClassLevels(this, 1);
     _defaultAttributes.setAbilityScore(Ability::Strength, twoDa.getInt(row, "str"));

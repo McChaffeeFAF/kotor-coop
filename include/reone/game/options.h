@@ -61,7 +61,12 @@ inline HudProfile parseHudProfile(const std::string &value) {
     throw std::invalid_argument("--hud must be k1 or k2, got \"" + value + "\"");
 }
 
+/** User setting: co-op name tags and guest-character portraits on the HUD (default on). */
+constexpr const char *kCoopNameTagsSetting = "coop.nametags";
+
 /** User setting (reone_settings.ini) behind the "Smarter companions" check box. */
+constexpr const char *kCameosSettingName = "optgameplay.CB_CAMEOS"; // the same key as kCameosSetting in cameo.h
+
 constexpr const char *kSmartCompanionsSetting = "optgameplay.CB_SMARTCOMPANIONS";
 
 // User settings behind the Enhanced preset's controls (Options > Graphics >
@@ -131,6 +136,9 @@ struct GameOptions {
     // combat scripts, and of the player character under auto-combat. Off,
     // those rounds run the retail scripts as before. A host setting in co-op.
     bool smartCompanions {false};
+    // Shepard cameos (cameo.h, Options > Gameplay > "Cameos"): John Shepard
+    // stands in the background of a few places. On by default; a host setting in co-op.
+    bool cameos {true};
 };
 
 struct OptionsView {

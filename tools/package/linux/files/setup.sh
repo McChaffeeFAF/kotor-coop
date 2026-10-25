@@ -5,7 +5,7 @@ set -u
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/scripts/common.sh"
 
 ask_folder() {
-    local which=$1 title exe hit source path answer
+    local which=$1 optional=${2:-} title exe hit source path answer
     if [ "$which" = k1 ]; then title=$K1_TITLE; exe=$K1_EXE; else title=$K2_TITLE; exe=$K2_EXE; fi
     if hit=$(find_install "$which"); then
         source=${hit%%$'\t'*}
@@ -17,9 +17,17 @@ ask_folder() {
         fi
     fi
     while true; do
-        answer=$(ask "Path of your $title folder (the one with $exe):" "")
+        if [ -n "$optional" ]; then
+            answer=$(ask "Path of your $title folder (the one with $exe), or leave empty to skip:" "")
+        else
+            answer=$(ask "Path of your $title folder (the one with $exe):" "")
+        fi
         answer=${answer//\"/}
         answer=${answer/#\~/$HOME}
+        if [ -z "$answer" ] && [ -n "$optional" ]; then
+            printf '%s' ""
+            return
+        fi
         if test_install "$answer" "$exe"; then
             (cd "$answer" && pwd -P) | tr -d '\n'
             return
@@ -32,9 +40,15 @@ ask_folder() {
 
 say "KotOR co-op test build: setup"
 k1=$(ask_folder k1)
-k2=$(ask_folder k2)
+# KotOR II is optional: without it the game plays KotOR 1 with the KotOR look.
+say "KotOR II is optional (it adds the KotOR II look and its feats, powers and classes)."
+k2=$(ask_folder k2 optional)
 cfg_set "$CONFIG" game "$k1"
-cfg_set "$CONFIG" k2game "$k2"
+if [ -n "$k2" ]; then
+    cfg_set "$CONFIG" k2game "$k2"
+else
+    cfg_remove "$CONFIG" k2game
+fi
 
 name=""
 while [ -z "$name" ]; do
@@ -42,8 +56,13 @@ while [ -z "$name" ]; do
 done
 cfg_set "$CONFIG" coop-name "$name"
 
-hud=$(ask "HUD style: k1 (KotOR look) or k2 (KotOR II look)" "k1")
-[ "$hud" = k2 ] && cfg_set "$CONFIG" hud k2 || cfg_set "$CONFIG" hud k1
+if [ -n "$k2" ]; then
+    hud=$(ask "HUD style: k1 (KotOR look) or k2 (KotOR II look)" "k1")
+    [ "$hud" = k2 ] && cfg_set "$CONFIG" hud k2 || cfg_set "$CONFIG" hud k1
+else
+    say "No KotOR II install: using the KotOR look (hud k1)."
+    cfg_set "$CONFIG" hud k1
+fi
 
 server=$(default_server "$ROOT")
 [ -n "$server" ] && cfg_set "$CONFIG" coop-server "$server"

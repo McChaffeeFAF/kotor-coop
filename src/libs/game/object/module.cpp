@@ -16,6 +16,7 @@
  */
 
 #include "reone/system/portablemath.h"
+#include "reone/game/cameo.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/scripteventqueue.h"
 #include "reone/game/object/module.h"
@@ -687,6 +688,12 @@ bool Module::clickObject(const std::shared_ptr<Object> &object) {
 }
 
 void Module::onObjectClick(const std::shared_ptr<Object> &object) {
+    // A Shepard cameo (cameo.h) is a stage prop: one line from his sound set,
+    // here and only here (a co-op client barks locally, no command to the host).
+    if (isCameoObject(*object)) {
+        cameoBark(static_cast<Creature &>(*object));
+        return;
+    }
     // A co-op client's click is a command to the host, never a local action.
     if (auto *coop = _game.coop(); coop && coop->interceptClick(object)) {
         return;
@@ -726,6 +733,10 @@ bool Module::isHostileToPartyLeader(const Creature &creature) const {
 }
 
 void Module::onCreatureClick(const std::shared_ptr<Creature> &creature) {
+    if (creature && creature->isCameo()) {
+        cameoBark(*creature); // a stage prop: one line, nothing more
+        return;
+    }
     debug(str(boost::format("Module: click: creature '%s', faction %d") % creature->tag() % static_cast<int>(creature->faction())));
 
     std::shared_ptr<Creature> partyLeader(_game.party().getLeader());

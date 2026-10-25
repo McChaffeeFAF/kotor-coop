@@ -21,7 +21,7 @@ namespace net {
  * floats, so nothing malformed reaches the game.
  */
 
-constexpr uint16_t kProtocolVersion = 6; // 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit); 6: text chat and pings (ChatSend/ChatMessage/PingSend/PingMarker, ids 100+), optional Hello password and Reject BadPassword (dedicated hosts)
+constexpr uint16_t kProtocolVersion = 14; // 14: creatures carry the host's level-up state (kFieldProgress, entity field bit 13), so a client's HUD level-up icons match the host's, and the shared area map (MapState, id 170: the explored grid and the enabled map notes); 13: (two branch builds, never released: level-up-state-only or map-only); 12: a stand-in's template field may end in :<template> (a companion copy, or coop_shepard for the generic character), which the client builds it from; 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit); 6: text chat and pings (ChatSend/ChatMessage/PingSend/PingMarker, ids 100+), optional Hello password and Reject BadPassword (dedicated hosts); 7: the conversation carries the script's placeable camera (SetDialogPlaceableCamera); 8: (two branch builds, never released: faction-only or stealth-only); 9: creatures carry their faction (kFieldFaction, entity field bit 11) and the host sends its reputation table (ReputationTable, id 120), plus Stealth Mode (Command Stealth 33, entity flag Stealthed bit 6, rejects StealthUnavailable 40/StealthInCombat 41); 10: (three branch builds, never released: control-only, scenes-only or presence-only); 11: direct steering for a guest's movement keys (Steer, id 130), entity flag AutoCombat bit 7, creatures carry a look (kFieldLook, entity field bit 12: a player's name and chat colour, and the head, body and extra equipment of a stand-in), reject ItemEquippedByPlayer 42
 
 /** A client message is small: a hello, a slot request or one command. */
 constexpr size_t kMaxClientMessageBytes = 2048;
@@ -78,7 +78,13 @@ enum class MessageType : uint8_t {
     ChatSend = 100,       // client -> host: a chat line to relay
     ChatMessage = 101,    // host -> client: a relayed chat line
     PingSend = 102,       // client -> host: mark a point or object in the world
-    PingMarker = 103      // host -> client: a short-lived marker to draw
+    PingMarker = 103,     // host -> client: a short-lived marker to draw
+    // Factions: numbered from 120 so in-flight branches do not collide.
+    ReputationTable = 120, // host -> client: the host's faction reputation table, when it changes
+    // Guest control (playtest 2026-10-22): numbered from 130 so in-flight branches do not collide.
+    Steer = 130, // client -> host: the movement keys, as a direction and walk/run, or a stop
+    // Shared map (playtest 2026-10-24): numbered from 170 so in-flight branches do not collide.
+    MapState = 170 // host -> client: the current area's explored grid and enabled map notes, when they change
 };
 
 /** The largest message a client may send, by its leading type byte. */
@@ -207,6 +213,9 @@ struct ModuleInfo {
 
 // Snapshots
 
+/** EntityState::progress bits. */
+constexpr uint8_t kProgressLevelUp = 1 << 0;
+
 enum EntityField : uint16_t {
     kFieldIdentity = 1 << 0, // type, key, tag, template: sent once per module visit
     kFieldPosition = 1 << 1,
@@ -219,8 +228,16 @@ enum EntityField : uint16_t {
     kFieldFlags = 1 << 8,
     kFieldRemoved = 1 << 9,
     kFieldTarget = 1 << 10,
-    kFieldAllMask = (1 << 11) - 1
+    kFieldFaction = 1 << 11, // creatures: the faction the host's reputation rules use for it
+    kFieldLook = 1 << 12,    // creatures: a player's name and chat colour; a stand-in's whole look
+    kFieldProgress = 1 << 13, // creatures: the host's level-up state (kProgressLevelUp)
+    kFieldAllMask = (1 << 14) - 1
 };
+
+/** EntityState::faction of an object that has none (game::Faction::Invalid). */
+constexpr uint8_t kNoFaction = 0xff;
+/** The largest faction table a host sends: repute.2da rows, saved factions included. */
+constexpr size_t kMaxFactions = 64;
 
 enum EntityFlag : uint8_t {
     kFlagVisible = 1 << 0,
@@ -231,7 +248,40 @@ enum EntityFlag : uint8_t {
     // host's party, and a player's character (the host's leader or a
     // connected client's).
     kFlagPartyMember = 1 << 4,
-    kFlagPlayer = 1 << 5
+    kFlagPlayer = 1 << 5,
+    kFlagStealthed = 1 << 6, // in Stealth Mode (design note stealth)
+    kFlagAutoCombat = 1 << 7 // auto-combat is on: the player's HUD toggle shows it lit (protocol 11)
+};
+
+/** The most extra equipment slots a look names (the four in kFieldWeapons are not repeated). */
+constexpr size_t kMaxLookSlots = 16;
+
+/** Equipment in a slot kFieldWeapons does not carry (belt, implant, gloves, arms). */
+struct LookSlot {
+    uint8_t slot {0};
+    std::string item; // template resref
+
+    bool operator==(const LookSlot &o) const { return slot == o.slot && item == o.item; }
+};
+
+/**
+ * What identifies a creature as a player's, and how a stand-in looks. Empty
+ * for every other creature. The name tags, the HUD portraits of guest
+ * characters and the stand-in's model are built from it on every screen.
+ */
+struct EntityLook {
+    std::string playerName; // the player who plays this creature; empty for no player
+    uint8_t colour {0};     // that player's chat colour index
+    int16_t headRow {-1};   // heads.2da row, -1 for the appearance's own
+    int16_t bodyVariation {-1};    // -1: from the body armour
+    int16_t textureVariation {-1}; // -1: from the body armour
+    std::vector<LookSlot> slots;
+
+    bool operator==(const EntityLook &o) const {
+        return playerName == o.playerName && colour == o.colour && headRow == o.headRow && bodyVariation == o.bodyVariation &&
+               textureVariation == o.textureVariation && slots == o.slots;
+    }
+    bool operator!=(const EntityLook &o) const { return !(*this == o); }
 };
 
 /** Replicated state of one object, keyed by the host's object id. */
@@ -262,6 +312,11 @@ struct EntityState {
     uint8_t doorTransition {0};
     uint8_t flags {0};
     uint32_t attackTarget {0};
+    // The host's reputationFaction() of a creature: party members and
+    // guests are the player faction. kNoFaction for everything else.
+    uint8_t faction {kNoFaction};
+    EntityLook look;
+    uint8_t progress {0}; // creatures: kProgressLevelUp when the host says a level is due
 };
 
 /** One entity in a snapshot: the id and the fields that changed. */
@@ -290,10 +345,12 @@ struct ConversationState {
     std::string speaker;
     std::vector<int32_t> replies; // reply node indices, in list order
     bool entryEnded {false};
+    int32_t placeableCamera {-1}; // SetDialogPlaceableCamera's camera, -1 for the node's own camera
 
     bool operator==(const ConversationState &o) const {
         return active == o.active && kind == o.kind && dialog == o.dialog && entry == o.entry &&
-               owner == o.owner && speaker == o.speaker && replies == o.replies && entryEnded == o.entryEnded;
+               owner == o.owner && speaker == o.speaker && replies == o.replies && entryEnded == o.entryEnded &&
+               placeableCamera == o.placeableCamera;
     }
     bool operator!=(const ConversationState &o) const { return !(*this == o); }
 };
@@ -411,7 +468,8 @@ enum class CommandType : uint8_t {
     BenchCraft = 29,     // param: material (0 components, 1 chemicals); item: the recipe's template
     BenchBreak = 30,     // param: host id of the item to break down
     BenchClose = 31,
-    MiniGameQuit = 32    // the owner of the running minigame leaves it
+    MiniGameQuit = 32,   // the owner of the running minigame leaves it
+    Stealth = 33         // param: 1 enter Stealth Mode, 0 leave it (design note stealth)
 };
 
 const char *commandTypeName(CommandType type);
@@ -468,7 +526,10 @@ enum class CommandReject : uint8_t {
     SkillTooLow = 36,           // the crafter's skill does not reach the recipe
     NotBreakable = 37,          // the item cannot be broken down, or has nothing to remove
     NotYourMiniGame = 38,       // a minigame command from a player who is not driving it
-    MiniGameBusy = 39           // a minigame is running already, or the host does not allow guest minigames now
+    MiniGameBusy = 39,          // a minigame is running already, or the host does not allow guest minigames now
+    StealthUnavailable = 40,    // no stealth unit equipped, or no points in Stealth (TLK 38062)
+    StealthInCombat = 41,       // "You cannot enter stealth mode while in combat." (TLK 1452)
+    ItemEquippedByPlayer = 42   // Story Mode bench: another player has that item equipped (protocol 11)
 };
 
 const char *commandRejectName(CommandReject reason);
@@ -732,6 +793,27 @@ struct MiniGameControl {
     float yawDelta {0.0f};
 };
 
+/**
+ * The guest's movement keys (WASD, mouse-look walk): the host moves the
+ * guest's creature through the same direct control its own keys use
+ * (Area::moveCreature at the creature's own walk or run speed), each tick
+ * until a stop or until updates stop coming (kSteerTimeoutSeconds). Sent
+ * when the direction or the gait changes and as a keepalive while moving;
+ * the newest seq wins, so updates may travel unreliably.
+ */
+struct Steer {
+    uint32_t seq {0};
+    uint32_t actor {0};   // host id of the creature the client steers
+    bool moving {false};  // false: stop
+    float facing {0.0f};  // radians, as Player::requestedMove: direction (-sin, cos)
+    bool run {true};
+};
+
+/** A steering creature with no update for this long stops on its own. */
+constexpr float kSteerTimeoutSeconds = 0.4f;
+/** Steer messages a client may send per second; the rest are dropped. */
+constexpr int kMaxSteersPerSecond = 40;
+
 enum class MiniGameKind : uint8_t {
     SwoopRace = 1,
     Turret = 2
@@ -872,6 +954,32 @@ struct PingMarker {
     float seconds {0.0f};
 };
 
+/**
+ * Host -> client: the host's reputation table, values[source][target] in
+ * 0..100 (the source faction's view of the target), so a client that runs
+ * no scripts sees AdjustReputation and saved reputations as the host does.
+ */
+struct ReputationTable {
+    std::vector<std::vector<uint8_t>> values; // square, at most kMaxFactions rows
+};
+
+constexpr size_t kMaxMapColumns = 256;
+constexpr size_t kMaxMapRows = 256;
+constexpr size_t kMaxMapNotes = 128;
+
+/**
+ * Host -> client: the explored grid of the area the host is in (the union of
+ * every player's reveals) and the tags of the waypoints whose map note is
+ * enabled. Presentation only: a client never reveals cells of its own.
+ */
+struct MapState {
+    std::string area;
+    uint16_t columns {0};
+    uint16_t rows {0};
+    std::vector<uint8_t> cells; // one bit per cell, row-major, least significant bit first: (columns * rows + 7) / 8 bytes
+    std::vector<std::string> notes; // tags of enabled map notes
+};
+
 /** True for well-formed UTF-8 (no overlong forms, surrogates or code points past U+10FFFF). */
 bool validUtf8(const std::string &text);
 
@@ -907,11 +1015,14 @@ std::vector<uint8_t> encode(const GuestRoster &message);
 std::vector<uint8_t> encode(const Offer &message);
 std::vector<uint8_t> encode(const BenchView &message);
 std::vector<uint8_t> encode(const MiniGameControl &message);
+std::vector<uint8_t> encode(const Steer &message);
 std::vector<uint8_t> encode(const MiniGameState &message);
 std::vector<uint8_t> encode(const ChatSend &message);
 std::vector<uint8_t> encode(const ChatMessage &message);
 std::vector<uint8_t> encode(const PingSend &message);
 std::vector<uint8_t> encode(const PingMarker &message);
+std::vector<uint8_t> encode(const ReputationTable &message);
+std::vector<uint8_t> encode(const MapState &message);
 
 // Decoding: false for anything malformed; the output is then unspecified.
 
@@ -939,11 +1050,14 @@ bool decode(const std::vector<uint8_t> &bytes, GuestRoster &out);
 bool decode(const std::vector<uint8_t> &bytes, Offer &out);
 bool decode(const std::vector<uint8_t> &bytes, BenchView &out);
 bool decode(const std::vector<uint8_t> &bytes, MiniGameControl &out);
+bool decode(const std::vector<uint8_t> &bytes, Steer &out);
 bool decode(const std::vector<uint8_t> &bytes, MiniGameState &out);
 bool decode(const std::vector<uint8_t> &bytes, ChatSend &out);
 bool decode(const std::vector<uint8_t> &bytes, ChatMessage &out);
 bool decode(const std::vector<uint8_t> &bytes, PingSend &out);
 bool decode(const std::vector<uint8_t> &bytes, PingMarker &out);
+bool decode(const std::vector<uint8_t> &bytes, ReputationTable &out);
+bool decode(const std::vector<uint8_t> &bytes, MapState &out);
 
 // Entity deltas
 

@@ -41,6 +41,7 @@
 #include "../menupresentation.h"
 #include "../runtimeref.h"
 #include "../pathfinder.h"
+#include "../visualeffectpresenter.h"
 
 #include "item.h"
 
@@ -215,6 +216,11 @@ public:
     void setIsPC(bool isPC);
     int assignedPuppet() const { return _assignedPuppet; }
     bool isPuppet() const { return _puppet; }
+    /**
+     * An ambient cameo (cameo.h): a stage prop. Scripts never see it (searches,
+     * shapes, faction loops), nothing perceives it, it is not saved.
+     */
+    bool isCameo() const { return _cameo; }
 
     void setGender(Gender gender) { _gender = gender; }
     void setAppearance(int appearance) { _appearance = appearance; }
@@ -236,6 +242,14 @@ public:
     /** Current vitality translated back to the serialized base-HP axis. */
     int serializedCurrentHitPoints() const;
     void setMovementRestricted(bool restricted) { _movementRestricted = restricted; }
+    /**
+     * Its player is steering it right now (a co-op guest's movement keys):
+     * it is not idle, so the idle engage and the auto-combat retry wait.
+     */
+    void noteDirectControl() {
+        _engageIdle = 0.0f;
+        _autoCombatIdle = 0.0f;
+    }
     void setImmortal(bool immortal) { _immortal = immortal; }
     // A friendly player character or companion that is not in the local
     // party, e.g. another co-op player's. Friendly collision treats it like a
@@ -395,6 +409,7 @@ public:
     void setAIStyle(NPCAIStyle style) { _aiStyle = style; }
     void setAssignedPuppet(int puppet) { _assignedPuppet = puppet; }
     void setPuppet(bool puppet) { _puppet = puppet; }
+    void setCameo(bool cameo) { _cameo = cameo; }
     void setWalkmeshMaterial(int material) { _walkmeshMaterial = material; }
 
     // Animation
@@ -502,6 +517,15 @@ public:
     void registerBump();
     void rememberPassSide();
     MovementType movementType() const { return _movementType; }
+    bool isTalking() const { return _talking; }
+    /**
+     * A party member that arrived on a FollowLeader keeps following: when
+     * the leader moves off, it goes after it again at once instead of
+     * standing until its heartbeat re-issues the follow (up to 6 s, the
+     * follower's "inefficient" bursts). Anything else it is ordered ends it.
+     */
+    void setFollowingLeader(bool following) { _followingLeader = following; }
+    bool isFollowingLeader() const { return _followingLeader; }
     // END Pathfinding
 
     // Blocking doors
@@ -591,6 +615,21 @@ public:
      */
     bool autoCombat() const { return _autoCombat; }
     void setAutoCombat(bool autoCombat) { _autoCombat = autoCombat; }
+    // Stealth Mode (design note stealth)
+
+    /** In Stealth Mode: hostile observers notice it only by an Awareness check. */
+    bool isStealthed() const { return _stealthMode; }
+    /** Turn the mode on or off with no checks (the game's request path checks). */
+    void setStealthMode(bool on);
+    /** A stealth unit (baseitems.2da Stealth_Unit) in the belt or creature armour slot. */
+    bool hasStealthUnitEquipped() const;
+    /** Stealthed and without K2's Stealth Run feat: walking only. */
+    bool stealthWalkOnly() const;
+    /** Co-op client: the host's word on the mode, for the HUD and walking (no visual of its own). */
+    void setReplicaStealthMode(bool on) { _stealthMode = on; }
+    /** Co-op client: the host's level-up state for this creature (HUD icon, level-up button). */
+    void setReplicaLevelUp(bool due);
+
     bool brainRepositioned() const { return _brainRepositioned; }
     void setBrainRepositioned(bool value) { _brainRepositioned = value; }
 
@@ -668,6 +707,14 @@ public:
     bool canAffordForcePower(const Spell &spell) const;
     /** Pays for a power at the start of its cast; never fails, clamps at 0. */
     void spendForcePoints(const Spell &spell);
+    /**
+     * The cast of \p spell has begun: its force point cost is recorded as the
+     * charge stands now, whether or not this cast pays it (an item or cheat
+     * cast does not). GetSpellForcePointCost reads the recorded cost.
+     */
+    void recordSpellForcePointCost(const Spell &spell);
+    /** The cost recorded by the last cast of \p spell, if that was the last cast recorded. */
+    std::optional<int> recordedSpellForcePointCost(SpellType spell) const;
 
     /**
      * AddMultiClass: the class joins at level 0 (appended, or replacing the
@@ -806,6 +853,7 @@ public:
     void runEndRoundScript();
     void updateCombatHandover(float dt);
     void updateIdleEngage(float dt);
+    void updateIdleFollow(float dt);
     bool seesLiveEnemy() const;
     void runDialogueScript(uint32_t speakerId, int32_t listenNumber);
     void runAttackedScript(uint32_t attackerId);
@@ -879,6 +927,15 @@ public:
     /** DuplicateHeadAppearance: show this heads.2da row. Rebuilds the model. */
     void setHeadOverride(int headRow);
 
+    /**
+     * Co-op: the body model letter (a = 0) and texture variation a stand-in
+     * shows, as the host built them; -1 for both returns to the body armour's.
+     * Presentation only. Rebuilds the model.
+     */
+    void setReplicaBodyLook(int bodyVariation, int textureVariation);
+    int replicaBodyVariation() const { return _replicaBodyVariation; }
+    int replicaTextureVariation() const { return _replicaTextureVariation; }
+
 protected:
     bool canExecuteActions() const override;
 
@@ -886,6 +943,8 @@ private:
     friend class ModuleSnapshotBuilder;
     friend class TestGameModule;
     std::optional<int> _headOverride; /**< DuplicateHeadAppearance; runtime only */
+    int _replicaBodyVariation {-1};    /**< co-op stand-in look; runtime only */
+    int _replicaTextureVariation {-1}; /**< co-op stand-in look; runtime only */
     // Serializable
     RacialType _race {RacialType::Unknown};
     Subrace _subrace {Subrace::None};
@@ -897,6 +956,7 @@ private:
     bool _isPC {false};
     int32_t _assignedPuppet {-1};
     bool _puppet {false};
+    bool _cameo {false};
     Faction _faction {Faction::Invalid};
     std::optional<Faction> _factionBeforeModifier;
     int _furyDamageBonus {0};
@@ -914,6 +974,9 @@ private:
     int _temporaryForce {0};
     int _temporaryHitPoints {0};
     int16_t _maxForcePoints {0};
+    // The last cast's spell and the force point cost recorded when it began
+    // (not saved: after a load the cost is worked out again).
+    std::optional<std::pair<SpellType, int>> _recordedSpellCost;
     // GetDamageDealtByType: amounts per DAMAGE_TYPE_* bit of the last damage
     // event (one damager, one tick).
     std::array<int, 15> _lastDamageByType {};
@@ -1096,6 +1159,14 @@ private:
     bool _combatHeld {false};
     // Co-op: how long a client's character has stood with nothing queued.
     float _engageIdle {0.0f};
+    bool _followingLeader {false}; /**< arrived on a FollowLeader and nothing else ordered since */
+    float _followCheck {0.0f};
+    // Stealth Mode and the stealth field visual it wears while on.
+    bool _stealthMode {false};
+    std::optional<bool> _replicaLevelUp; // co-op client: the host's level-up state, when it sent one
+    std::shared_ptr<VisualEffectPresenter::Request> _stealthVisual;
+    uint32_t _stealthVisualGeneration {0};
+    void updateStealth();
 
     bool _destroyable {true};
     bool _raiseable {true};
@@ -1236,6 +1307,11 @@ private:
     void updateDeathFromCurrentHitPoints();
     // END Blueprint
 };
+
+/** Whether the object is an ambient cameo creature (see Creature::isCameo). */
+inline bool isCameoObject(const Object &object) {
+    return object.type() == ObjectType::Creature && static_cast<const Creature &>(object).isCameo();
+}
 
 } // namespace game
 

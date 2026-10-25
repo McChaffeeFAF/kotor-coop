@@ -68,6 +68,16 @@ struct AnimationFlags {
 
     static constexpr int retargetRoot = 0x40; /**< map an external animation's proxy root onto the target model root */
 
+    /**
+     * Overlay only: this animation starts a new set of overlays. The base
+     * channels of the earlier set are dropped even when they were overlays
+     * too (otherwise overlays only ever pile up); the same clip, unsynced,
+     * goes on from where it was. A creature talking while it walks or runs
+     * plays its body clip with this, so the gait it stopped does not go on
+     * looping, footsteps and all, under the next line (alpha-0.4.5 Trask).
+     */
+    static constexpr int newOverlaySet = 0x80;
+
     static constexpr int loopOverlay = loop | overlay;
     static constexpr int loopBlend = loop | blend;
 };

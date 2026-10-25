@@ -400,6 +400,25 @@ TEST_F(SnapshotFixture, k1_active_member_exclusion_is_unchanged) {
     EXPECT_EQ(worldCreature->id(), creatures.front()->getUint("ObjectId"));
 }
 
+TEST_F(SnapshotFixture, a_shepard_cameo_is_never_saved) {
+    auto cameo = game.newCreature();
+    cameo->setTag("coop_cameo");
+    cameo->setCameo(true);
+    TestGameModule::addSnapshotObject(*area, cameo);
+    auto worldCreature = game.newCreature();
+    worldCreature->setTag("bystander");
+    TestGameModule::addSnapshotObject(*area, worldCreature);
+
+    auto saved = ModuleSnapshotBuilder(game, "module_cameo").build();
+    ASSERT_TRUE(saved) << saved.message;
+    const auto &creatures = saved.snapshot->git->getList("Creature List");
+    ASSERT_EQ(1u, creatures.size()) << "the cameo is a stage prop: no GIT record";
+    EXPECT_EQ(worldCreature->id(), creatures.front()->getUint("ObjectId"));
+    for (const auto &creature : creatures) {
+        EXPECT_NE(cameo->id(), creature->getUint("ObjectId"));
+    }
+}
+
 TEST_F(SnapshotFixture, writes_and_reopens_complete_deterministic_module_state) {
     game.setCustomToken(9, "nine");
     game.setCustomToken(2, "two");
@@ -564,7 +583,11 @@ TEST_F(SnapshotFixture, writes_and_reopens_complete_deterministic_module_state) 
     ASSERT_EQ(e2Creature.savedEffects().size(), 1);
     ASSERT_EQ(e2Creature.savedActionQueue().actions.size(), 1);
 
-    EXPECT_TRUE(are->getBool("Unescapable"));
+    // The area flags are in the GIT's AreaProperties, as the game stores them.
+    EXPECT_FALSE(are->has("Unescapable"));
+    ASSERT_TRUE(git->findStruct("AreaProperties"));
+    EXPECT_TRUE(git->findStruct("AreaProperties")->getBool("Unescapable"));
+    EXPECT_FALSE(git->findStruct("AreaProperties")->getBool("RestrictMode"));
     EXPECT_EQ(are->getUint("StealthXPCurrent"), 30u);
     EXPECT_EQ(are->getString("FutureArea"), "preserve-area");
     EXPECT_EQ(git->getString("FutureGit"), "preserve-git");
