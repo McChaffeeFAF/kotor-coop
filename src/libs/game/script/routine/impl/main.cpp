@@ -37,6 +37,7 @@
 #include "reone/game/effect/visual.h"
 #include "reone/game/equipmentrules.h"
 #include "reone/game/event.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/game.h"
 #include "reone/game/creaturestates.h"
@@ -2664,6 +2665,57 @@ static Variable ApplyEffectAtLocation(const std::vector<Variable> &args, const R
     return Variable::ofNull();
 }
 
+/** The kind of object whose script is running (its Caller), for the co-op control policy. */
+static coopcontrol::ScriptKind callerScriptKind(const RoutineContext &ctx) {
+    auto caller = ctx.execution.findArg(script::ArgKind::Caller);
+    auto self = caller ? ctx.game.getObjectById(caller->objectId) : nullptr;
+    auto type = self ? self->type() : ObjectType::Invalid;
+    return type == ObjectType::Door        ? coopcontrol::ScriptKind::Door
+           : type == ObjectType::Trigger   ? coopcontrol::ScriptKind::Trigger
+           : type == ObjectType::Placeable ? coopcontrol::ScriptKind::Placeable
+           : type == ObjectType::Creature  ? coopcontrol::ScriptKind::Creature
+                                           : coopcontrol::ScriptKind::Other;
+}
+
+/**
+ * Co-op host: the party index of the guest's character that fired this door,
+ * trigger or placeable script by its own act (a click, an open, a use) when
+ * the policy reads it as the leader for it, else -1. Walking into a trigger
+ * does not count: a trigger's "is member 0 Trask" test (end_trig02) asks
+ * whether the single player is still on Trask, which a guest always is.
+ * Read per call from this script's own event, so it lasts exactly as long as
+ * the script and changes no party.
+ */
+static int scriptEventLeaderIndex(const RoutineContext &ctx) {
+    auto *coop = ctx.game.coop();
+    if (!coop || !coop->isHost()) {
+        return -1;
+    }
+    auto kind = callerScriptKind(ctx);
+    if (kind != coopcontrol::ScriptKind::Door && kind != coopcontrol::ScriptKind::Trigger &&
+        kind != coopcontrol::ScriptKind::Placeable) {
+        return -1;
+    }
+    for (auto arg : {script::ArgKind::ClickingObject, script::ArgKind::LastOpenedBy, script::ArgKind::LastUsedBy}) {
+        auto event = ctx.execution.findArg(arg);
+        auto creature = event ? ctx.game.getObjectById<Creature>(event->objectId) : nullptr;
+        if (!creature) {
+            continue;
+        }
+        if (!coopcontrol::scriptSeesAsLeader(coopcontrol::observe(ctx.game, *creature), coopcontrol::observeWorld(ctx.game), kind)) {
+            return -1;
+        }
+        const auto &members = ctx.game.party().members();
+        for (int i = 0; i < static_cast<int>(members.size()); ++i) {
+            if (members[i].creature == creature) {
+                return i;
+            }
+        }
+        return -1;
+    }
+    return -1;
+}
+
 static Variable GetIsPC(const std::vector<Variable> &args, const RoutineContext &ctx) {
     // Load
     auto oCreature = getObject(args, 0, ctx);
@@ -2677,20 +2729,14 @@ static Variable GetIsPC(const std::vector<Variable> &args, const RoutineContext 
     // the Sith base for GetIsPC(entering) with tag "t3m4", and
     // k_ptar_sthchk_en tests GetIsPC with T3-M4 in the party. The player
     // character stays a PC while a companion leads.
-    auto &party = ctx.game.party();
-    bool pc = creature && (creature == party.player() || creature == party.getLeader());
     // Co-op host: to a door, trigger or placeable script a companion a guest
     // controls is that player's character, as a companion the host switches
     // to is (T3-M4 at tar02's Sith base). Creature scripts (the AI, perception,
-    // conversations) keep one PC, as in single player.
-    if (!pc && creature) {
-        auto *coop = ctx.game.coop();
-        if (coop && coop->isHost() && coop->isPlayerControlled(creature->id())) {
-            auto caller = ctx.execution.findArg(script::ArgKind::Caller);
-            auto self = caller ? ctx.game.getObjectById(caller->objectId) : nullptr;
-            auto type = self ? self->type() : ObjectType::Invalid;
-            pc = type == ObjectType::Door || type == ObjectType::Trigger || type == ObjectType::Placeable;
-        }
+    // conversations) keep one PC, as in single player. The rule is the
+    // control policy's (coopcontrol::scriptSeesAsPC).
+    bool pc = false;
+    if (creature) {
+        pc = coopcontrol::scriptSeesAsPC(coopcontrol::observe(ctx.game, *creature), coopcontrol::observeWorld(ctx.game), callerScriptKind(ctx));
     }
     return Variable::ofInt(static_cast<int>(pc));
 }
@@ -6621,8 +6667,10 @@ static Variable GetPartyMemberByIndex(const std::vector<Variable> &args, const R
 
     // Transform
 
-    // Execute
-    auto member = ctx.game.party().getMember(nIndex);
+    // Execute. Co-op: a guest's character that fired this door, trigger or
+    // placeable script leads for it (end_m01aa's first door opens for party
+    // member 0 being end_trask), its index and 0 swapping.
+    auto member = ctx.game.party().getMember(coopcontrol::scriptPartyIndex(nIndex, scriptEventLeaderIndex(ctx)));
     // Auto-combat (P1 item 10): the generic AI skips party member 0, so while
     // it decides the leader's round, index 0 reads as the next member.
     if (nIndex == 0 && member && ctx.game.autoCombatScriptCaller() == member->id()) {
@@ -8445,14 +8493,14 @@ static Variable GetIsPartyLeader(const std::vector<Variable> &args, const Routin
     // Load
     auto oCharacter = getObjectOrCaller(args, 0, ctx);
 
-    // Execute
-    auto leader = ctx.game.party().getLeader();
+    // Execute (co-op: as GetPartyMemberByIndex(0))
+    auto leader = ctx.game.party().getMember(coopcontrol::scriptPartyIndex(0, scriptEventLeaderIndex(ctx)));
     return Variable::ofInt(oCharacter && leader && leader->id() == oCharacter->id() ? 1 : 0);
 }
 
 static Variable GetPartyLeader(const std::vector<Variable> &args, const RoutineContext &ctx) {
-    // Execute
-    auto leader = ctx.game.party().getLeader();
+    // Execute (co-op: as GetPartyMemberByIndex(0))
+    auto leader = ctx.game.party().getMember(coopcontrol::scriptPartyIndex(0, scriptEventLeaderIndex(ctx)));
     return Variable::ofObject(getObjectIdOrInvalid(leader));
 }
 

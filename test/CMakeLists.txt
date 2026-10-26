@@ -157,6 +157,7 @@ set(TESTS_SOURCES
     ${TESTS_SOURCE_DIR}/game/gateg1.cpp
     ${TESTS_SOURCE_DIR}/game/talents.cpp
     ${TESTS_SOURCE_DIR}/game/companionbrain.cpp
+    ${TESTS_SOURCE_DIR}/game/coopcontrol_policy.cpp
     ${TESTS_SOURCE_DIR}/game/pathfinder.cpp
     ${TESTS_SOURCE_DIR}/game/regeneration.cpp
     ${TESTS_SOURCE_DIR}/game/routines1.cpp

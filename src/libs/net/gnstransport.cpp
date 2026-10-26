@@ -210,6 +210,13 @@ public:
     bool listen(uint16_t port, std::string &error) {
         SteamNetworkingIPAddr address;
         address.Clear();
+        // Test runs set REONE_COOP_LOOPBACK=1: the host then listens on 127.0.0.1
+        // only, which keeps local two-engine checks off the network (and out of
+        // the OS firewall's prompts). Players never set it.
+        const char *loopback = std::getenv("REONE_COOP_LOOPBACK");
+        if (loopback && *loopback && std::string(loopback) != "0") {
+            address.SetIPv4(0x7F000001u, port);
+        }
         address.m_port = port;
         auto options = connectionOptions();
         _listen = _sockets->CreateListenSocketIP(address, static_cast<int>(options.size()), options.data());

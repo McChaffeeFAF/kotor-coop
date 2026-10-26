@@ -7,6 +7,7 @@
 // and input with nothing to drive says so instead of vanishing.
 
 #include "reone/system/portablemath.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 
 #include <algorithm>
@@ -138,9 +139,15 @@ void CoopSession::hostApplySteering() {
             CoopCommandTargets targets;
             bool own = controlled == client.standIn || controlled == client.guestId;
             auto reason = validateCoopCommand(_game, probe, controlled, targets, own, freeMode());
-            if (reason == CommandReject::None && targets.actor && targets.actor->isMovementRestricted() &&
-                !targets.actor->actions().empty() && !targets.actor->actions().front()->isUserAction() &&
-                !targets.actor->isKnockedDown() && targets.actor->getHeldPoseAnimation().empty()) {
+            coopcontrol::FrontAction front;
+            if (targets.actor) {
+                front.present = !targets.actor->actions().empty();
+                front.userAction = front.present && targets.actor->actions().front()->isUserAction();
+                front.movementRestricted = targets.actor->isMovementRestricted();
+                front.knockedDown = targets.actor->isKnockedDown();
+                front.heldPose = !targets.actor->getHeldPoseAnimation().empty();
+            }
+            if (reason == CommandReject::None && targets.actor && coopcontrol::steeringOverridesAction(front)) {
                 // An attack the player did not order (the round's automatic
                 // continuation, an idle engage) holds the creature mid-swing:
                 // the player's keys win, as they would on its own machine.

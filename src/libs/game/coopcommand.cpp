@@ -1,6 +1,7 @@
 /* Copyright (c) 2026 The reone project contributors */
 
 #include "reone/game/coopcommand.h"
+#include "reone/game/coopcontrol_policy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -880,20 +881,11 @@ bool coopScriptNamesTag(Game &game, const std::string &script, const std::string
 }
 
 bool coopScriptHoldsCreature(Game &game, const Creature &creature) {
-    if (game.areClicksBlocked()) {
-        return true; // NoClicksFor: no player clicks, the host's or a guest's
-    }
-    if (!creature.hasScriptSequence()) {
-        return false;
-    }
-    auto front = creature.getCurrentAction();
-    if (front && front->isScriptAction() && front->startTick()) {
-        auto limit = static_cast<uint64_t>(kCoopScriptHoldSeconds * static_cast<float>(game.tickRate()));
-        if (game.tickCount() > front->startTick() + limit) {
-            return false;
-        }
-    }
-    return true;
+    // The rule is the control policy's (coopcontrol::scriptHoldsCreature):
+    // NoClicksFor, or a story script's sequence younger than the hold limit.
+    coopcontrol::CreatureFacts facts;
+    coopcontrol::observeScriptHold(game, creature, facts);
+    return coopcontrol::scriptHoldsCreature(facts, coopcontrol::observeWorld(game));
 }
 
 bool coopScriptChangesStory(Game &game, const std::string &script) {

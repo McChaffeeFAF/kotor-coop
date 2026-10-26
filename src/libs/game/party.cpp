@@ -19,6 +19,7 @@
 
 #include <algorithm>
 
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/game.h"
 #include "reone/game/object/area.h"
@@ -578,14 +579,8 @@ void Party::syncMembersXP() {
 }
 
 bool Party::canPlayerLead(const Creature &creature) const {
-    auto coop = _game.coop();
-    if (!coop) {
-        return true;
-    }
-    if (coop->isClient()) {
-        return false;
-    }
-    return !(coop->isHost() && coop->isPlayerControlled(creature.id()));
+    // The rule is the control policy's (coopcontrol::mayLeadParty).
+    return coopcontrol::mayLeadParty(coopcontrol::observe(_game, creature), coopcontrol::observeWorld(_game));
 }
 
 void Party::playerSwitchLeader() {

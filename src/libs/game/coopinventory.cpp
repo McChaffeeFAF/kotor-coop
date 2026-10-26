@@ -16,6 +16,7 @@
 
 #include "reone/game/action/opencontainer.h"
 #include "reone/game/coopcommand.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopprogress.h"
 #include "reone/game/d20/attributes.h"
 #include "reone/game/d20/spells.h"
@@ -411,25 +412,47 @@ bool CoopSession::clientLevelUp(const CreatureAttributes &before, const Creature
 
 // Live-session fixes (alpha 0.2.1 playtest)
 
+// The session's own view of the control policy's world facts (the policy's
+// adapter reads Game::coop(), which a session under test need not be).
+static coopcontrol::WorldFacts sessionControlWorld(bool host, bool client, bool dedicated, bool hostOnlyScenes) {
+    coopcontrol::WorldFacts world;
+    world.coopHost = host;
+    world.coopClient = client;
+    world.dedicated = dedicated;
+    world.hostOnlyScenes = hostOnlyScenes;
+    return world;
+}
+
 uint32_t CoopSession::scriptActor(uint32_t objectId, const std::string &script) const {
-    if (!isHost() || !isPlayerControlled(objectId)) {
+    // The rule is the control policy's (coopcontrol::scriptActorFor).
+    auto world = sessionControlWorld(isHost(), isClient(), _config.dedicated, _config.hostOnlyScenes);
+    coopcontrol::CreatureFacts facts;
+    facts.guestControlled = isPlayerControlled(objectId);
+    if (coopcontrol::scriptActorFor(facts, world, false) == coopcontrol::ScriptActor::Self) {
         return objectId;
     }
     // A script that names this creature's tag is about the creature itself:
     // tar02's Sith base trigger opens for GetTag(GetEnteringObject()) "t3m4",
     // the Endar Spire's doors compare with GetObjectByTag("end_trask").
+    bool namesTag = false;
     if (!script.empty()) {
-        if (auto creature = _game.getObjectById<Creature>(objectId); creature && coopScriptNamesTag(_game, script, creature->tag())) {
-            return objectId;
-        }
+        auto creature = _game.getObjectById<Creature>(objectId);
+        namesTag = creature && coopScriptNamesTag(_game, script, creature->tag());
+    }
+    if (coopcontrol::scriptActorFor(facts, world, namesTag) == coopcontrol::ScriptActor::Self) {
+        return objectId;
     }
     auto pc = _game.party().player();
     return pc ? pc->id() : objectId;
 }
 
 bool CoopSession::hostHoldsScene(uint32_t objectId, const std::string &script) const {
+    // The rule is the control policy's (coopcontrol::sceneStartAllowed).
     // A dedicated host has no character of its own: its story driver starts scenes as before.
-    if (!isHost() || !_config.hostOnlyScenes || _config.dedicated || script.empty() || !isPlayerControlled(objectId)) {
+    auto world = sessionControlWorld(isHost(), isClient(), _config.dedicated, _config.hostOnlyScenes);
+    coopcontrol::CreatureFacts facts;
+    facts.guestControlled = isPlayerControlled(objectId);
+    if (script.empty() || !coopcontrol::sceneRuleApplies(facts, world)) {
         return false;
     }
     if (!coopScriptStartsScene(_game, script)) {
@@ -438,13 +461,17 @@ bool CoopSession::hostHoldsScene(uint32_t objectId, const std::string &script) c
     // Only what a player starts by its own input waits for the host: a
     // script that moved the creature here (a door's jump, a scripted walk)
     // runs the scene as it would in single player.
+    bool movedByScript = false;
     if (auto creature = _game.getObjectById<Creature>(objectId)) {
         uint64_t now = _game.tickCount();
         uint64_t window = static_cast<uint64_t>(std::max(1, _game.tickRate()));
-        if (creature->scriptDrivenSince(now > window ? now - window : 1)) {
+        movedByScript = creature->scriptDrivenSince(now > window ? now - window : 1);
+        if (movedByScript) {
             debug("Co-op: a script moved " + creature->tag() + " into " + script + "; its scene runs");
-            return false;
         }
+    }
+    if (coopcontrol::sceneStartAllowed(facts, world, true, movedByScript)) {
+        return false;
     }
     debug("Co-op: a player's creature walked into " + script + "; its scene waits for the host's character");
     return true;

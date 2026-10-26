@@ -20,6 +20,7 @@
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/cutsceneattack.h"
 #include "reone/game/action/usefeat.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/di/services.h"
 #include "reone/game/game.h"
@@ -566,10 +567,7 @@ void Combat::finishSides(CombatRound &round, const SmallVector<size_t, 2> &sides
             // A co-op client's creature is its player's leader: no generic
             // OnEndRound orders (k_ai_master would queue attacks straight
             // back after Cancel Combat), only auto-combat when switched on.
-            auto *coop = _game.coop();
-            bool playerHand = (leader && participant.id() == leader->id()) ||
-                              (coop && coop->isPlayerControlled(participant.id()));
-            if (!playerHand) {
+            if (coopcontrol::mayRunRoundScript(coopcontrol::observe(_game, participant))) {
                 participant.runEndRoundScript();
             } else if (participant.autoCombat() && !participant.hasUserActionsPending()) {
                 // Auto-combat: the generic AI decides the leader's next round
@@ -591,7 +589,7 @@ void Combat::finishSides(CombatRound &round, const SmallVector<size_t, 2> &sides
         for (const auto &reference : objects) {
             auto object = reference.resolve();
             auto creature = object ? dyn_cast<Creature>(object) : nullptr;
-            if (creature && creature != leader && coop->isPlayerControlled(creature->id())) {
+            if (creature && creature != leader && coopcontrol::isPlayerHand(coopcontrol::observe(_game, *creature))) {
                 hands.push_back(std::move(creature));
             }
         }

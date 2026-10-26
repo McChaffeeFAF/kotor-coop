@@ -26,6 +26,7 @@
 #include "reone/game/hitvisuals.h"
 
 #include "reone/game/companionbrain.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 
 #include "reone/game/d20/skills.h"
@@ -138,13 +139,12 @@ namespace reone {
 namespace game {
 
 /**
- * A companion a co-op client controls gets no party AI: no follow from its
- * heartbeat, no combat orders from perception, attacks or round ends. Never
- * true without a co-op host session.
+ * Who drives this creature, as the co-op control policy sees it
+ * (coopcontrol_policy.h). Without a co-op host session no creature is a
+ * guest's and every answer is the single-player one.
  */
-static bool coopPlayerControlled(const Creature &creature) {
-    auto *coop = creature.game().coop();
-    return coop && coop->isPlayerControlled(creature.id());
+static coopcontrol::CreatureFacts controlFacts(const Creature &creature) {
+    return coopcontrol::observe(creature.game(), creature);
 }
 
 // ClassList/KnownList0 SpellFlags: the power is ready for use.
@@ -2682,8 +2682,8 @@ void Creature::updateCombatHandover(float dt) {
     }
     // A player's hand: the host's leader, or a creature a co-op client
     // controls. Neither takes the party AI's orders.
-    bool leading = _game.party().getLeader().get() == this;
-    bool playerHand = leading || coopPlayerControlled(*this);
+    auto control = controlFacts(*this);
+    bool playerHand = coopcontrol::isPlayerHand(control);
     // Auto-combat on a player's hand: with its queue empty and a fight on,
     // ask the AI for a round, at most once per round length.
     if (_autoCombat) {
@@ -2699,7 +2699,7 @@ void Creature::updateCombatHandover(float dt) {
     // queued (tar_m09aa: Bastila stood 4 m behind the PC for a whole fight
     // after her first target died; her end-of-round script never ran again
     // and the heartbeat branch of k_ai_master does not start a round).
-    if (!leading && (coopPlayerControlled(*this) || _game.party().isMember(*this))) {
+    if (coopcontrol::mayIdleEngage(control)) {
         updateIdleEngage(dt);
     }
     if (!_combatHandoverPending) {
@@ -2746,8 +2746,7 @@ void Creature::updateIdleFollow(float dt) {
     }
     _followCheck = 0.0f;
     auto leader = _game.party().getLeader();
-    if (!leader || leader.get() == this || _dead || isTemporarilyDead() || !_game.party().isMember(*this) ||
-        coopPlayerControlled(*this)) {
+    if (!leader || isTemporarilyDead() || !coopcontrol::mayFollowLeader(controlFacts(*this))) {
         _followingLeader = false;
         return;
     }
@@ -2836,7 +2835,7 @@ void Creature::updateIdleEngage(float dt) {
         return;
     }
     debug("Idle " + tag() + " engages " + nearest->tag(), LogChannel::Combat);
-    if (!coopPlayerControlled(*this)) {
+    if (coopcontrol::idleEngageAsksRoundScript(controlFacts(*this))) {
         // A companion under the party AI: let its own round script choose
         // (talents, the target it prefers) and fall back on a plain attack.
         runEndRoundScript();
@@ -2851,9 +2850,8 @@ void Creature::runAutoCombatRound() {
     // A player's hand (the host's leader, a co-op player's character) on
     // auto-combat fights only while there is a fight: out of combat it stays
     // under its player's control, with no follow and no wandering.
-    bool coopHand = coopPlayerControlled(*this);
-    bool playerHand = coopHand || _game.party().getLeader().get() == this;
-    if (playerHand && !isInCombat() && !seesLiveEnemy()) {
+    auto control = controlFacts(*this);
+    if (!coopcontrol::mayAutoCombatAct(control, isInCombat() || seesLiveEnemy())) {
         return;
     }
     std::vector<std::shared_ptr<Action>> before(_actions.begin(), _actions.end());
@@ -2865,7 +2863,7 @@ void Creature::runAutoCombatRound() {
         runEndRoundScript();
         _game.setAutoCombatScriptCaller(previous);
     }
-    if (!coopHand) {
+    if (!coopcontrol::autoRoundDropsFollow(control)) {
         return;
     }
     // The generic round script walks a companion after its leader when it has
@@ -3092,7 +3090,7 @@ void Creature::playSound(SoundSetEntry entry, bool positional) {
 }
 
 void Creature::runAttackedScript(uint32_t attackerId) {
-    if (_onAttacked.empty() || coopPlayerControlled(*this)) {
+    if (_onAttacked.empty() || !coopcontrol::mayRunReactionScripts(controlFacts(*this))) {
         return;
     }
     _game.scriptRunner().run(
@@ -3102,7 +3100,7 @@ void Creature::runAttackedScript(uint32_t attackerId) {
 }
 
 void Creature::runDamagedScript() {
-    if (_onDamaged.empty() || coopPlayerControlled(*this)) {
+    if (_onDamaged.empty() || !coopcontrol::mayRunReactionScripts(controlFacts(*this))) {
         return;
     }
     _game.scriptRunner().run(
@@ -3217,7 +3215,7 @@ void Creature::runOnNotice(const Object &object, bool heard, bool seen) {
     // differently when an object is just "heard" assuming that it is not
     // "seen".
 
-    if (_onNotice.empty() || coopPlayerControlled(*this)) {
+    if (_onNotice.empty() || !coopcontrol::mayRunReactionScripts(controlFacts(*this))) {
         return;
     }
 

@@ -14,6 +14,12 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 cmake_minimum_required(VERSION 3.16)
+
+# Lets REONE_COMPILER_CACHE switch MSVC debug info to /Z7 (CMake 3.25+; ignored by older CMake).
+if(POLICY CMP0141)
+    cmake_policy(SET CMP0141 NEW)
+endif()
+
 project(reone)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -38,6 +44,8 @@ option(REONE_UBSAN "build with UndefinedBehaviorSanitizer (GCC/Clang)" OFF)
 option(REONE_TSAN "build with ThreadSanitizer (GCC/Clang; exclusive with REONE_ASAN)" OFF)
 option(REONE_BENCH "build the simulation benchmarks (bench/, opt-in)" OFF)
 option(REONE_FUZZ "build libFuzzer targets for the file-format readers (Clang only; see fuzz/)" OFF)
+option(REONE_PCH "use the shared precompiled header (src/pch.h); sccache cannot cache PCH compiles, so tools/dev/build.ps1 turns this off together with the cache" ON)
+option(REONE_COMPILER_CACHE "route compiles through sccache (REONE_SCCACHE or PATH) and use /Z7 debug info on MSVC" OFF)
 
 # END Options
 
@@ -110,6 +118,34 @@ endif()
 # END Dependencies
 
 # Compile options
+
+if(NOT REONE_PCH)
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
+    # Sources rely on src/pch.h for their std/boost/glm includes, so without a
+    # real PCH it is force-included into every C++ translation unit instead.
+    if(MSVC)
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/FI${CMAKE_SOURCE_DIR}/src/pch.h>")
+    else()
+        add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:SHELL:-include ${CMAKE_SOURCE_DIR}/src/pch.h>")
+    endif()
+endif()
+
+# sccache: a compile cache shared by every worktree (set SCCACHE_DIR to a common
+# folder). sccache cannot cache MSVC /Zi (shared .pdb), so debug info is embedded
+# in the objects with /Z7 instead. Off by default; the plain MSBuild flow is
+# unchanged.
+if(REONE_COMPILER_CACHE)
+    find_program(REONE_SCCACHE sccache HINTS "$ENV{REONE_SCCACHE_DIR}")
+    if(NOT REONE_SCCACHE)
+        message(FATAL_ERROR "REONE_COMPILER_CACHE is ON but sccache was not found (set REONE_SCCACHE or REONE_SCCACHE_DIR)")
+    endif()
+    set(CMAKE_C_COMPILER_LAUNCHER ${REONE_SCCACHE})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${REONE_SCCACHE})
+    if(MSVC)
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+    endif()
+    message(STATUS "Compiler cache: ${REONE_SCCACHE}")
+endif()
 
 # GCC fuses a * b + c into one rounding on FMA-capable targets by default,
 # MSVC does not; the simulation must round the same way everywhere.

@@ -47,17 +47,14 @@ over companions. **Free Mode** takes up to 8 players, each with their own charac
 
 ## Known issues
 
-This is an alpha. Known problems in v0.5.0:
+This is an alpha. Known problems in v0.5.1:
 
-- **Endar Spire, first room door with a guest playing Trask:** if a guest controls Trask,
-  the door out of the first room may not open. Workaround: the guest leaves the session,
-  the host takes control of Trask and opens the door, then the guest rejoins.
 - **KotOR II tables for guest stand-ins** aren't written yet: in a KotOR II game a guest
   with no free companion plays a copy of the host's character.
 - **Free Mode map:** a guest exploring a different area from the host doesn't reveal that
   area's map.
 - **Gamepad support** is lightly tested.
-- All players must run the same version (network protocol 14).
+- All players must run the same version (network protocol 14; v0.5.0 and v0.5.1 can play together).
 
 ## Reporting bugs
 

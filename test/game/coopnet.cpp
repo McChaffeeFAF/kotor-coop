@@ -5943,6 +5943,42 @@ TEST_F(CoopStandInSessionTest, a_guest_s_companion_counts_as_a_pc_for_door_and_t
     EXPECT_EQ(1, isPC(_player, _sith));
 }
 
+TEST_F(CoopStandInSessionTest, a_guest_s_companion_leads_for_the_door_or_trigger_script_it_fired) {
+    // end_m01aa's first door opens on OnFailToOpen only for party member 0
+    // being end_trask: in single player the player has switched to Trask.
+    traskJoins();
+    SessionOnGame on(*_game, _session);
+    join();
+    tick();
+    ASSERT_TRUE(_session->isPlayerControlled(_trask->id()));
+    auto &party = _game->party();
+    ASSERT_EQ(_player, party.getMember(0));
+    int traskIndex = party.getMember(1) == _trask ? 1 : (party.getMember(2) == _trask ? 2 : -1);
+    ASSERT_GT(traskIndex, 0) << "Trask is a party member";
+    int routine = _game->routines().getIndexByName("GetPartyMemberByIndex");
+    ASSERT_GE(routine, 0);
+    auto trigger = _game->newTrigger();
+    _area->add(trigger);
+    auto memberAt = [&](int index, const std::shared_ptr<Object> &self, script::ArgKind event, const std::shared_ptr<Object> &by) {
+        script::ExecutionContext execution;
+        execution.args.push_back({script::ArgKind::Caller, script::Variable::ofObject(self->id())});
+        if (by) {
+            execution.args.push_back({event, script::Variable::ofObject(by->id())});
+        }
+        std::vector<script::Variable> args {script::Variable::ofInt(index)};
+        return _game->routines().get(routine).invoke(args, execution).objectId;
+    };
+    EXPECT_EQ(_trask->id(), memberAt(0, trigger, script::ArgKind::ClickingObject, _trask)) << "Trask clicked: he leads for it";
+    EXPECT_EQ(_player->id(), memberAt(traskIndex, trigger, script::ArgKind::ClickingObject, _trask)) << "the host's PC takes his place";
+    EXPECT_EQ(_trask->id(), memberAt(0, trigger, script::ArgKind::LastUsedBy, _trask)) << "a placeable's user";
+    EXPECT_EQ(_player->id(), memberAt(0, trigger, script::ArgKind::EnteringObject, _trask))
+        << "walking into a trigger is not a click: end_trig02 asks whether the single player is still on Trask";
+    EXPECT_EQ(_player->id(), memberAt(0, trigger, script::ArgKind::ClickingObject, _player)) << "the host clicked: as before";
+    EXPECT_EQ(_player->id(), memberAt(0, trigger, script::ArgKind::ClickingObject, nullptr)) << "no event object: as before";
+    EXPECT_EQ(_player->id(), memberAt(0, _sith, script::ArgKind::ClickingObject, _trask)) << "creature scripts keep one leader";
+    EXPECT_EQ(_player, party.getMember(0)) << "no lasting party change";
+}
+
 TEST_F(CoopStandInSessionTest, a_scene_trigger_a_script_moved_the_guest_s_companion_into_runs) {
     traskJoins();
     SessionOnGame on(*_game, _session);

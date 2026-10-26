@@ -24,6 +24,7 @@
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/movetopoint.h"
 #include "reone/game/action/usetalentonobject.h"
+#include "reone/game/coopcontrol_policy.h"
 #include "reone/game/coopsession.h"
 #include "reone/game/d20/feat.h"
 #include "reone/game/d20/feats.h"
@@ -354,24 +355,11 @@ bool givenItem(const Decision &decision, uint32_t self) {
 } // namespace
 
 bool usesBrain(Game &game, const Creature &creature) {
-    if (!game.options().game.smartCompanions || creature.isDead()) {
-        return false;
-    }
-    if (!isGenericCombatScript(creature.getOnEndRound())) {
-        return false; // scripted and boss creatures keep their own AI
-    }
-    if (!partyMemberId(game, creature.id())) {
-        return false; // hostile and neutral AI stays retail
-    }
-    auto leader = game.party().getLeader();
-    if (leader && leader->id() == creature.id() && !creature.autoCombat()) {
-        return false; // the player's hand
-    }
-    auto *coop = game.coop();
-    if (coop && coop->isPlayerControlled(creature.id())) {
-        return false; // a co-op player's character
-    }
-    return true;
+    // The rule is the control policy's (coopcontrol::mayBrainAct).
+    auto facts = coopcontrol::observe(game, creature);
+    facts.genericRoundScript = isGenericCombatScript(creature.getOnEndRound());
+    facts.partyMember = partyMemberId(game, creature.id());
+    return coopcontrol::mayBrainAct(facts, coopcontrol::observeWorld(game));
 }
 
 void runCompanionBrainRound(Game &game, Creature &creature) {
