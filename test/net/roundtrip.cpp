@@ -952,7 +952,7 @@ TEST(NetCoverage, protocol_9_carries_factions_and_stealth_without_colliding) {
     // Factions and Stealth Mode were each protocol 8 on their own branches.
     EXPECT_GE(kProtocolVersion, 9);
     EXPECT_EQ(1 << 11, static_cast<int>(kFieldFaction));
-    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask)); // protocol 11 added kFieldLook, 13 kFieldProgress
+    EXPECT_EQ((1 << 15) - 1, static_cast<int>(kFieldAllMask)); // protocol 11 added kFieldLook, 13 kFieldProgress, the queue bit 14
     EXPECT_EQ(120, static_cast<int>(MessageType::ReputationTable));
     EXPECT_EQ(1 << 6, static_cast<int>(kFlagStealthed));
     EXPECT_EQ(33, static_cast<int>(CommandType::Stealth));
@@ -1076,11 +1076,11 @@ TEST(NetCoverage, protocol_11_carries_control_scenes_and_presence_without_collid
     // 12 adds a stand-in template to the template field (design note companion_standins), no new ids.
     // 13 was two branch builds: the host's level-up state (kFieldProgress, design note guest_npc_scripts)
     // and MapState (id 170), the shared area map; 14 carries both (pinned below).
-    EXPECT_EQ(14, kProtocolVersion);
+    EXPECT_GE(kProtocolVersion, 14);
 
     // Entity fields: one bit each, all inside the mask, the mask exactly the fields.
     const uint16_t fields[] = {kFieldIdentity, kFieldPosition, kFieldFacing, kFieldAnim, kFieldVitals, kFieldWeapons, kFieldOpenLock,
-                               kFieldDoor, kFieldFlags, kFieldRemoved, kFieldTarget, kFieldFaction, kFieldLook, kFieldProgress};
+                               kFieldDoor, kFieldFlags, kFieldRemoved, kFieldTarget, kFieldFaction, kFieldLook, kFieldProgress, kFieldQueue};
     uint32_t fieldBits = 0;
     for (auto f : fields) {
         EXPECT_TRUE(f != 0 && (f & (f - 1)) == 0) << "field " << f << " is not one bit";
@@ -1090,7 +1090,7 @@ TEST(NetCoverage, protocol_11_carries_control_scenes_and_presence_without_collid
     EXPECT_EQ(1 << 12, static_cast<int>(kFieldLook));
     EXPECT_EQ(1 << 13, static_cast<int>(kFieldProgress));
     EXPECT_EQ(fieldBits, static_cast<uint32_t>(kFieldAllMask));
-    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask));
+    EXPECT_EQ((1 << 15) - 1, static_cast<int>(kFieldAllMask)); // + kFieldQueue (bit 14)
 
     // Entity flags: all eight bits, stealth 6 and auto-combat 7.
     const uint8_t flags[] = {kFlagVisible, kFlagSelectable, kFlagInCombat, kFlagInConversation, kFlagPartyMember, kFlagPlayer, kFlagStealthed, kFlagAutoCombat};
@@ -1200,12 +1200,14 @@ TEST(NetRoundTrip, map_state_at_its_limits) {
 TEST(NetCoverage, protocol_14_carries_level_up_state_and_the_shared_map_without_colliding) {
     // Guest NPC scripts (kFieldProgress) and the shared map (MapState) were each
     // protocol 13 on their own branches; the merged build (alpha-0.4.9) is 14.
-    EXPECT_EQ(14, kProtocolVersion);
+    EXPECT_GE(kProtocolVersion, 14);
 
-    // Entity fields: bit 13 is the level-up state, and the mask ends there.
+    // Entity fields: bit 13 is the level-up state; bit 14 (the combat queue,
+    // fix/combat-queue, waits for the integrator's version bump) ends the mask.
     EXPECT_EQ(1 << 13, static_cast<int>(kFieldProgress));
     EXPECT_EQ(0, static_cast<int>(kFieldProgress & (kFieldLook | kFieldFaction | kFieldTarget | kFieldRemoved)));
-    EXPECT_EQ((1 << 14) - 1, static_cast<int>(kFieldAllMask));
+    EXPECT_EQ(1 << 14, static_cast<int>(kFieldQueue));
+    EXPECT_EQ((1 << 15) - 1, static_cast<int>(kFieldAllMask));
     EXPECT_EQ(1, static_cast<int>(kProgressLevelUp));
 
     // Messages: 170 is the map, host to client only; 130 steering is unchanged,

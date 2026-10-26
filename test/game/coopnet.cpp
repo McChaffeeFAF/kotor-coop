@@ -26,6 +26,10 @@
 #include "reone/game/coopidmap.h"
 #include "reone/game/cooploot.h"
 #include "reone/game/action/attackobject.h"
+#include "reone/game/action/usefeat.h"
+#include "reone/game/action/usetalentonobject.h"
+#include "reone/game/combatqueue.h"
+#include "reone/game/talent.h"
 #include "reone/game/action/jumptolocation.h"
 #include "reone/game/action/movetolocation.h"
 #include "reone/game/action/wait.h"
@@ -1054,10 +1058,26 @@ TEST_F(CoopCompanionCombatTest, a_client_s_auto_combat_companion_retries_the_ai_
         .Times(AnyNumber())
         .WillRepeatedly(Return(std::shared_ptr<script::ScriptProgram>()));
     EXPECT_FALSE(_trask->isCombatHandoverPending());
+    _trask->clearAllActions(true); // the plain attack auto-combat fell back on
     _game->setAutoCombat(*_trask, false);
     _trask->requestCombatHandover();
     idle(0.25f);
     EXPECT_FALSE(_trask->isCombatHandoverPending()) << "under the player's hand: nothing to hand over";
+}
+
+TEST_F(CoopCompanionCombatTest, auto_combat_with_no_round_script_still_attacks_the_enemy_in_sight) {
+    // A stand-in runs no scripts, and a scripted character's round may queue
+    // nothing: auto-combat turned on beside a fight must still queue an
+    // attack for the guest's character.
+    traskTaken();
+    _trask->setOnEndRound("");
+    _trask->setObjectSeen(_sith, true);
+    _game->setAutoCombat(*_trask, true);
+    idle(3.5f);
+    ASSERT_FALSE(_trask->actions().empty()) << "auto-combat queued something";
+    auto attack = dyn_cast<AttackObjectAction>(_trask->actions().front());
+    ASSERT_TRUE(attack);
+    EXPECT_EQ(_sith->id(), attack->target()->id());
 }
 
 TEST_F(CoopCompanionCombatTest, an_idle_client_s_companion_joins_a_fight_against_the_party) {
@@ -5997,6 +6017,25 @@ TEST_F(CoopStandInSessionTest, a_scene_trigger_a_script_moved_the_guest_s_compan
     }
     _trask->update(0.0f);
     EXPECT_TRUE(_session->hostHoldsScene(_trask->id(), "scenes_room3")) << "a second later it is the player's walk again";
+}
+
+TEST_F(CoopNetTest, a_player_character_s_combat_queue_names_its_feats_and_the_party_ai_s_talents) {
+    // The guest's client runs none of its character's actions, so its HUD
+    // queue is the host's list: attacks, feat attacks, and what a talent
+    // the party AI queued dispatches to (it used to show nothing at all).
+    auto target = addCreature("queue_target", glm::vec3(3.0f, 0.0f, 0.0f), Faction::Hostile1);
+    _trask->addAction(_game->newAction<AttackObjectAction>(target));
+    _trask->addAction(_game->newAction<UseFeatAction>(FeatType::PowerAttack, target));
+    auto talent = std::make_shared<Talent>(TalentType::Feat, static_cast<int>(FeatType::PowerAttack));
+    _trask->addAction(_game->newAction<UseTalentOnObjectAction>(talent, target));
+    auto entries = combatqueue::entriesOf(*_trask);
+    ASSERT_EQ(3u, entries.size());
+    EXPECT_EQ(net::kQueueAttack, entries[0].kind);
+    EXPECT_EQ(net::kQueueFeat, entries[1].kind);
+    EXPECT_EQ(static_cast<uint16_t>(FeatType::PowerAttack), entries[1].param);
+    EXPECT_EQ(net::kQueueFeat, entries[2].kind) << "the AI's talent shows as the feat it runs";
+    EXPECT_EQ(static_cast<uint16_t>(FeatType::PowerAttack), entries[2].param);
+    EXPECT_EQ(net::kQueueOther, combatqueue::kindForActionType(ActionType::MoveToPoint));
 }
 
 TEST_F(CoopNetTest, a_client_s_level_up_icon_is_the_host_s_word) {

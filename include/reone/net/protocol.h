@@ -21,7 +21,7 @@ namespace net {
  * floats, so nothing malformed reaches the game.
  */
 
-constexpr uint16_t kProtocolVersion = 14; // 14: creatures carry the host's level-up state (kFieldProgress, entity field bit 13), so a client's HUD level-up icons match the host's, and the shared area map (MapState, id 170: the explored grid and the enabled map notes); 13: (two branch builds, never released: level-up-state-only or map-only); 12: a stand-in's template field may end in :<template> (a companion copy, or coop_shepard for the generic character), which the client builds it from; 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit); 6: text chat and pings (ChatSend/ChatMessage/PingSend/PingMarker, ids 100+), optional Hello password and Reject BadPassword (dedicated hosts); 7: the conversation carries the script's placeable camera (SetDialogPlaceableCamera); 8: (two branch builds, never released: faction-only or stealth-only); 9: creatures carry their faction (kFieldFaction, entity field bit 11) and the host sends its reputation table (ReputationTable, id 120), plus Stealth Mode (Command Stealth 33, entity flag Stealthed bit 6, rejects StealthUnavailable 40/StealthInCombat 41); 10: (three branch builds, never released: control-only, scenes-only or presence-only); 11: direct steering for a guest's movement keys (Steer, id 130), entity flag AutoCombat bit 7, creatures carry a look (kFieldLook, entity field bit 12: a player's name and chat colour, and the head, body and extra equipment of a stand-in), reject ItemEquippedByPlayer 42
+constexpr uint16_t kProtocolVersion = 15; // 15: creatures carry their combat queue (kFieldQueue, entity field bit 14) so a guest sees its own queued actions; 14: creatures carry the host's level-up state (kFieldProgress, entity field bit 13), so a client's HUD level-up icons match the host's, and the shared area map (MapState, id 170: the explored grid and the enabled map notes); 13: (two branch builds, never released: level-up-state-only or map-only); 12: a stand-in's template field may end in :<template> (a companion copy, or coop_shepard for the generic character), which the client builds it from; 4: VfxBegin carries a beam source; 5: guest minigames (MiniGameControl/State, MiniGameQuit); 6: text chat and pings (ChatSend/ChatMessage/PingSend/PingMarker, ids 100+), optional Hello password and Reject BadPassword (dedicated hosts); 7: the conversation carries the script's placeable camera (SetDialogPlaceableCamera); 8: (two branch builds, never released: faction-only or stealth-only); 9: creatures carry their faction (kFieldFaction, entity field bit 11) and the host sends its reputation table (ReputationTable, id 120), plus Stealth Mode (Command Stealth 33, entity flag Stealthed bit 6, rejects StealthUnavailable 40/StealthInCombat 41); 10: (three branch builds, never released: control-only, scenes-only or presence-only); 11: direct steering for a guest's movement keys (Steer, id 130), entity flag AutoCombat bit 7, creatures carry a look (kFieldLook, entity field bit 12: a player's name and chat colour, and the head, body and extra equipment of a stand-in), reject ItemEquippedByPlayer 42
 
 /** A client message is small: a hello, a slot request or one command. */
 constexpr size_t kMaxClientMessageBytes = 2048;
@@ -231,7 +231,8 @@ enum EntityField : uint16_t {
     kFieldFaction = 1 << 11, // creatures: the faction the host's reputation rules use for it
     kFieldLook = 1 << 12,    // creatures: a player's name and chat colour; a stand-in's whole look
     kFieldProgress = 1 << 13, // creatures: the host's level-up state (kProgressLevelUp)
-    kFieldAllMask = (1 << 14) - 1
+    kFieldQueue = 1 << 14,    // creatures: the front of a player character's combat queue (QueueEntry, up to kMaxQueueEntries)
+    kFieldAllMask = (1 << 15) - 1
 };
 
 /** EntityState::faction of an object that has none (game::Faction::Invalid). */
@@ -251,6 +252,26 @@ enum EntityFlag : uint8_t {
     kFlagPlayer = 1 << 5,
     kFlagStealthed = 1 << 6, // in Stealth Mode (design note stealth)
     kFlagAutoCombat = 1 << 7 // auto-combat is on: the player's HUD toggle shows it lit (protocol 11)
+};
+
+/** What one slot of a player character's combat queue shows on the HUD. */
+enum QueueKind : uint8_t {
+    kQueueNone = 0,
+    kQueueAttack = 1,
+    kQueueFeat = 2,  // param: the feat
+    kQueueSpell = 3, // param: the power
+    kQueueSwap = 4,  // a queued weapon switch
+    kQueueOther = 5  // an order with no icon of its own
+};
+
+/** The HUD shows four queue slots. */
+constexpr size_t kMaxQueueEntries = 4;
+
+struct QueueEntry {
+    uint8_t kind {kQueueNone};
+    uint16_t param {0};
+
+    bool operator==(const QueueEntry &o) const { return kind == o.kind && param == o.param; }
 };
 
 /** The most extra equipment slots a look names (the four in kFieldWeapons are not repeated). */
@@ -317,6 +338,9 @@ struct EntityState {
     uint8_t faction {kNoFaction};
     EntityLook look;
     uint8_t progress {0}; // creatures: kProgressLevelUp when the host says a level is due
+    // Creatures: the first actions of a player character's combat queue while it fights (empty
+    // otherwise), so the guest's HUD shows what the host will run for it.
+    std::vector<QueueEntry> queue;
 };
 
 /** One entity in a snapshot: the id and the fields that changed. */

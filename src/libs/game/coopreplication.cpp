@@ -1,6 +1,7 @@
 /* Copyright (c) 2026 The reone project contributors */
 
 #include "reone/game/coopreplication.h"
+#include "reone/game/combatqueue.h"
 
 #include <algorithm>
 #include <cmath>
@@ -150,6 +151,11 @@ EntityState CoopReplication::capture(const Object &object, const std::string &ke
         {
             int faction = static_cast<int>(creature.reputationFaction());
             s.faction = faction >= 0 && faction < static_cast<int>(kMaxFactions) ? static_cast<uint8_t>(faction) : kNoFaction;
+        }
+        // The HUD's combat queue of a player's character: a guest's client
+        // runs none of its actions, so the host says what is queued.
+        if (creature.isInCombat() && creature.reputationFaction() == Faction::Player) {
+            s.queue = combatqueue::entriesOf(creature);
         }
         break;
     }

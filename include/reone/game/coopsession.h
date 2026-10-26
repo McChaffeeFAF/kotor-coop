@@ -443,6 +443,8 @@ public:
     bool hostHoldsScene(uint32_t objectId, const std::string &script) const;
     /** Client: the host says this local creature is in combat. */
     bool clientInCombat(uint32_t localId) const;
+    /** The host's combat queue for a creature this client sees (net::QueueEntry slots), empty when none. */
+    std::vector<net::QueueEntry> clientQueue(uint32_t localId) const;
     /** Host test seam: a guest's credits. */
     bool setGuestCredits(uint32_t clientId, int credits);
     /** Host: every XP award the party gets goes to each guest too (design, "XP: mirrors the host"). */

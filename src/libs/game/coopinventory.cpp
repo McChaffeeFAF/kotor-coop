@@ -529,6 +529,15 @@ bool CoopSession::clientInCombat(uint32_t localId) const {
     return it != _replicas.end() && (it->second.state.flags & kFlagInCombat) != 0;
 }
 
+std::vector<net::QueueEntry> CoopSession::clientQueue(uint32_t localId) const {
+    auto host = _ids.host(localId);
+    if (!host) {
+        return {};
+    }
+    auto it = _replicas.find(*host);
+    return it != _replicas.end() ? it->second.state.queue : std::vector<net::QueueEntry>();
+}
+
 } // namespace game
 
 } // namespace reone

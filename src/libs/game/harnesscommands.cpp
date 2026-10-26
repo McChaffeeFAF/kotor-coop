@@ -47,6 +47,7 @@
 
 #include "reone/game/equipmentoperation.h"
 #include "reone/game/equipmentrules.h"
+#include "reone/game/action/usefeat.h"
 #include "reone/game/action/attackobject.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/equipitem.h"
@@ -476,6 +477,8 @@ void Game::consoleTargetMenu(const ConsoleArgs &args) {
         line += str(boost::format(" [%u] %s") % i % describeActionType(a.type));
         if (a.type == ActionType::UseSkill) {
             line += ":" + std::to_string(static_cast<int>(a.skill));
+        } else if (a.type == ActionType::UseFeat) {
+            line += ":" + std::to_string(static_cast<int>(a.feat));
         }
     }
     if (auto pick = parsed.named.find("pick"); pick != parsed.named.end()) {
@@ -497,8 +500,13 @@ void Game::consoleTargetMenu(const ConsoleArgs &args) {
             action->setUserAction(true);
             leader->addAction(std::move(action));
             line += " -> AttackObjectAction";
+        } else if (a.type == ActionType::UseFeat) {
+            auto action = newAction<UseFeatAction>(a.feat, object);
+            action->setUserAction(true);
+            leader->addAction(std::move(action));
+            line += " -> UseFeatAction";
         } else {
-            throw std::runtime_error("targetmenu picks a skill or an attack only");
+            throw std::runtime_error("targetmenu picks a skill, an attack or an attack feat only");
         }
     }
     _console.printLine(line);

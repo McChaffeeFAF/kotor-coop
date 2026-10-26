@@ -49,6 +49,7 @@ EntityState sampleEntity() {
     s.attackTarget = 7;
     s.faction = 1; // Hostile_1
     s.progress = kProgressLevelUp;
+    s.queue = {{kQueueAttack, 0}, {kQueueFeat, 28}, {kQueueSpell, 70}};
     return s;
 }
 
@@ -327,6 +328,7 @@ TEST(NetProtocol, snapshot_round_trips_every_field) {
     EXPECT_EQ(b.headgear, a.headgear);
     EXPECT_EQ(b.faction, a.faction);
     EXPECT_EQ(b.progress, a.progress);
+    EXPECT_EQ(b.queue, a.queue);
     EXPECT_EQ(kFieldPosition, out.entities[1].fields);
     EXPECT_EQ(10.0f, out.entities[1].state.position.x);
     EXPECT_EQ(kFieldRemoved, out.entities[2].fields);
@@ -403,6 +405,20 @@ TEST(NetProtocol, snapshot_acks_are_small_and_checked) {
     EXPECT_FALSE(decode(encode(zero), out));
     EXPECT_TRUE(isClientMessage(MessageType::SnapshotAck));
     EXPECT_TRUE(isHostMessage(MessageType::Events));
+}
+
+TEST(NetProtocol, a_combat_queue_change_is_its_own_field) {
+    auto a = sampleEntity();
+    auto b = a;
+    b.queue.push_back({kQueueFeat, 29});
+    EXPECT_EQ(kFieldQueue, exactDiffEntity(a, b));
+    EXPECT_EQ(kFieldQueue, diffEntity(a, b));
+    auto merged = a;
+    mergeEntity(merged, b, kFieldQueue);
+    EXPECT_EQ(b.queue, merged.queue);
+    b.queue.clear(); // the fight ended
+    EXPECT_EQ(kFieldQueue, exactDiffEntity(a, b));
+    EXPECT_LE(kFieldQueue, kFieldAllMask) << "the field is inside the mask the reader accepts";
 }
 
 TEST(NetProtocol, exact_diffs_see_every_change_and_restarts) {

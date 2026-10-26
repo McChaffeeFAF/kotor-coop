@@ -154,6 +154,13 @@ void writeEntity(ByteWriter &w, const EntityRecord &record) {
     if (f & kFieldProgress) {
         w.u8(s.progress);
     }
+    if (f & kFieldQueue) {
+        w.u8(static_cast<uint8_t>(std::min(s.queue.size(), kMaxQueueEntries)));
+        for (size_t i = 0; i < s.queue.size() && i < kMaxQueueEntries; ++i) {
+            w.u8(s.queue[i].kind);
+            w.u16(s.queue[i].param);
+        }
+    }
 }
 
 bool readEntity(ByteReader &r, EntityRecord &record) {
@@ -253,6 +260,23 @@ bool readEntity(ByteReader &r, EntityRecord &record) {
         s.progress = r.u8();
         if ((s.progress & ~kProgressLevelUp) != 0) {
             r.fail();
+        }
+    }
+    if (f & kFieldQueue) {
+        uint8_t count = r.u8();
+        if (count > kMaxQueueEntries) {
+            r.fail();
+            return false;
+        }
+        s.queue.clear();
+        for (uint8_t i = 0; i < count && r.ok(); ++i) {
+            QueueEntry entry;
+            entry.kind = r.u8();
+            entry.param = r.u16();
+            if (entry.kind > kQueueOther) {
+                r.fail();
+            }
+            s.queue.push_back(entry);
         }
     }
     return r.ok();
@@ -1336,6 +1360,9 @@ uint16_t diffEntity(const EntityState &prev, const EntityState &cur) {
     if (prev.progress != cur.progress) {
         mask |= kFieldProgress;
     }
+    if (prev.queue != cur.queue) {
+        mask |= kFieldQueue;
+    }
     return mask;
 }
 
@@ -1395,6 +1422,9 @@ void mergeEntity(EntityState &dst, const EntityState &src, uint16_t mask) {
     if (mask & kFieldProgress) {
         dst.progress = src.progress;
     }
+    if (mask & kFieldQueue) {
+        dst.queue = src.queue;
+    }
 }
 
 uint16_t exactDiffEntity(const EntityState &prev, const EntityState &cur) {
@@ -1439,6 +1469,9 @@ uint16_t exactDiffEntity(const EntityState &prev, const EntityState &cur) {
     }
     if (prev.progress != cur.progress) {
         mask |= kFieldProgress;
+    }
+    if (prev.queue != cur.queue) {
+        mask |= kFieldQueue;
     }
     return mask;
 }

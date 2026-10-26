@@ -47,14 +47,14 @@ over companions. **Free Mode** takes up to 8 players, each with their own charac
 
 ## Known issues
 
-This is an alpha. Known problems in v0.5.1:
+This is an alpha. Known problems in v0.5.2:
 
 - **KotOR II tables for guest stand-ins** aren't written yet: in a KotOR II game a guest
   with no free companion plays a copy of the host's character.
 - **Free Mode map:** a guest exploring a different area from the host doesn't reveal that
   area's map.
 - **Gamepad support** is lightly tested.
-- All players must run the same version (network protocol 14; v0.5.0 and v0.5.1 can play together).
+- All players must run the same version (network protocol 15: v0.5.2 does not play with v0.5.0 or v0.5.1).
 
 ## Reporting bugs
 

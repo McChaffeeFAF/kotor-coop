@@ -36,6 +36,7 @@
 #include "reone/system/logutil.h"
 
 #include "reone/game/action/attackobject.h"
+#include "reone/game/combatqueue.h"
 #include "reone/game/action/castspellatobject.h"
 #include "reone/game/action/switchweapons.h"
 #include "reone/game/action/usefeat.h"
@@ -1090,52 +1091,66 @@ void HUD::refreshActionQueueItems() const {
     if (!leader) {
         return;
     }
-    auto &actions = leader->actions();
     const std::array<Label *, 4> queueLabels {
         _controls.LBL_QUEUE0.get(),
         _controls.LBL_QUEUE1.get(),
         _controls.LBL_QUEUE2.get(),
         _controls.LBL_QUEUE3.get()};
 
-    for (int i = 0; i < 4; ++i) {
+    // A co-op client's character fights on the host: its queue is the
+    // replicated one. Otherwise the leader's own actions, where a talent
+    // the party AI queued shows as the feat or power it runs.
+    std::vector<net::QueueEntry> entries;
+    std::vector<std::shared_ptr<Action>> actions; // the leader's own, for an item's icon
+    if (auto *coop = _game.coop(); coop && coop->isClient()) {
+        entries = coop->clientQueue(leader->id());
+    } else {
+        entries = combatqueue::entriesOf(*leader);
+        actions.assign(leader->actions().begin(), leader->actions().end());
+    }
+
+    for (size_t i = 0; i < queueLabels.size(); ++i) {
         if (!queueLabels[i]) {
             continue;
         }
         Label &item = *queueLabels[i];
-        if (i < static_cast<int>(actions.size())) {
-            switch (actions[i]->type()) {
-            case ActionType::AttackObject:
-                item.setBorderFill(g_attackIcon);
-                break;
-            case ActionType::SwitchWeapons:
-                // A queued weapon switch shows in the combat queue. K1 has no
-                // switch icon; the K1 HUD uses its swap button's K1 art.
-                item.setBorderFill(isTSL() ? g_switchWeaponsIcon : std::string(K1HUDControls::kQueuedSwapIcon));
-                break;
-            case ActionType::UseFeat: {
-                auto featAction = std::static_pointer_cast<UseFeatAction>(actions[i]);
-                std::shared_ptr<Feat> feat(_services.game.feats.get(featAction->feat()));
-                if (feat) {
-                    item.setBorderFill(feat->icon);
-                }
-                break;
+        // A slot with nothing of its own to show (a walk, or a feat without
+        // art) must not keep the icon of the order that stood there before.
+        item.setBorderFill("");
+        if (i >= entries.size()) {
+            continue;
+        }
+        const net::QueueEntry &entry = entries[i];
+        switch (entry.kind) {
+        case net::kQueueAttack:
+            item.setBorderFill(g_attackIcon);
+            break;
+        case net::kQueueSwap:
+            // A queued weapon switch shows in the combat queue. K1 has no
+            // switch icon; the K1 HUD uses its swap button's K1 art.
+            item.setBorderFill(isTSL() ? g_switchWeaponsIcon : std::string(K1HUDControls::kQueuedSwapIcon));
+            break;
+        case net::kQueueFeat: {
+            std::shared_ptr<Feat> feat(_services.game.feats.get(static_cast<FeatType>(entry.param)));
+            if (feat && feat->icon) {
+                item.setBorderFill(feat->icon);
+            } else {
+                item.setBorderFill(g_attackIcon); // a feat attack is an attack
             }
-            case ActionType::CastSpellAtObject: {
-                auto castSpell = cast<CastSpellAtObjectAction>(actions[i]);
-                if (const auto &spellIcon = castSpell->spell()->icon) {
-                    item.setBorderFill(spellIcon);
-                } else if (auto maybeItem = castSpell->item()) {
-                    item.setBorderFill(maybeItem.value()->icon());
-                } else {
-                    item.setBorderFill("");
-                }
-                break;
+            break;
+        }
+        case net::kQueueSpell: {
+            std::shared_ptr<Spell> spell(_services.game.spells.get(static_cast<SpellType>(entry.param)));
+            std::shared_ptr<Action> own = i < actions.size() ? actions[i] : nullptr;
+            if (spell && spell->icon) {
+                item.setBorderFill(spell->icon);
+            } else if (auto cast = own ? dyn_cast<CastSpellAtObjectAction>(own.get()) : nullptr; cast && cast->item()) {
+                item.setBorderFill(cast->item().value()->icon());
             }
-            default:
-                break;
-            }
-        } else {
-            item.setBorderFill("");
+            break;
+        }
+        default:
+            break;
         }
     }
 }

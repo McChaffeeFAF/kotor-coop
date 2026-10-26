@@ -3771,6 +3771,18 @@ json::object CoopSession::statusJson() const {
         slot["npc"] = _slot.npc;
         slot["id"] = _slot.creatureId;
         slot["tag"] = _slot.tag;
+        {
+            // The host's combat queue for this character, as the HUD shows it.
+            json::array queue;
+            if (auto replica = _replicas.find(_slot.creatureId); replica != _replicas.end()) {
+                for (const auto &entry : replica->second.state.queue) {
+                    queue.push_back(json::value(std::to_string(entry.kind) + ":" + std::to_string(entry.param)));
+                }
+                slot["inCombat"] = (replica->second.state.flags & kFlagInCombat) != 0;
+                slot["autoCombat"] = (replica->second.state.flags & kFlagAutoCombat) != 0;
+            }
+            slot["queue"] = std::move(queue);
+        }
         root["slot"] = std::move(slot);
         root["module"] = _module.module;
         root["generation"] = _module.generation;

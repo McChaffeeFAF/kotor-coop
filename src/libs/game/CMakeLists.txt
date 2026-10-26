@@ -420,6 +420,7 @@ set(GAME_HEADERS
     ${GAME_INCLUDE_DIR}/talents.h
     ${GAME_INCLUDE_DIR}/companionbrain.h
     ${GAME_INCLUDE_DIR}/coopcontrol_policy.h
+    ${GAME_INCLUDE_DIR}/combatqueue.h
     ${GAME_INCLUDE_DIR}/weaponchoice.h
     ${GAME_INCLUDE_DIR}/conversationleader.h
     ${GAME_INCLUDE_DIR}/transitioncandidate.h
@@ -722,6 +723,7 @@ set(GAME_SOURCES
     ${GAME_SOURCE_DIR}/coopchatui.cpp
     ${GAME_SOURCE_DIR}/coopcommand.cpp
     ${GAME_SOURCE_DIR}/coopcontrol_policy.cpp
+    ${GAME_SOURCE_DIR}/combatqueue.cpp
     ${GAME_SOURCE_DIR}/coopdedicated.cpp
     ${GAME_SOURCE_DIR}/coopflow.cpp
     ${GAME_SOURCE_DIR}/coopflows.cpp

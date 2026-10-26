@@ -2863,23 +2863,47 @@ void Creature::runAutoCombatRound() {
         runEndRoundScript();
         _game.setAutoCombatScriptCaller(previous);
     }
-    if (!coopcontrol::autoRoundDropsFollow(control)) {
-        return;
-    }
-    // The generic round script walks a companion after its leader when it has
-    // no target; a co-op player's character goes where its player sends it.
-    for (auto it = _actions.begin(); it != _actions.end();) {
-        auto action = *it;
-        auto type = action->type();
-        bool follow = type == ActionType::FollowLeader || type == ActionType::Follow || type == ActionType::FollowOwner ||
-                      type == ActionType::ForceFollowObject || type == ActionType::RandomWalk;
-        if (!follow || action->locked() || std::find(before.begin(), before.end(), action) != before.end()) {
-            ++it;
-            continue;
+    if (coopcontrol::autoRoundDropsFollow(control)) {
+        // The generic round script walks a companion after its leader when it
+        // has no target; a co-op player's character goes where its player
+        // sends it.
+        for (auto it = _actions.begin(); it != _actions.end();) {
+            auto action = *it;
+            auto type = action->type();
+            bool follow = type == ActionType::FollowLeader || type == ActionType::Follow || type == ActionType::FollowOwner ||
+                          type == ActionType::ForceFollowObject || type == ActionType::RandomWalk;
+            if (!follow || action->locked() || std::find(before.begin(), before.end(), action) != before.end()) {
+                ++it;
+                continue;
+            }
+            action->cancel(action, *this);
+            action->markCancelled();
+            it = _actions.erase(it);
         }
-        action->cancel(action, *this);
-        action->markCancelled();
-        it = _actions.erase(it);
+    }
+    // A round script that queued nothing (a stand-in runs none, a scripted
+    // character's may hold back) must not leave auto-combat standing in a
+    // fight: fall back on a plain attack on the nearest enemy in sight.
+    if (_actions.empty() && !_dead) {
+        std::shared_ptr<Creature> nearest;
+        float nearestDistance = kIdleEngageRange;
+        for (const auto &[id, reference] : _perception.seen) {
+            auto object = reference.resolve();
+            auto enemy = object ? std::dynamic_pointer_cast<Creature>(object) : nullptr;
+            if (!enemy || enemy->isDead() || enemy->isTemporarilyDead() ||
+                !_services.game.reputes.getIsEnemy(*this, *enemy)) {
+                continue;
+            }
+            float distance = getDistanceTo(*enemy);
+            if (distance < nearestDistance) {
+                nearest = enemy;
+                nearestDistance = distance;
+            }
+        }
+        if (nearest) {
+            debug("Auto-combat " + tag() + " attacks " + nearest->tag(), LogChannel::Combat);
+            addAction(_game.newAction<AttackObjectAction>(std::move(nearest)));
+        }
     }
 }
 
